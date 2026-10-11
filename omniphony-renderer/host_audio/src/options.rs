@@ -119,7 +119,12 @@ fn on_sync_engine(spec: &HostOptionSpec<HostIo>) -> bool {
     in_group(spec, &SYNC)
         || matches!(
             spec.key,
-            "output_device" | "latency_target" | "output_sample_rate"
+            "output_device"
+                | "latency_target"
+                | "output_sample_rate"
+                | "input_mode"
+                | "live_input_node"
+                | "live_input_description"
         )
 }
 

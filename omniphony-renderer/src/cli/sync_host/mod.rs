@@ -55,6 +55,7 @@ use renderer::live_params::OutputChannelMapping;
 use spdif::SpdifParser;
 
 use crate::cli::decode::idle_feed::{IdleFeedInputs, IdleFeeder};
+use audio_input::InputMode;
 use audio_output::control::SourceClock;
 use audio_output::sync_output::reference_now_s;
 use audio_output::{CafChannelDesc, FileAudioWriter, FileSinkFormat};
@@ -439,7 +440,75 @@ pub enum Source {
     File { path: PathBuf },
 }
 
+/// The name and description the `own` sink is published under when the
+/// config names none.
+pub const DEFAULT_SINK_NODE: &str = "omniphony";
+pub const DEFAULT_SINK_DESCRIPTION: &str = "Omniphony Bridge Input";
+
+/// The input as it is asked for: the mode, and the sink's identity when one
+/// is named. What the config states and what a client writes, not what a
+/// run resolved it to (an offline render reads its file whatever this says).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputRequest {
+    pub mode: InputMode,
+    pub node: Option<String>,
+    pub description: Option<String>,
+}
+
+impl InputRequest {
+    /// The source this asks for. `path` is what a `pipe_bridge` input reads;
+    /// `session_priority` is the sink's, when it has one.
+    pub fn source(
+        &self,
+        path: Option<PathBuf>,
+        drain: bool,
+        session_priority: Option<u32>,
+    ) -> Result<Source> {
+        match self.mode {
+            InputMode::Pipewire => Ok(Source::OwnSink {
+                node_name: self
+                    .node
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_SINK_NODE.to_string()),
+                description: self
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_SINK_DESCRIPTION.to_string()),
+                session_priority,
+            }),
+            InputMode::Bridge => {
+                let path = path.context(
+                    "no input given. orender renders one stream: a file, a named pipe, \
+                     or `-` for stdin (`orender render <INPUT>`).",
+                )?;
+                Ok(Source::of_path(path, drain))
+            }
+        }
+    }
+}
+
 impl Source {
+    /// What reading `path` is: a regular file and standard input (`-`) are
+    /// read to their end, with no clock; anything else is a pipe (created
+    /// when missing) that writers come to.
+    pub fn of_path(path: PathBuf, drain: bool) -> Self {
+        if path.as_os_str() == "-" || path.is_file() {
+            Source::File { path }
+        } else {
+            Source::Pipe { path, drain }
+        }
+    }
+
+    /// The sink's `priority.session`, when this is one that has it.
+    fn session_priority(&self) -> Option<u32> {
+        match self {
+            Source::OwnSink {
+                session_priority, ..
+            } => *session_priority,
+            _ => None,
+        }
+    }
+
     /// Whether the device paces this source under the clock asked for: it
     /// has no clock of its own, so playback runs at the device's pace and the
     /// source is held back. Always for a file; for a pipe when its writer is
@@ -491,7 +560,17 @@ pub struct HostConfig {
     /// The decoder bridges, in load order; empty takes the config's, else
     /// auto-discovery (as [`Engine::from_paths`]).
     pub bridge_paths: Vec<PathBuf>,
+    /// The source the run starts on. A client can ask for another while it
+    /// runs (`input_request` is where its controls start from).
     pub source: Source,
+    /// The input as the config states it: what the input controls start
+    /// from, so that a Save writes back what was read.
+    pub input_request: InputRequest,
+    /// The path the run was given as its INPUT, if any: what a switch to
+    /// `pipe_bridge` reads until a client names another.
+    pub input_path: Option<PathBuf>,
+    /// Whether a pipe's stale content is drained when it is opened.
+    pub drain_pipe: bool,
     /// End-to-end latency to hold (ms).
     pub target_latency_ms: f64,
     /// Phase-loop bandwidth (Hz); `None` is the source's own default.
@@ -541,47 +620,63 @@ struct CaptureKey {
 }
 
 impl CaptureKey {
-    fn of(config: &HostConfig) -> Self {
-        let own = matches!(config.source, Source::OwnSink { .. });
+    fn of(source: &Source, config: &HostConfig) -> Self {
+        let own = matches!(source, Source::OwnSink { .. });
         Self {
-            source: config.source.clone(),
+            source: source.clone(),
             sink_quantum: if own { config.quantum } else { 0 },
         }
     }
 }
 
 impl HostSession {
-    /// The capture `config` asks for: the one already running when it is the
-    /// same, with what it queued meanwhile discarded; else a new one, opened
-    /// once the old one is closed.
-    fn capture(&mut self, config: &HostConfig) -> Result<&reader::Capture> {
-        let key = CaptureKey::of(config);
+    /// Open the capture of `source`: the one already running when it is the
+    /// same, with what it queued meanwhile discarded; else a new one in its
+    /// place. A sink replaces the one running only once that one is closed
+    /// (it must leave the graph before one of the same name joins it); a
+    /// pipe or a file is opened first, so that one that cannot be opened
+    /// leaves what runs as it is.
+    fn open(&mut self, source: &Source, config: &HostConfig) -> Result<()> {
+        let key = CaptureKey::of(source, config);
         // A file is read once: a run on the same file reads it again.
-        let reusable = !matches!(config.source, Source::File { .. });
+        let reusable = !matches!(source, Source::File { .. });
         if reusable && self.capture.as_ref().is_some_and(|(k, _)| *k == key) {
             log::info!("sync host: keeping the capture open");
         } else {
-            self.capture = None;
-            let capture = match &config.source {
+            let capture = match source {
                 Source::File { path } => spawn_file_reader(path)
                     .with_context(|| format!("opening the input {}", path.display()))?,
-                Source::Pipe { path, drain } => spawn_reader(path.clone(), *drain)?,
+                Source::Pipe { path, drain } => spawn_reader(path.clone(), *drain)
+                    .with_context(|| format!("opening the pipe {}", path.display()))?,
                 Source::OwnSink {
                     node_name,
                     description,
                     session_priority,
-                } => own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
-                    node_name: node_name.clone(),
-                    description: description.clone(),
-                    latency_ns: (config.target_latency_ms * 1e6) as i64,
-                    quantum: config.quantum,
-                    session_priority: *session_priority,
-                })?,
+                } => {
+                    self.capture = None;
+                    own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
+                        node_name: node_name.clone(),
+                        description: description.clone(),
+                        latency_ns: (config.target_latency_ms * 1e6) as i64,
+                        quantum: config.quantum,
+                        session_priority: *session_priority,
+                    })
+                    .with_context(|| format!("publishing the sink {node_name}"))?
+                }
             };
             self.capture = Some((key, capture));
         }
-        let (_, capture) = self.capture.as_ref().context("the capture just opened")?;
-        capture.discard_pending();
+        self.current()?.discard_pending();
+        Ok(())
+    }
+
+    fn is_open(&self) -> bool {
+        self.capture.is_some()
+    }
+
+    /// The capture that is open.
+    fn current(&self) -> Result<&reader::Capture> {
+        let (_, capture) = self.capture.as_ref().context("no capture is open")?;
         Ok(capture)
     }
 }
@@ -645,6 +740,16 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
         speaker_layout: None,
         channel_render_mode: None,
         bridge_paths: render.bridges(),
+        input_request: InputRequest {
+            mode: match args.source {
+                SourceKind::Pipe => InputMode::Bridge,
+                SourceKind::Own => InputMode::Pipewire,
+            },
+            node: matches!(args.source, SourceKind::Own).then(|| args.sink_name.clone()),
+            description: None,
+        },
+        input_path: args.input.clone(),
+        drain_pipe: !args.no_drain_pipe,
         source,
         target_latency_ms: resolve_target_latency_ms(args.target_latency_ms, render.latency_target),
         loop_bandwidth_hz: args
@@ -721,7 +826,16 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     // A stream has ended: without `continuous`, the run ends with it.
     let mut stream_ended = false;
 
-    let capture = session.capture(config)?;
+    // The path the run was given is the input path a client is shown and a
+    // Save writes, as the legacy host records it.
+    if let Some(path) = &config.input_path {
+        engine
+            .renderer_control()
+            .set_input_path(Some(path.display().to_string()));
+    }
+    let mut source = config.source.clone();
+    session.open(&source, config)?;
+    let mut capture = session.current()?;
     let file_out = match &config.output {
         OutputKind::Device => None,
         OutputKind::File {
@@ -765,6 +879,58 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         {
             break HostExit::Finished;
         }
+        // An Apply of the input: the capture asked for replaces the one
+        // running, in place. The engine and the output settings stay.
+        if controls.take_input_apply() {
+            let path = engine
+                .renderer_control()
+                .input_path()
+                .map(PathBuf::from)
+                .or_else(|| config.input_path.clone());
+            let wanted =
+                controls
+                    .input_request()
+                    .source(path, config.drain_pipe, source.session_priority());
+            match wanted {
+                Ok(wanted)
+                    if CaptureKey::of(&wanted, config) == CaptureKey::of(&source, config) =>
+                {
+                    controls.input_applied(&source);
+                }
+                Ok(wanted) => {
+                    log::info!("sync host: input {source:?} -> {wanted:?}");
+                    let opened = session.open(&wanted, config);
+                    // The stream playing was the old capture's: it ends
+                    // with it, and goes on when that capture still runs.
+                    if (opened.is_ok() || !session.is_open())
+                        && let Some(mut ep) = epoch.take()
+                    {
+                        close_epoch(&mut telemetry, &mut ep);
+                    }
+                    match opened {
+                        Ok(()) => {
+                            source = wanted;
+                            controls.input_applied(&source);
+                            capture_gone = false;
+                            stream_ended = false;
+                        }
+                        Err(e) => {
+                            // Still on the capture that ran (opened again
+                            // if it had to be closed first), with why the
+                            // other one could not be had.
+                            log::error!("sync host: {e:#}");
+                            if !session.is_open() {
+                                session.open(&source, config)?;
+                            }
+                            controls.input_applied(&source);
+                            controls.input_failed(format!("{e:#}"));
+                        }
+                    }
+                    capture = session.current()?;
+                }
+                Err(e) => controls.input_failed(format!("{e:#}")),
+            }
+        }
         // What a client asked for since the last turn. The stream playing is
         // closed; its next chunk opens it again with the new settings, as
         // for a run that takes a running stream over.
@@ -783,13 +949,14 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         // What a block needs to open the output it is for.
         let ctx = PlayCtx {
             env: &env,
+            source: &source,
             settings: &settings,
             target_ms: telemetry.held_target_ms(),
         };
         // The setpoint the player syncs to: the target, or what the servo
         // had to raise it to. (A store of the same value changes nothing.)
         capture.advertise_latency_ms(telemetry.held_target_ms());
-        capture.set_paced(config.source.device_paced(settings.source_clock));
+        capture.set_paced(source.device_paced(settings.source_clock));
         if let Some(ep) = epoch.as_mut() {
             ep.follow_mapping(engine.output_channel_mapping());
             ep.pump_pending(&mut engine);
@@ -1195,6 +1362,8 @@ struct EpochEnv<'a> {
 /// and latency in force now (an output is opened when a block says for what).
 struct PlayCtx<'a> {
     env: &'a EpochEnv<'a>,
+    /// The source playing: its clock decides how the device is run.
+    source: &'a Source,
     settings: &'a OutputSettings,
     /// The latency a device starts at: the configured target, or what an
     /// earlier stream showed the pipeline needs.
@@ -1229,12 +1398,12 @@ fn start_device(
         .clamp(64, 8192) as u32;
     let mut core_config = OutputCoreConfig::new(format.channels, format.rate, device_rate, 8192);
     // The device paces a source with no clock: nothing to measure or hold.
-    let paced = kind == EpochKind::Stream && config.source.device_paced(settings.source_clock);
+    let paced = kind == EpochKind::Stream && ctx.source.device_paced(settings.source_clock);
     if paced {
         core_config.servo.pacing = audio_sync::Pacing::Device;
     }
     // The idle feed is the host's own clock, read exactly: nothing to follow.
-    if kind == EpochKind::Stream && config.source.follows_the_writer(settings.source_clock) {
+    if kind == EpochKind::Stream && ctx.source.follows_the_writer(settings.source_clock) {
         let follow = audio_sync::ServoConfig::follow();
         core_config.servo = audio_sync::ServoConfig {
             source_rate_hz: core_config.servo.source_rate_hz,
@@ -1759,6 +1928,13 @@ mod tests {
             speaker_layout: None,
             channel_render_mode: None,
             bridge_paths: Vec::new(),
+            input_request: InputRequest {
+                mode: InputMode::Bridge,
+                node: None,
+                description: None,
+            },
+            input_path: None,
+            drain_pipe: true,
             source,
             target_latency_ms,
             loop_bandwidth_hz: None,
@@ -1789,11 +1965,59 @@ mod tests {
             description: "Omniphony".into(),
             session_priority: None,
         };
-        let key = |source, ms| CaptureKey::of(&config(source, ms));
+        let key = |source: Source, ms| CaptureKey::of(&source, &config(source.clone(), ms));
         assert_eq!(key(pipe("/a"), 150.0), key(pipe("/a"), 200.0));
         assert_ne!(key(pipe("/a"), 150.0), key(pipe("/b"), 150.0));
         assert_eq!(key(sink(), 150.0), key(sink(), 200.0));
         assert_ne!(key(sink(), 150.0), key(pipe("/a"), 150.0));
+    }
+
+    /// The input asked for names its source: the sink under the name given
+    /// or the default one, or what the input path is (a pipe, or a file that
+    /// is there to read). A pipe with no path is an error, not a guess.
+    #[test]
+    fn an_input_request_names_its_source() {
+        let request = |mode, node: Option<&str>| InputRequest {
+            mode,
+            node: node.map(str::to_string),
+            description: None,
+        };
+        assert_eq!(
+            request(InputMode::Pipewire, None)
+                .source(None, true, Some(7))
+                .unwrap(),
+            Source::OwnSink {
+                node_name: DEFAULT_SINK_NODE.into(),
+                description: DEFAULT_SINK_DESCRIPTION.into(),
+                session_priority: Some(7),
+            }
+        );
+        assert!(matches!(
+            request(InputMode::Pipewire, Some("living-room")).source(None, true, None),
+            Ok(Source::OwnSink { node_name, .. }) if node_name == "living-room"
+        ));
+        let pipe: PathBuf = "/nonexistent/orender.pipe".into();
+        assert_eq!(
+            request(InputMode::Bridge, Some("ignored"))
+                .source(Some(pipe.clone()), false, None)
+                .unwrap(),
+            Source::Pipe {
+                path: pipe,
+                drain: false
+            }
+        );
+        let file = std::env::current_exe().unwrap();
+        assert_eq!(
+            request(InputMode::Bridge, None)
+                .source(Some(file.clone()), true, None)
+                .unwrap(),
+            Source::File { path: file }
+        );
+        assert!(
+            request(InputMode::Bridge, None)
+                .source(None, true, None)
+                .is_err()
+        );
     }
 
     /// An epoch that picks a stream up on the way counts the transport from

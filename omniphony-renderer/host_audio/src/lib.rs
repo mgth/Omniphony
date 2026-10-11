@@ -647,9 +647,9 @@ impl HostControlHandler for HostAudio {
     fn capabilities(&self) -> runtime_control::HostCapabilities {
         match self.engine {
             options::HostEngine::Legacy => runtime_control::HostCapabilities::default(),
-            // No resampler tuning; the input is not reconfigured live yet.
+            // No resampler tuning.
             options::HostEngine::Sync => runtime_control::HostCapabilities {
-                input: false,
+                input: true,
                 adaptive_resampling: false,
             },
         }
@@ -809,8 +809,9 @@ impl HostControlHandler for HostAudio {
         // input), then the imported live-input layout, which is structured
         // data rather than an option.
         renderer::options::host_store_to_config(render, &self.io, self.rows());
-        // The sync engine's host does not own the live input yet: what the
-        // file says of it stays.
+        // The imported layout is the legacy host's, like the rest of the
+        // live input the sync engine's host has no row for: what the file
+        // says of those stays.
         if self.engine == options::HostEngine::Legacy {
             render
                 .live_input
@@ -1474,7 +1475,10 @@ mod tests {
                 "latency_target",
                 "loop_bandwidth_hz",
                 "source_clock",
-                "realign_threshold_ms"
+                "realign_threshold_ms",
+                "input_mode",
+                "live_input_node",
+                "live_input_description"
             ]
         );
         assert!(!legacy.contains(&"loop_bandwidth_hz"));
@@ -1498,7 +1502,8 @@ mod tests {
         );
         assert_eq!(sync_host.options_schema().len(), sync.len());
         assert!(!sync_host.capabilities().adaptive_resampling);
-        assert!(!sync_host.capabilities().input);
+        assert!(sync_host.capabilities().input);
+        assert!(sync_host.option_kind("live_input_clock_mode").is_none());
         assert!(h.capabilities().adaptive_resampling);
         assert!(h.capabilities().input);
         assert!(

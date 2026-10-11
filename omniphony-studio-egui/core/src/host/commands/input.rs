@@ -279,7 +279,16 @@ pub fn set_orender_input_pipe(state: &SharedState, path: String) {
 /// Apply: a bridge that has to be (re)started needs its path and clock set
 /// and the pipeline restarted — keeping, not saving, the unsaved edits;
 /// otherwise the input document is enough.
-pub fn apply_input(state: &SharedState, mode: &str, active: Option<&str>) {
+///
+/// A renderer on the sync engine (`sync_engine`) reopens its capture in
+/// place, whatever changed, and has no clock mode: the document and its
+/// apply are all it takes.
+pub fn apply_input(state: &SharedState, mode: &str, active: Option<&str>, sync_engine: bool) {
+    if sync_engine {
+        state.inner.lock().unwrap().app.input_apply_pending = Some(1);
+        send_input_document(state, true);
+        return;
+    }
     let clock = {
         let live = state.inner.lock().unwrap();
         live.app
@@ -322,7 +331,7 @@ mod apply_tests {
     #[test]
     fn a_bridge_apply_restarts_without_saving() {
         let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
-        apply_input(&state, "pipe_bridge", Some("pipe_bridge"));
+        apply_input(&state, "pipe_bridge", Some("pipe_bridge"), false);
         let sent = sent_addresses(&rx);
         assert_eq!(
             sent.last().map(String::as_str),
@@ -333,5 +342,22 @@ mod apply_tests {
                 || a == osc_contract::CONTROL_RELOAD_CONFIG),
             "{sent:?}"
         );
+    }
+
+    /// The sync engine reopens its capture in place: the document and its
+    /// apply, whatever the mode, with no restart and no clock mode.
+    #[test]
+    fn an_apply_on_the_sync_engine_restarts_nothing() {
+        for (mode, active) in [("pipe_bridge", "pipewire"), ("pipewire", "pipe_bridge")] {
+            let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+            apply_input(&state, mode, Some(active), true);
+            assert_eq!(
+                sent_addresses(&rx),
+                [
+                    osc_contract::CONTROL_CONFIG_INPUT,
+                    osc_contract::CONTROL_CONFIG_INPUT_APPLY
+                ]
+            );
+        }
     }
 }

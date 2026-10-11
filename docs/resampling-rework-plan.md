@@ -1224,9 +1224,9 @@ Each is one pull request, stacked in this order.
 - **6e — formats.** DONE, see §23: the output opened for what is rendered
   (stream rate, width) and reopened when that changes, `output_sample_rate`,
   `output_channel_mapping`.
-- **6f — the live sink.** PCM on the `own` sink: DONE ahead of its turn,
-  see §21. Left: the `live_input.*` options (node, description, LFE mode) and
-  their hot apply.
+- **6f — the live sink.** DONE. PCM on the `own` sink: §21. The input
+  chosen and reconfigured live (mode, the sink's node and description):
+  §24.
 - **6g — accounting (4d).** The time-conserving deframer, the per-burst
   decoder audit, discontinuity events, and the listener's position.
 - **6h — runtime switches.** Device and latency: done in §20. The idle
@@ -1435,7 +1435,8 @@ its engine's (`HostEngine::rows`):
 | `output_sample_rate` | yes | yes, since §23 |
 | `output_backend`, `output_file`, `output_file_format` | yes | not yet: a flag of the run (§22), no hot switch (6h) |
 | `enable_adaptive_resampling`, `adaptive_resampling_*` | yes | no |
-| `input_mode`, `live_input_*` | yes | not yet (6f) |
+| `input_mode`, `live_input_node`, `live_input_description` | yes | yes, since §24 |
+| the other `live_input_*` | yes | no (§24: legacy-only, or read by no host) |
 
 A row the host does not declare is not in its schema, is refused when
 written, and is left as the file has it on Save. So nothing is offered that
@@ -1789,3 +1790,86 @@ stream's frames (and is exactly the ticks when the rates are equal).
 - The rate the device was opened at is not in the audio state: the Studio
   shows the rate asked for, as it does on the legacy engine.
 - A 32 kHz stream was not played.
+
+## 24. Phase 6f — the input, chosen live (2026-10-11)
+
+### What the legacy host does with the `live_input` options
+
+Read before deciding which of them the sync host takes:
+
+| Option | Legacy host |
+|---|---|
+| `input_mode` | pipe or PipeWire sink |
+| `live_input.node`, `.description` | the sink's name and description |
+| `live_input.channels` | 2 or 8: the sink's IEC 958 mode |
+| `live_input.clock_mode` | `dac` / `pipewire` / `upstream`: who drives the sink |
+| `live_input.backend` | one value (`pipewire`) |
+| `live_input.sample_rate`, `.layout` (and the imported layout), `.map`, `.lfe_mode` | **stored, published and saved; read by nothing** |
+
+The sync host declares the first two lines: `input_mode`,
+`live_input_node`, `live_input_description`, and says so in its capabilities
+(the `input` domain). The others have nothing to act on here: the sink
+states every format at once, and it runs on the renderer's clock
+(`source_clock`). They are not in its schema, are refused when written, and
+are left in the file as they were read on Save. The four that no host reads
+are for the flip (6j) to drop.
+
+### Apply, in place
+
+The input is staged, as on the legacy host: writes change what is asked
+for, and `/control/input/apply` (or the group apply) applies them. The host
+then names the source asked for (`InputRequest::source`: the sink under its
+name, or what the input path is) and, if it is not the one running, opens
+its capture in place of it. The engine, the output settings and the OSC
+server stay; the stream playing ends with its capture.
+
+- A pipe or a file is opened before the capture running is closed, so one
+  that cannot be opened leaves the stream playing untouched.
+- A sink is opened once the one running is closed (it must leave the graph
+  before one of the same name joins it). If it cannot be, the old capture
+  is opened again.
+- Either way the client is told what runs (`/state/input`: active mode,
+  applied node and description) and why what it asked for does not
+  (`applied.error`, which names the pipe or the sink).
+- The path a switch to `pipe_bridge` reads is the renderer's input path:
+  the INPUT the run was given, or what `/control/render/input_pipe` set
+  since.
+
+The controls start from the input as the config states it, not from what
+the run resolved it to (an offline render reads its file whatever the
+config's mode), so a Save writes back what was read. A restart
+(`/control/restart`, `reload_config`) carries a staged input over through
+the live handoff, as it does on the legacy host.
+
+### Studio
+
+On the sync engine the input section shows the mode, the node and the
+description; the clock mode row is hidden. Apply sends the input document
+and its apply, whatever changed: no pipeline restart (the legacy engine
+needs one to open a pipe or to start the sink).
+
+### Verified
+
+- Unit tests: an input request names its source; the staged input is taken
+  on apply, once, and what runs is published with the error beside it; Save
+  writes the three rows and keeps the rest of `live_input`; the Studio's
+  apply on the sync engine sends the document and its apply only.
+- Live, isolated (private sinks, private config, OSC on a free port), a run
+  launched on a pipe:
+
+| Step | Result |
+|---|---|
+| Stage `pipewire` + a node + a description | Nothing changes; the state shows the request beside what runs |
+| Apply | The sink appears under that name; mpv AC-3 passthrough into it holds 180.00 ±0.03 ms |
+| Rename the node, apply | The old node is gone, the new one is there; plays as before |
+| `pipe_bridge` with a pipe in a directory that does not exist, apply | Refused: the error names the pipe, the sink and its stream are untouched |
+| The pipe's path back, apply | The sink leaves the graph, the pipe is read; 180.00 ±0.03 ms |
+| Stage `pipewire`, then `/control/restart` | The next run starts on the sink |
+
+### Not done
+
+- The Studio rows on the sync engine were not captured or clicked.
+- The negotiated format of the sink is not in `/state/input` (`applied`
+  carries the mode, the node and the description).
+- A switch away from a pipe closes it under its writer, which gets `EPIPE`,
+  as with any reader that goes away.

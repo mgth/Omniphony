@@ -192,6 +192,11 @@ impl StudioSpike {
                             ) {
                                 input::set_live_input_description(&self.host, description);
                             }
+                            // The sync engine's sink runs on the renderer's
+                            // own clock: there is no clock mode to choose.
+                            if policy.sync_engine {
+                                return;
+                            }
                             let mut chosen_clock = clock.clone();
                             widgets::label_row_info_keys(
                                 ui,
@@ -248,7 +253,12 @@ impl StudioSpike {
                         t("input.apply")
                     };
                     if ui.button(label).clicked() {
-                        input::apply_input(&self.host, &mode, active.as_deref());
+                        input::apply_input(
+                            &self.host,
+                            &mode,
+                            active.as_deref(),
+                            policy.sync_engine,
+                        );
                     }
                 });
                 // Values staged some other way (another client, a script)

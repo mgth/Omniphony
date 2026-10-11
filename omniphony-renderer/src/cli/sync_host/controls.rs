@@ -20,7 +20,7 @@ use host_audio::HostAudio;
 use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
 
-use super::{DEFAULT_TARGET_LATENCY_MS, HostConfig, Source};
+use super::{DEFAULT_TARGET_LATENCY_MS, HostConfig, InputRequest, Source};
 
 /// What the output is opened with: a change in any of it reopens it.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +42,7 @@ pub struct OutputSettings {
 /// See the [module docs](self).
 pub struct Controls {
     audio: Arc<AudioControl>,
+    input: Arc<InputControl>,
     host: Arc<HostAudio>,
 }
 
@@ -66,18 +67,50 @@ impl Controls {
         }));
         audio.set_available_output_devices(output_devices());
         audio.set_device_list_fetcher(output_devices);
-        // The input is not this host's to reconfigure yet (it does not say
-        // it is: `HostCapabilities::input`): its control only says what the
-        // run was launched on, for the client to show.
+        // The input starts from what the config states (which a Save writes
+        // back), and what runs is what the run resolved it to.
         let input = Arc::new(InputControl::default());
-        if let Source::OwnSink {
-            node_name,
-            description,
-            ..
-        } = &config.source
-        {
-            input.set_requested_mode(InputMode::Pipewire);
-            input.set_input_state(
+        let request = &config.input_request;
+        input.set_requested_mode(request.mode);
+        input.set_requested_node_name(request.node.clone());
+        input.set_requested_node_description(request.description.clone());
+        let host = Arc::new(HostAudio::for_sync_engine(
+            renderer,
+            Arc::clone(&audio),
+            Arc::clone(&input),
+        ));
+        // Launch values come from config.yaml, which is edited by hand:
+        // bound them as an OSC write would be.
+        host.bound_options_to_their_kinds();
+        let controls = Self { audio, input, host };
+        controls.input_applied(&config.source);
+        controls
+    }
+
+    /// Whether a client asked for the input it staged to be applied, since
+    /// the last call.
+    pub fn take_input_apply(&self) -> bool {
+        self.input.take_apply_pending()
+    }
+
+    /// The input as it is asked for now.
+    pub fn input_request(&self) -> InputRequest {
+        let requested = self.input.requested_snapshot();
+        InputRequest {
+            mode: requested.mode,
+            node: requested.node_name,
+            description: requested.node_description,
+        }
+    }
+
+    /// The capture of `source` is the one running: publish it.
+    pub fn input_applied(&self, source: &Source) {
+        match source {
+            Source::OwnSink {
+                node_name,
+                description,
+                ..
+            } => self.input.set_input_state(
                 InputMode::Pipewire,
                 Some(InputBackend::Pipewire),
                 None,
@@ -85,17 +118,24 @@ impl Controls {
                 Some(node_name.clone()),
                 Some(description.clone()),
                 None,
-            );
+            ),
+            Source::Pipe { .. } | Source::File { .. } => self.input.set_input_state(
+                InputMode::Bridge,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("bridge-decoded".to_string()),
+            ),
         }
-        let host = Arc::new(HostAudio::for_sync_engine(
-            renderer,
-            Arc::clone(&audio),
-            input,
-        ));
-        // Launch values come from config.yaml, which is edited by hand:
-        // bound them as an OSC write would be.
-        host.bound_options_to_their_kinds();
-        Self { audio, host }
+        self.input.set_input_error(None);
+    }
+
+    /// The input asked for could not be had: publish why, for the client to
+    /// show beside what still runs.
+    pub fn input_failed(&self, error: String) {
+        self.input.set_input_error(Some(error));
     }
 
     /// The handler the OSC server delegates this host's domains to.
@@ -162,6 +202,13 @@ mod tests {
                 path: "/in".into(),
                 drain: true,
             },
+            input_request: InputRequest {
+                mode: InputMode::Bridge,
+                node: Some("my-sink".into()),
+                description: None,
+            },
+            input_path: Some("/in".into()),
+            drain_pipe: true,
             target_latency_ms: 180.0,
             loop_bandwidth_hz: None,
             realign_threshold_ms: 20.0,
@@ -238,7 +285,10 @@ mod tests {
                 "latency_target",
                 "loop_bandwidth_hz",
                 "source_clock",
-                "realign_threshold_ms"
+                "realign_threshold_ms",
+                "input_mode",
+                "live_input_node",
+                "live_input_description"
             ]
         );
         let refused = handler.apply_options(&[
@@ -248,7 +298,7 @@ mod tests {
         ]);
         assert!(refused.results.iter().all(Option::is_none));
         assert!(!handler.capabilities().adaptive_resampling);
-        assert!(!handler.capabilities().input);
+        assert!(handler.capabilities().input);
     }
 
     /// What the host does on its own reaches the clients through the audio
@@ -295,15 +345,18 @@ mod tests {
     }
 
     /// Save writes this host's settings and leaves the rest of the file's
-    /// audio section alone: the legacy tuning and the live input are kept as
-    /// they were read.
+    /// audio section alone: the legacy tuning, and what of the live input
+    /// this host has no row for, are kept as they were read.
     #[test]
     fn save_keeps_what_this_host_does_not_own() {
         let controls = Controls::new(&config(), fixture_control());
         let handler = controls.handler();
-        handler.apply_options(&[("realign_threshold_ms", RawOptionValue::Number(35.0))]);
+        handler.apply_options(&[
+            ("realign_threshold_ms", RawOptionValue::Number(35.0)),
+            ("input_mode", RawOptionValue::Str("pipewire")),
+        ]);
         let mut render: renderer::config::RenderConfig = serde_yaml_ng::from_str(
-            "adaptive_resampling_kp_near: 3.5\nlive_input:\n  node: my-sink\n  clock_mode: dac\n",
+            "adaptive_resampling_kp_near: 3.5\nlive_input:\n  node: my-sink\n  clock_mode: dac\n  lfe_mode: drop\n",
         )
         .unwrap();
         handler.amend_saved_config(&mut render);
@@ -312,8 +365,81 @@ mod tests {
         assert_eq!(render.realign_threshold_ms, Some(35.0));
         assert_eq!(render.loop_bandwidth_hz, None);
         assert_eq!(render.adaptive_resampling_kp_near, Some(3.5));
+        assert_eq!(
+            render.input_mode,
+            Some(renderer::config::InputModeConfig::Pipewire)
+        );
         let live = render.live_input.expect("the live input is kept");
         assert_eq!(live.node.as_deref(), Some("my-sink"));
+        assert_eq!(live.description, None);
         assert!(live.clock_mode.is_some());
+        assert_eq!(
+            live.lfe_mode,
+            Some(renderer::config::InputLfeModeConfig::Drop)
+        );
+    }
+
+    /// The input is staged: writes change what is asked for, and nothing is
+    /// to be done until the group is applied, once. What runs is published
+    /// beside what is asked for, with why a request could not be had.
+    #[test]
+    fn a_staged_input_is_taken_on_apply() {
+        fn input_state(handler: &dyn HostControlHandler) -> serde_json::Value {
+            handler
+                .extend_snapshot()
+                .into_iter()
+                .find_map(|packet| match packet {
+                    rosc::OscPacket::Message(m)
+                        if m.addr == runtime_control::osc_contract::STATE_INPUT =>
+                    {
+                        match m.args.first() {
+                            Some(rosc::OscType::String(json)) => serde_json::from_str(json).ok(),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .expect("the input state")
+        }
+        let controls = Controls::new(&config(), fixture_control());
+        let handler = controls.handler();
+        // Launched on a pipe, with the config naming a sink for later.
+        assert_eq!(
+            controls.input_request(),
+            config().input_request,
+            "the controls start from the config"
+        );
+        let state = input_state(handler.as_ref());
+        assert_eq!(state["mode"], "pipe_bridge");
+        assert_eq!(state["activeMode"], "pipe_bridge");
+
+        handler.apply_options(&[
+            ("input_mode", RawOptionValue::Str("pipewire")),
+            ("live_input_node", RawOptionValue::Str("den")),
+            ("live_input_description", RawOptionValue::Str("The den")),
+        ]);
+        assert!(!controls.take_input_apply(), "staged, not applied");
+        assert_eq!(input_state(handler.as_ref())["activeMode"], "pipe_bridge");
+
+        handler.apply_option_group("live_input").expect("a group");
+        assert!(controls.take_input_apply());
+        assert!(!controls.take_input_apply(), "taken once");
+        let request = controls.input_request();
+        assert_eq!(request.mode, InputMode::Pipewire);
+        assert_eq!(request.node.as_deref(), Some("den"));
+
+        // The host opens it and says so; or says why it could not.
+        let sink = request.source(None, true, None).unwrap();
+        controls.input_applied(&sink);
+        let state = input_state(handler.as_ref());
+        assert_eq!(state["activeMode"], "pipewire");
+        assert_eq!(state["applied"]["node"], "den");
+        assert_eq!(state["applied"]["description"], "The den");
+        assert!(state["applied"]["error"].is_null());
+        controls.input_failed("no such pipe".into());
+        assert_eq!(
+            input_state(handler.as_ref())["applied"]["error"],
+            "no such pipe"
+        );
     }
 }

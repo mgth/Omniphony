@@ -1314,7 +1314,7 @@ fn sync_host_config(
 ) -> Result<crate::cli::sync_host::HostConfig> {
     use crate::cli::command::OutputFileFormatArg;
     use crate::cli::sync_host::{
-        HostConfig, OutputKind, Source, resolve_realign_threshold_ms, resolve_source_clock,
+        HostConfig, InputRequest, OutputKind, resolve_realign_threshold_ms, resolve_source_clock,
         resolve_target_latency_ms,
     };
     use renderer::config::InputModeConfig;
@@ -1337,44 +1337,27 @@ fn sync_host_config(
     // An offline render — a file out, once — reads its INPUT whatever the
     // config's input mode says: the live sink is none of its business.
     let offline = output != OutputKind::Device && !args.continuous;
-    let input_mode = if offline {
-        InputModeConfig::Bridge
+    // The input as the config states it; the run starts on what that names,
+    // and its controls start from it.
+    let live = render_cfg.live_input.as_ref();
+    let input_request = InputRequest {
+        mode: match render_cfg.input_mode_or_default() {
+            InputModeConfig::Bridge => audio_input::InputMode::Bridge,
+            InputModeConfig::Pipewire => audio_input::InputMode::Pipewire,
+        },
+        node: live.and_then(|l| l.node.clone()),
+        description: live.and_then(|l| l.description.clone()),
+    };
+    let drain_pipe = !args.no_drain_pipe;
+    let source = if offline {
+        InputRequest {
+            mode: audio_input::InputMode::Bridge,
+            ..input_request.clone()
+        }
     } else {
-        render_cfg.input_mode_or_default()
-    };
-    let source = match input_mode {
-        InputModeConfig::Pipewire => {
-            let live = render_cfg.live_input.as_ref();
-            Source::OwnSink {
-                node_name: live
-                    .and_then(|l| l.node.clone())
-                    .unwrap_or_else(|| super::live_input::DEFAULT_LIVE_BRIDGE_NODE.to_string()),
-                description: live.and_then(|l| l.description.clone()).unwrap_or_else(|| {
-                    super::live_input::DEFAULT_LIVE_BRIDGE_DESCRIPTION.to_string()
-                }),
-                session_priority: None,
-            }
-        }
-        InputModeConfig::Bridge => {
-            let path = args.input.clone().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no input given. orender renders one stream: a file, a named pipe, \
-                     or `-` for stdin (`orender render <INPUT>`)."
-                )
-            })?;
-            // A regular file and standard input are read to their end, with
-            // no clock; anything else is a pipe (created when missing) that
-            // writers come to.
-            if path.as_os_str() == "-" || path.is_file() {
-                Source::File { path }
-            } else {
-                Source::Pipe {
-                    path,
-                    drain: !args.no_drain_pipe,
-                }
-            }
-        }
-    };
+        input_request.clone()
+    }
+    .source(args.input.clone(), drain_pipe, None)?;
     // What the engine is built on: this run's render section (the file with
     // the flags folded in) in place of the file's, and the presentation,
     // which the args resolution keeps on its own.
@@ -1391,6 +1374,9 @@ fn sync_host_config(
         channel_render_mode: Some(args.channel_render_mode.into()),
         bridge_paths: args.bridge_paths.clone(),
         source,
+        input_request,
+        input_path: args.input.clone(),
+        drain_pipe,
         target_latency_ms: resolve_target_latency_ms(None, args.latency_target_ms),
         loop_bandwidth_hz: render_cfg.loop_bandwidth_hz.map(f64::from),
         realign_threshold_ms: resolve_realign_threshold_ms(render_cfg.realign_threshold_ms),
