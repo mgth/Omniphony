@@ -47,14 +47,32 @@ impl CpalSyncOutput {
         format: cpal::SampleFormat,
         core: OutputCore,
     ) -> Result<Self> {
+        Self::start_watched(
+            device,
+            config,
+            format,
+            core,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    /// [`start`](Self::start), with `failed` set when the stream reports an
+    /// error (a device that went away): cpal has no other word for it.
+    pub fn start_watched(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        format: cpal::SampleFormat,
+        core: OutputCore,
+        failed: Arc<AtomicBool>,
+    ) -> Result<Self> {
         let channels = config.channels as usize;
         let rate = config.sample_rate.0 as f64;
         let stream = match format {
-            cpal::SampleFormat::F32 => build::<f32>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::I32 => build::<i32>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::I16 => build::<i16>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::U16 => build::<u16>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::F64 => build::<f64>(device, config, core, channels, rate)?,
+            cpal::SampleFormat::F32 => build::<f32>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::I32 => build::<i32>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::I16 => build::<i16>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::U16 => build::<u16>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::F64 => build::<f64>(device, config, core, channels, rate, failed)?,
             other => return Err(anyhow!("unsupported output sample format {other:?}")),
         };
         stream.play()?;
@@ -114,6 +132,7 @@ fn build<T>(
     core: OutputCore,
     channels: usize,
     rate: f64,
+    failed: Arc<AtomicBool>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample + cpal::FromSample<f32> + 'static,
@@ -125,7 +144,10 @@ where
         position: 0,
         oversize_logged: Arc::new(AtomicBool::new(false)),
     };
-    let err_fn = |err| log::error!("output stream error: {err}");
+    let err_fn = move |err| {
+        log::error!("output stream error: {err}");
+        failed.store(true, Ordering::Relaxed);
+    };
     let stream = if T::FORMAT == cpal::SampleFormat::F32 {
         device.build_output_stream(
             config,

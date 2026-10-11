@@ -7,6 +7,11 @@
 use bridge_api::{I32_PCM_FULL_SCALE, RChannelLabel, RDecodedFrame};
 
 /// The fixed input map, in the order the sink's channels come.
+/// The linear PCM the `own` sink takes beside the IEC 958 formats: the
+/// renderer's rate, on the fixed 7.1 input map (L R C LFE Ls Rs Lb Rb).
+pub const PCM_RATE_HZ: u32 = 48_000;
+pub const PCM_CHANNELS: u32 = 8;
+
 pub const INPUT_MAP: [RChannelLabel; 8] = [
     RChannelLabel::L,
     RChannelLabel::R,

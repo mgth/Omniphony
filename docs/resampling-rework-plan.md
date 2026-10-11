@@ -1232,10 +1232,12 @@ Each is one pull request, stacked in this order.
   render's own delay inside the latency, and the listener's position.
 - **6h — runtime switches.** DONE. Device and latency: §20. The idle
   feed: §21. The rate: §23. The backend (device or file): §26.
-- **6i — Windows and macOS.** The cpal adapter wired in (with the timestamp
-  patch, §9), the QPC reference clock, the named-pipe reader (§12). Built
-  and cross-checked from the Linux workflow as far as it goes; not run on
-  hardware before the flip (decided below).
+- **6i — Windows and macOS.** DONE as far as it goes without the hardware,
+  see §27: the host builds on the three platforms, the output goes through
+  one facade (PipeWire, or cpal), the pipe is a served named pipe on
+  Windows. Type-checked for Windows and its unit tests run under Wine; the
+  cpal output run for real on Linux through ALSA; macOS compiled nowhere
+  yet. Not run on Windows or macOS hardware before the flip (decided below).
 - **6j — the flip.** The new host becomes `render`. Studio: the auto-tune
   wizard and the PI controls go, the plot is the diag channels of §16. The
   legacy regulation, the trigger path, `PwClientNode` and their documents are
@@ -2060,3 +2062,112 @@ plays on the device only.
 - The backend the run was launched on is not in the audio state: a run
   started with `--output-backend file` shows "device" in a client until one
   is asked for, as on the legacy host.
+
+## 27. Phase 6i — Windows and macOS (2026-10-11)
+
+The sync host was Linux only: its output was PipeWire's, its reader a FIFO's
+descriptor, its flag hidden behind `cfg(linux)`. It now builds everywhere
+the renderer does, and `--sync-engine` / `ORENDER_SYNC_ENGINE` select it on
+the three platforms.
+
+### One output device, whatever the platform
+
+`audio_output::sync_output::device` is what the host opens: PipeWire on
+Linux, cpal on Windows (ASIO, or WASAPI in shared mode by the legacy
+output's rule) and macOS (CoreAudio). It opens in two steps, because the two
+worlds differ on who converts a rate the device does not run at:
+
+- `negotiate` finds the device and says the rate it will run at. PipeWire
+  takes any rate (the graph converts). A cpal device plays the rates it
+  lists: the one asked for when it has it, else its own, else the nearest
+  it has, on the narrowest format wide enough, in `f32` when there is a
+  choice. A device with fewer channels than the output is refused, never
+  played with channels dropped.
+- The host builds its output core for that rate, and `start` plays. The
+  core's drift resampler does the conversion, as it does for
+  `output_sample_rate`.
+
+So a 44.1 kHz stream plays on the Windows mixer at 48 kHz, where the legacy
+output refused it ("does not support … at 44100 Hz") unless a rate was
+forced by hand. The host's label (`ASIO`, `WASAPI (fallback: …)`,
+`CoreAudio`) is published as before (`/state/audio.outputHost`), and a
+stream error (a device that went away) is the output not playing.
+
+The cpal adapter itself is phase 3's: the callback's time is the reference
+clock read at its entry, its position the frames handed over, the delay to
+the ear what cpal reports. The patch that would forward the driver's own
+position and latencies (§9) is still not made: the device DLL filters the
+callback's jitter instead.
+
+### The reference clock
+
+`reference_now_s` is `CLOCK_MONOTONIC` on Unix and `Instant` elsewhere,
+which is `QueryPerformanceCounter` on Windows: one clock for the reader's
+stamps and the callback's, which is all the servo needs.
+
+### The pipe
+
+The read loop reads from a byte source with a wait that ends:
+
+- Unix (Linux, macOS): the FIFO's descriptor, polled, as before.
+- Windows: a named pipe (`\\.\pipe\…`) the reader serves
+  (`sys::input::NamedPipeSource`): one instance for one writer after
+  another, one overlapped operation pending at a time (the connect, or a
+  read), waited for with a timeout so the reader stays stoppable. The
+  legacy reader blocks until a writer connects.
+- A file or standard input: polled on Unix; a blocking read on Windows,
+  whose thread is not waited for when the capture is dropped (a read of
+  standard input cannot be woken).
+
+The PipeWire sink is Linux's: asked for elsewhere, the input says so and
+what runs stays.
+
+### Fixed on the way: a long device cycle could underrun for ever
+
+Found by running the cpal output (below): a device with a long cycle (the
+ALSA plugin's 43 ms; a 2048-frame ASIO buffer is the same) under a `follow`
+source, with a target a little short of what the pipeline needs. A burst
+cycle's wait is read at the callbacks, up to one period before its peak:
+with a long period the reading stands below the target while the peak
+underruns. And after an underrun a `follow` source restarts its phase (one
+late reading cannot say whether it stopped), which discarded the cycle. So
+nothing ever raised the target: 851 underruns in two simulated minutes at
+190 ms for a pipeline that needs 195 to 240.
+
+An underrun whose next reading is within 20 ms of the source's line (the
+estimator's own measure of a phase break) is now a cycle above the target
+like another. Three of them raise it. A source that really stops (the
+150 ms stops of §19) is far off its line and still raises nothing.
+
+### How it was checked, without the hardware
+
+| What | How | Result |
+|---|---|---|
+| The whole workspace for Windows | `cargo check --workspace --all-targets --target x86_64-pc-windows-gnu` (asio-sys's generated layout assertions, written for MSVC, deleted from the scratch build: nothing is linked or run there) | Clean. It found one Linux-only flag the host read |
+| The named-pipe source | Its tests, built for Windows and run under Wine: reads time out with no writer, two writers in turn are read in order, a pending operation is cancelled on drop | Pass |
+| The host's unit tests on Windows | The renderer's test binary built for Windows and run under Wine (31 tests: readers, controls with cpal's device list, coverage, accounting) | Pass |
+| The cpal output, for real | A renderer built with `--features cpal-check` plays through cpal's ALSA host, which PipeWire's ALSA plugin carries to the test sink | Below |
+| The simulator | The long-cycle scenario above, and the 48 others | Pass |
+| The Linux scenarios of §21 to §26 | Again | As before; no target raised that was not |
+
+The cpal run (a timed pipe, 180 ms asked for, a 43 ms device cycle):
+
+| Stream | Result |
+|---|---|
+| AC-3 at 48 kHz, 12 channels | 180.0 ms, within 0.2 ms at first and 0.01 ms from 10 s on; no realign, no underrun; 26.95 s of tone unbroken |
+| AC-3 at 44.1 kHz, output switched to binaural | The 2-channel device needs more than 180 ms: three underruns in 0.7 s, the target raised to 235 ms and held, none after |
+| …back to speakers, then `output_sample_rate 96000` | Reopened each time (187 and 269 ms of silence: the ALSA plugin's reopening), the raised target kept, the device at 96 kHz |
+
+### Not done
+
+- **Nothing ran on Windows or macOS hardware**, and no ASIO or CoreAudio
+  device was opened: the host selection on Windows is the legacy output's
+  code, copied; the rest of the cpal path is what ran on ALSA.
+- **macOS was compiled nowhere**: its target needs Apple's SDK for
+  CoreAudio's bindings. Its own lines are the host selection (the default
+  host) and nothing else: the reader is the Unix one, the rest is shared
+  with Windows. CI compiles it.
+- The whole renderer was not run under Wine: there is no Windows build of a
+  decoder bridge here.
+- The cpal patch for the driver's position and latencies (§9).
+- cpal's buffer size is the device's default.

@@ -115,7 +115,6 @@ pub enum Commands {
     GenerateVbap(GenerateVbapArgs),
 
     /// Play a pipe through the new sync output (resampling rework, experimental).
-    #[cfg(target_os = "linux")]
     #[command(hide = true)]
     SyncPlay(crate::cli::sync_host::SyncPlayArgs),
 
@@ -305,7 +304,6 @@ pub struct RenderArgs {
     /// [LINUX ONLY] Play through the sync host (the resampling rework's
     /// engine) instead of the legacy one. Also `ORENDER_SYNC_ENGINE=1`.
     /// Temporary: gone at the cutover (docs/resampling-rework-plan.md §17).
-    #[cfg(target_os = "linux")]
     #[arg(long, hide = true)]
     pub sync_engine: bool,
 

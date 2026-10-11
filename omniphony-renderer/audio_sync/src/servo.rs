@@ -304,6 +304,12 @@ pub const FLOOR_HOLD_S: f64 = 5.0;
 /// How far behind its line the reading after an underrun may be for an
 /// exact (`own`) source to count as having lost nothing (s).
 pub const SOURCE_LOSS_TOLERANCE_S: f64 = 0.002;
+/// How far behind its line the reading after an underrun may be for a
+/// `follow` source to count as not having stopped (s): the estimator's own
+/// measure of a phase break. Its readings are late by their jitter, so one
+/// of them cannot say the source lost nothing; within this, it says the
+/// underrun was not a stop, and the pipeline's own.
+pub const FOLLOW_LOSS_TOLERANCE_S: f64 = crate::source::PHASE_BREAK_S;
 /// Burst cycles above the target that raise it, and the time they must fall
 /// within (s). One cycle above it is a hiccup; a target the pipeline cannot
 /// sustain is exceeded again and again.
@@ -346,6 +352,13 @@ pub struct Servo {
     /// [`CallbackInput::available`] at the last callback: more at the next
     /// one is a delivery, the end of a burst cycle.
     last_available: f64,
+    /// The floor this callback read, and the one read by the callback that
+    /// underran, until the source's next reading says what the underrun was.
+    last_floor: f64,
+    underrun_floor: Option<f64>,
+    /// An underrun the source's next reading showed was not a stop: a cycle
+    /// above the target, at this level, to count.
+    pipeline_underrun: Option<f64>,
     /// Highest floor at a callback since the last delivery; `None` while
     /// what is seen cannot be trusted (a stall, a break).
     cycle: Option<FloorCycle>,
@@ -390,6 +403,9 @@ impl Servo {
             last_t: None,
             target_s: config.target_latency_s,
             last_available: 0.0,
+            last_floor: 0.0,
+            underrun_floor: None,
+            pipeline_underrun: None,
             cycle: None,
             floor_read_at: None,
             over_target: [(0.0, 0.0); FLOOR_CYCLES],
@@ -432,6 +448,8 @@ impl Servo {
         self.target_s = self.config.target_latency_s;
         self.telemetry.target_s = self.target_s;
         self.last_available = 0.0;
+        self.underrun_floor = None;
+        self.pipeline_underrun = None;
         self.forget_floor_cycles();
         self.floor_read_at = None;
     }
@@ -493,9 +511,17 @@ impl Servo {
                 + ratio_ff * input.frames as f64
                 + self.config.resampler_lookahead_frames)
                 / rate_s;
+        self.last_floor = floor;
         // While a restart is pending, whether the source lost time is not
         // known yet: a cycle that ends meanwhile is not read.
-        let raised = self.track_floor(input.t, dt, input.available, floor, self.restart_next);
+        let mut raised = self.track_floor(input.t, dt, input.available, floor, self.restart_next);
+        // An underrun under a source that had not stopped was a cycle above
+        // the target, whatever the callbacks before it read: the peak comes
+        // up to one period after the last of them, and with a long device
+        // cycle that is where the underruns are.
+        if let Some(level) = self.pipeline_underrun.take() {
+            raised |= self.count_over_target(input.t, dt, level.max(self.target_s));
+        }
         let error = latency - self.target_s;
 
         match self.phase {
@@ -642,6 +668,13 @@ impl Servo {
         if lower <= self.target_s {
             return false;
         }
+        self.count_over_target(t, dt, lower)
+    }
+
+    /// One more cycle above the target, at `lower`: [`FLOOR_CYCLES`] of them
+    /// within [`FLOOR_WINDOW_S`] raise the target. Returns whether it was.
+    fn count_over_target(&mut self, t: f64, dt: f64, lower: f64) -> bool {
+        let margin = self.config.floor_margin_s;
         // Keep the latest cycles above the target that are recent enough.
         let mut kept = 0;
         for i in 0..self.over_target_len {
@@ -698,12 +731,23 @@ impl Servo {
             // nothing: the decoder held more than the target leaves room
             // for, and the phase stands. (A `follow` source's readings are
             // late by their jitter: nothing can be told from one of them.)
+            let off_line = self
+                .source
+                .position_at(obs.t)
+                .map(|line| (line - obs.received).abs() / self.config.source_rate_hz);
             let lost_nothing = after_underrun
                 && !self.config.source_late_arrivals
-                && self.source.position_at(obs.t).is_some_and(|line| {
-                    (line - obs.received).abs()
-                        <= SOURCE_LOSS_TOLERANCE_S * self.config.source_rate_hz
-                });
+                && off_line.is_some_and(|off| off <= SOURCE_LOSS_TOLERANCE_S);
+            // A `follow` source still restarts its phase (one late reading
+            // proves nothing about the line), but a reading this close to
+            // it says the source had not stopped.
+            let underrun_floor = self.underrun_floor.take();
+            if after_underrun
+                && self.config.source_late_arrivals
+                && off_line.is_some_and(|off| off <= FOLLOW_LOSS_TOLERANCE_S)
+            {
+                self.pipeline_underrun = underrun_floor;
+            }
             if (asked && !lost_nothing) || (resumed && self.source.is_tracking()) {
                 // The source stopped and came back, lost time, or started
                 // another stream: same clock, new phase.
@@ -847,6 +891,7 @@ impl Servo {
             return plan;
         }
         self.telemetry.underruns += 1;
+        self.underrun_floor = Some(self.last_floor);
         // The source's line may be ahead of what has arrived: it lost time
         // (a pause, a stop shorter than the gap that marks a stall), and
         // nothing else says so. The next reading starts a new phase, unless

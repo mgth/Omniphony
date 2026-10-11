@@ -1283,7 +1283,6 @@ enum RunOutcome {
 /// (`docs/resampling-rework-plan.md` §17): the hidden `--sync-engine` flag,
 /// or `ORENDER_SYNC_ENGINE` set to anything but empty or `0` (what reaches a
 /// renderer the Studio launches). Temporary, until the cutover.
-#[cfg(target_os = "linux")]
 fn sync_engine_requested(args: &RenderArgs) -> bool {
     args.sync_engine
         || std::env::var_os("ORENDER_SYNC_ENGINE").is_some_and(|v| !v.is_empty() && v != "0")
@@ -1304,7 +1303,6 @@ fn sync_engine_requested(args: &RenderArgs) -> bool {
 /// input), read to its end with no clock, or a pipe. The output is the
 /// PipeWire device or the `file` backend; a file out without `--continuous`
 /// is an offline render, of INPUT.
-#[cfg(target_os = "linux")]
 fn sync_host_config(
     args: &RenderArgs,
     config: &renderer::config::Config,
@@ -1321,7 +1319,6 @@ fn sync_host_config(
 
     let backend = args.output_backend.or_else(OutputBackend::platform_default);
     let output = match backend {
-        Some(OutputBackend::Pipewire) => OutputKind::Device,
         Some(OutputBackend::File) => OutputKind::File {
             destination: args.output_file.clone(),
             format: match args.output_file_format {
@@ -1329,10 +1326,13 @@ fn sync_host_config(
                 OutputFileFormatArg::Caf => audio_output::FileSinkFormat::Caf,
             },
         },
-        other => anyhow::bail!(
-            "the sync engine plays through PipeWire or writes a file for now \
-             (output backend: {other:?})"
-        ),
+        Some(OutputBackend::Unsupported) | None => {
+            anyhow::bail!(
+                "no realtime output backend on this platform: use `--output-backend file`"
+            )
+        }
+        // This platform's device: PipeWire, ASIO or WASAPI, CoreAudio.
+        Some(_) => OutputKind::Device,
     };
     // An offline render — a file out, once — reads its INPUT whatever the
     // config's input mode says: the live sink is none of its business.
@@ -1386,7 +1386,7 @@ fn sync_host_config(
         source_clock: resolve_source_clock(render_cfg.source_clock.as_deref()),
         continuous: args.continuous,
         offline,
-        quantum: args.pw_quantum.unwrap_or(1024),
+        quantum: device_quantum(args),
         osc: orender_engine::OscSettings {
             enabled: args.osc,
             host: args.osc_host.clone(),
@@ -1399,9 +1399,21 @@ fn sync_host_config(
     })
 }
 
+/// The device cycle a run asks for (frames at 48 kHz): PipeWire's quantum
+/// where there is one to ask for.
+fn device_quantum(args: &RenderArgs) -> u32 {
+    #[cfg(target_os = "linux")]
+    let quantum = args.pw_quantum;
+    #[cfg(not(target_os = "linux"))]
+    let quantum = {
+        let _ = args;
+        None
+    };
+    quantum.unwrap_or(1024)
+}
+
 /// One `render` run on the sync host. Returns the bridges it ended on, as
 /// the legacy run does, for a restart from the config.
-#[cfg(target_os = "linux")]
 fn run_on_sync_host(
     run: &ResolvedRun,
     session: &mut crate::cli::sync_host::HostSession,
@@ -1448,7 +1460,6 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
     sys::shutdown::set_yieldable(args.osc_yield);
     sys::shutdown::set_restartable(true);
     let mut restart_bridge_path_override: Option<Vec<std::path::PathBuf>> = None;
-    #[cfg(target_os = "linux")]
     let mut sync_session = crate::cli::sync_host::HostSession::default();
     loop {
         negotiate_osc_port_if_enabled(args, cli, arg_sources);
@@ -1462,15 +1473,11 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
         }
 
         let drc_mode = configured_drc_mode(&run.render_cfg);
-        #[cfg(target_os = "linux")]
         let prepared = if sync_engine_requested(&run.args) {
             run_on_sync_host(&run, &mut sync_session).map(RunOutcome::Done)
         } else {
             prepare_render_run(&run.args, drc_mode).map(|p| RunOutcome::Prepared(Box::new(p)))
         };
-        #[cfg(not(target_os = "linux"))]
-        let prepared =
-            prepare_render_run(&run.args, drc_mode).map(|p| RunOutcome::Prepared(Box::new(p)));
         let bridge_path_after_run = match prepared {
             Ok(RunOutcome::Prepared(prepared)) => run_prepared_render(*prepared, &run)?,
             Ok(RunOutcome::Done(bridge_paths)) => bridge_paths,

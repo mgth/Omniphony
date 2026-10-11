@@ -874,6 +874,54 @@ mod tests {
         assert!(r.realigns <= 2, "{} realigns", r.realigns);
     }
 
+    /// A device with a long cycle (a 2048-frame ASIO buffer, an ALSA plugin:
+    /// 43 ms) under a `follow` source, with a target that is a little short
+    /// of what the pipeline needs. A cycle's wait is read at the callbacks,
+    /// up to one period before its peak, so a reading can stand below the
+    /// target while the peak underruns; and after an underrun a `follow`
+    /// source's reading cannot say by itself whether it stopped. The
+    /// underruns of a source that did not stop are cycles above the target:
+    /// they raise it, and they end.
+    #[test]
+    fn a_long_device_cycle_does_not_underrun_for_ever() {
+        for target_ms in [150.0, 160.0, 170.0, 180.0, 190.0, 200.0] {
+            let quantum = 2048;
+            let sc = Scenario {
+                duration_s: 120.0,
+                quantum,
+                heard_delay_s: 2.0 * f64::from(quantum) / 48_000.0,
+                servo: ServoConfig {
+                    target_latency_s: target_ms / 1e3,
+                    ..ServoConfig::follow()
+                },
+                decoder: Decoder::EAC3,
+                delivery: Delivery::Follow {
+                    video_fps: 100.0,
+                    ahead_s: 0.0,
+                    arrival_jitter_s: 0.002,
+                },
+                warmup_s: 30.0,
+                ..Scenario::default()
+            };
+            let mut last_underrun_at = 0.0;
+            let mut underruns = 0;
+            let r = run_with(&sc, |sample, _, servo| {
+                if servo.telemetry().underruns != underruns {
+                    underruns = servo.telemetry().underruns;
+                    last_underrun_at = sample.t;
+                }
+            });
+            describe("long_cycle", &sc, &r);
+            eprintln!("long_cycle {target_ms}: last underrun at {last_underrun_at:.1} s");
+            assert!(
+                last_underrun_at < 10.0,
+                "target {target_ms} ms: still underrunning at {last_underrun_at:.1} s \
+                 ({} underruns)",
+                r.underruns
+            );
+        }
+    }
+
     /// A `follow` source below its floor: the arrivals are more irregular
     /// than a callback period, so the cycles do not bound each other and
     /// the target is learned from the ones that exceed it.

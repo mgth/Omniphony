@@ -61,10 +61,7 @@ struct CycleStamp {
     epoch: u32,
 }
 
-/// The linear PCM the sink takes beside the IEC 958 formats: the renderer's
-/// rate, on the fixed 7.1 input map (L R C LFE Ls Rs Lb Rb).
-pub const PCM_RATE_HZ: u32 = 48_000;
-pub const PCM_CHANNELS: u32 = 8;
+use super::pcm::{PCM_CHANNELS, PCM_RATE_HZ};
 
 /// Byte ring capacity: 4 s of the widest carrier (8 ch × 2 B × 192 kHz).
 const BYTE_RING: usize = 4 * 8 * 2 * 192_000;

@@ -26,9 +26,12 @@
 //! publishes the latency it holds, the latency it measures and the servo's
 //! quantities ([`telemetry`], plan §16).
 //!
-//! Hidden while experimental. Linux only for now (PipeWire output).
+//! Hidden while experimental. The output is PipeWire's on Linux and cpal's
+//! (ASIO or WASAPI, CoreAudio) on Windows and macOS; the input is a pipe (a
+//! FIFO, a named pipe on Windows), a file, or, on Linux, the PipeWire sink.
 
 mod controls;
+#[cfg(target_os = "linux")]
 mod own_sink;
 mod pcm;
 mod reader;
@@ -43,8 +46,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use audio_output::sync_output::{
-    OutputCore, OutputCoreConfig, PipewireSyncOutput, PipewireSyncOutputConfig, SourceTap,
-    SyncSnapshot, SyncTelemetry,
+    OutputCore, OutputCoreConfig, SourceTap, SyncOutput, SyncOutputConfig, SyncSnapshot,
+    SyncTelemetry, negotiate,
 };
 use audio_rt::{Producer, frame_ring};
 use audio_sync::{Accounting, DiscontinuityEvent, DiscontinuityReason, InFlightAudit, Stage};
@@ -280,7 +283,9 @@ struct BlockFormat {
 /// mapping does.
 struct Device {
     producer: Producer,
-    output: PipewireSyncOutput,
+    output: SyncOutput,
+    /// The host the device belongs to, where a platform has several.
+    host: Option<&'static str>,
     format: BlockFormat,
     mapping: OutputChannelMapping,
     /// The rate the device runs at: the stream's, or the one asked for.
@@ -708,6 +713,7 @@ impl HostSession {
                     .with_context(|| format!("opening the input {}", path.display()))?,
                 Source::Pipe { path, drain } => spawn_reader(path.clone(), *drain)
                     .with_context(|| format!("opening the pipe {}", path.display()))?,
+                #[cfg(target_os = "linux")]
                 Source::OwnSink {
                     node_name,
                     description,
@@ -723,6 +729,11 @@ impl HostSession {
                     })
                     .with_context(|| format!("publishing the sink {node_name}"))?
                 }
+                #[cfg(not(target_os = "linux"))]
+                Source::OwnSink { node_name, .. } => anyhow::bail!(
+                    "the sink input ({node_name}) is PipeWire's: on this platform the input \
+                     is a pipe or a file"
+                ),
             };
             self.capture = Some((key, capture));
         }
@@ -1251,7 +1262,7 @@ impl Epoch {
         let playing = device.output.is_streaming();
         let report = match (self.output_report, playing) {
             (OutputReport::Pending | OutputReport::Missing, true) => {
-                controls.opened(settings, device.device_rate);
+                controls.opened(settings, device.device_rate, device.host);
                 OutputReport::Playing
             }
             (OutputReport::Playing, false) => OutputReport::Missing,
@@ -1554,13 +1565,37 @@ fn start_device(
     telemetry: &Arc<SyncTelemetry>,
 ) -> Result<(Device, Option<usize>)> {
     let (config, settings) = (ctx.env.config, ctx.settings);
-    // The device runs at the stream's rate unless another is asked for, in
-    // which case the output core converts (its drift resampler does both).
-    let device_rate = settings.output_rate_hz.unwrap_or(format.rate);
+    // The live option says how the device routes the channels: by the
+    // position each is tagged with, or one to one in order (positionless
+    // names), port N being the layout's speaker N.
+    let mapping = engine.output_channel_mapping();
+    let names = match mapping {
+        OutputChannelMapping::ByName => {
+            Some(engine.output_channel_names()).filter(|names| names.len() == format.channels)
+        }
+        OutputChannelMapping::ByIndex => {
+            Some((0..format.channels).map(|i| format!("AUX{i}")).collect())
+        }
+    };
+    // The device is asked for the stream's rate unless another is asked
+    // for. It runs at what it says: PipeWire at any rate (the graph
+    // converts), a cpal device at one it has. The output core converts from
+    // the stream's rate to that one (its drift resampler does both).
+    let wanted_rate = settings.output_rate_hz.unwrap_or(format.rate);
+    let quantum = (u64::from(config.quantum) * u64::from(wanted_rate) / u64::from(QUANTUM_RATE))
+        .clamp(64, 8192) as u32;
+    let negotiated = negotiate(&SyncOutputConfig {
+        node_name: "omniphony-sync".into(),
+        target: settings.output_target.clone(),
+        channels: format.channels as u32,
+        positions: names.clone(),
+        rate: wanted_rate,
+        quantum,
+    })?;
+    let device_rate = negotiated.rate();
+    let host = negotiated.host_label();
     let capacity = (RING_SECONDS * format.rate as f64) as usize;
     let (producer, consumer) = frame_ring(format.channels, capacity);
-    let quantum = (u64::from(config.quantum) * u64::from(device_rate) / u64::from(QUANTUM_RATE))
-        .clamp(64, 8192) as u32;
     let mut core_config = OutputCoreConfig::new(format.channels, format.rate, device_rate, 8192);
     // The device paces a source with no clock: nothing to measure or hold.
     let paced = kind == EpochKind::Stream && ctx.source.device_paced(settings.source_clock);
@@ -1588,35 +1623,13 @@ fn start_device(
         Arc::clone(tap),
         Arc::clone(telemetry),
     );
-    // The live option says how the device routes the channels: by the
-    // position each is tagged with, or one to one in order (positionless
-    // names), port N being the layout's speaker N.
-    let mapping = engine.output_channel_mapping();
-    let names = match mapping {
-        OutputChannelMapping::ByName => {
-            Some(engine.output_channel_names()).filter(|names| names.len() == format.channels)
-        }
-        OutputChannelMapping::ByIndex => {
-            Some((0..format.channels).map(|i| format!("AUX{i}")).collect())
-        }
-    };
     log::info!(
         "sync host: output {} Hz x {} ({}), device at {device_rate} Hz, quantum {quantum}",
         format.rate,
         format.channels,
         names.as_ref().map_or("default map".into(), |n| n.join(",")),
     );
-    let output = PipewireSyncOutput::start(
-        PipewireSyncOutputConfig {
-            node_name: "omniphony-sync".into(),
-            target: settings.output_target.clone(),
-            channels: format.channels as u32,
-            positions: names,
-            rate: device_rate,
-            quantum,
-        },
-        core,
-    )?;
+    let output = negotiated.start(core)?;
     // What the source keeps ahead of the device: the latency target, as a
     // buffer level (there is no end-to-end latency without a source clock).
     let pace_limit = paced.then(|| (ctx.target_ms / 1e3 * format.rate as f64).round() as usize);
@@ -1624,6 +1637,7 @@ fn start_device(
         Device {
             producer,
             output,
+            host,
             format,
             mapping,
             device_rate,
@@ -2578,8 +2592,8 @@ mod tests {
 
         // The sink's linear PCM: 8 channels of 4-byte floats at 48 kHz.
         let pcm = Transport {
-            rate: own_sink::PCM_RATE_HZ,
-            channels: own_sink::PCM_CHANNELS,
+            rate: pcm::PCM_RATE_HZ,
+            channels: pcm::PCM_CHANNELS,
             format: CarrierFormat::PcmF32,
             bytes_end: 0,
         };

@@ -8,15 +8,15 @@
 //! A full hand-off queue is a fault (the decoder cannot keep up with real
 //! time): the chunk is dropped, counted and logged, never waited on.
 //!
-//! The FIFO is opened read-write and kept open for the life of the reader.
-//! The pipe therefore always has a writer (us), so reads block instead of
-//! returning end-of-file between streams, and the player's `open` for
-//! writing never meets a pipe without a reader — the race that otherwise
-//! kills it with `SIGPIPE`. A stream ends when the pipe has been silent for
-//! [`END_OF_STREAM_S`]; it starts with the next byte.
+//! On Unix the FIFO is opened read-write and kept open for the life of the
+//! reader. The pipe therefore always has a writer (us), so reads block
+//! instead of returning end-of-file between streams, and the player's `open`
+//! for writing never meets a pipe without a reader — the race that otherwise
+//! kills it with `SIGPIPE`. On Windows the reader serves a named pipe
+//! (`\\.\pipe\…`) for one writer after another, on one instance. Either
+//! way a stream ends when the pipe has been silent for [`END_OF_STREAM_S`];
+//! it starts with the next byte.
 
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -87,7 +87,7 @@ const QUEUE_CHUNKS: usize = 1024;
 const CHUNK_BYTES: usize = 64 * 1024;
 /// Silence after which the stream is over (s).
 pub const END_OF_STREAM_S: f64 = 0.5;
-const POLL_MS: i32 = 50;
+const POLL_MS: u32 = 50;
 
 /// Counters the reader publishes.
 #[derive(Default)]
@@ -213,51 +213,55 @@ pub enum ReadKind {
     ToEnd,
 }
 
-/// Spawn the reader on the FIFO at `path` (created if missing).
+/// What the read loop reads from: bytes, with a wait that ends.
+trait ByteSource: Send + 'static {
+    /// Wait up to `timeout_ms` for bytes and read them into `buf`.
+    fn read(&mut self, buf: &mut [u8], timeout_ms: u32) -> ReadOutcome;
+}
+
+enum ReadOutcome {
+    Bytes(usize),
+    /// Nothing within the wait.
+    Idle,
+    /// The end of what there is to read (a file's end).
+    End,
+}
+
+/// Spawn the reader on the pipe at `path`: a FIFO, created if missing, or on
+/// Windows a named pipe, served here.
 pub fn spawn_reader(path: PathBuf, drain_on_open: bool) -> std::io::Result<Capture> {
-    let fd = open_fifo(&path)?;
-    if drain_on_open {
-        let drained = drain(fd);
-        if drained > 0 {
-            log::info!(
-                "sync host: drained {drained} stale bytes from {}",
-                path.display()
-            );
-        }
-    }
-    spawn_read_loop(fd, ReadKind::Fifo, "sync-pipe-reader")
+    let source = platform::open_pipe(&path, drain_on_open)?;
+    spawn_read_loop(source, ReadKind::Fifo, "sync-pipe-reader", true)
 }
 
 /// Spawn the reader on the regular file at `path`, or on standard input for
 /// `-`: one stream, read to its end. Paced from the start: a file has no
 /// clock.
 pub fn spawn_file_reader(path: &Path) -> std::io::Result<Capture> {
-    let fd = if path.as_os_str() == "-" {
-        // A descriptor of our own: the loop closes what it reads.
-        // SAFETY: duplicating standard input.
-        unsafe { libc::dup(libc::STDIN_FILENO) }
-    } else {
-        let c = CString::new(path.as_os_str().as_bytes())?;
-        // SAFETY: valid NUL-terminated path.
-        unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) }
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let capture = spawn_read_loop(fd, ReadKind::ToEnd, "sync-file-reader")?;
+    let (source, stoppable) = platform::open_file(path)?;
+    let capture = spawn_read_loop(source, ReadKind::ToEnd, "sync-file-reader", stoppable)?;
     capture.set_paced(true);
     Ok(capture)
 }
 
-fn spawn_read_loop(fd: i32, kind: ReadKind, name: &str) -> std::io::Result<Capture> {
+/// `join`: whether the capture waits for the thread when it is dropped. A
+/// read that cannot be woken (standard input, where it cannot be polled)
+/// would hold the drop until the next byte: that thread is left to end on
+/// its own.
+fn spawn_read_loop(
+    source: Box<dyn ByteSource>,
+    kind: ReadKind,
+    name: &str,
+    join: bool,
+) -> std::io::Result<Capture> {
     let (tx, rx) = sync_channel(QUEUE_CHUNKS);
     let stats = Arc::new(ReaderStats::default());
     let stop = Arc::new(AtomicBool::new(false));
     let mut capture = Capture::new(rx, Arc::clone(&stats), Arc::clone(&stop));
     let (paced, queued) = (Arc::clone(&capture.paced), Arc::clone(&capture.queued));
-    capture.own(thread::Builder::new().name(name.into()).spawn(move || {
+    let thread = thread::Builder::new().name(name.into()).spawn(move || {
         read_loop(
-            fd,
+            source,
             kind,
             tx,
             ReadShared {
@@ -267,7 +271,10 @@ fn spawn_read_loop(fd: i32, kind: ReadKind, name: &str) -> std::io::Result<Captu
                 queued: &queued,
             },
         )
-    })?);
+    })?;
+    if join {
+        capture.own(thread);
+    }
     Ok(capture)
 }
 
@@ -284,50 +291,168 @@ struct ReadShared<'a> {
 /// writer of a pipe is held back within a chunk or two of what plays.
 const PACED_QUEUE_CHUNKS: usize = 2;
 
-fn open_fifo(path: &Path) -> std::io::Result<i32> {
-    let c = CString::new(path.as_os_str().as_bytes())?;
-    if !path.exists() {
-        // SAFETY: valid NUL-terminated path.
-        if unsafe { libc::mkfifo(c.as_ptr(), 0o666) } != 0 {
+#[cfg(unix)]
+mod platform {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    use super::{ByteSource, ReadOutcome};
+
+    /// A descriptor the loop polls and reads, closed with it.
+    struct FdSource(i32);
+
+    impl ByteSource for FdSource {
+        fn read(&mut self, buf: &mut [u8], timeout_ms: u32) -> ReadOutcome {
+            if !poll_readable(self.0, timeout_ms as i32) {
+                return ReadOutcome::Idle;
+            }
+            // SAFETY: `buf` is valid for its length.
+            let n = unsafe { libc::read(self.0, buf.as_mut_ptr().cast(), buf.len()) };
+            match n {
+                0 => ReadOutcome::End,
+                n if n > 0 => ReadOutcome::Bytes(n as usize),
+                _ => ReadOutcome::Idle,
+            }
+        }
+    }
+
+    impl Drop for FdSource {
+        fn drop(&mut self) {
+            // SAFETY: we own the descriptor.
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+
+    pub fn open_pipe(path: &Path, drain_on_open: bool) -> std::io::Result<Box<dyn ByteSource>> {
+        let c = CString::new(path.as_os_str().as_bytes())?;
+        if !path.exists() {
+            // SAFETY: valid NUL-terminated path.
+            if unsafe { libc::mkfifo(c.as_ptr(), 0o666) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        // SAFETY: valid path; O_RDWR on a FIFO keeps a writer attached so
+        // reads never see end-of-file.
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+        if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
-    }
-    // SAFETY: valid path; O_RDWR on a FIFO is defined on Linux and keeps a
-    // writer attached so reads never see end-of-file.
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(fd)
-}
-
-/// Read whatever is buffered without blocking; returns the bytes discarded.
-fn drain(fd: i32) -> usize {
-    let mut buf = [0u8; 16 * 1024];
-    let mut total = 0;
-    while poll_readable(fd, 0) {
-        // SAFETY: `buf` is valid for its length.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n <= 0 {
-            break;
+        if drain_on_open {
+            let drained = drain(fd);
+            if drained > 0 {
+                log::info!(
+                    "sync host: drained {drained} stale bytes from {}",
+                    path.display()
+                );
+            }
         }
-        total += n as usize;
+        Ok(Box::new(FdSource(fd)))
     }
-    total
+
+    /// The source, and whether a read of it can be waited out (always here:
+    /// it is polled).
+    pub fn open_file(path: &Path) -> std::io::Result<(Box<dyn ByteSource>, bool)> {
+        let fd = if path.as_os_str() == "-" {
+            // A descriptor of our own: the source closes what it reads.
+            // SAFETY: duplicating standard input.
+            unsafe { libc::dup(libc::STDIN_FILENO) }
+        } else {
+            let c = CString::new(path.as_os_str().as_bytes())?;
+            // SAFETY: valid NUL-terminated path.
+            unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) }
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((Box::new(FdSource(fd)), true))
+    }
+
+    /// Read whatever is buffered without blocking; returns the bytes
+    /// discarded.
+    fn drain(fd: i32) -> usize {
+        let mut buf = [0u8; 16 * 1024];
+        let mut total = 0;
+        while poll_readable(fd, 0) {
+            // SAFETY: `buf` is valid for its length.
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            total += n as usize;
+        }
+        total
+    }
+
+    fn poll_readable(fd: i32, timeout_ms: i32) -> bool {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd.
+        let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        r > 0 && pfd.revents & libc::POLLIN != 0
+    }
 }
 
-fn poll_readable(fd: i32, timeout_ms: i32) -> bool {
-    let mut pfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: one valid pollfd.
-    let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-    r > 0 && pfd.revents & libc::POLLIN != 0
+#[cfg(windows)]
+mod platform {
+    use std::io::Read;
+    use std::path::Path;
+
+    use super::{ByteSource, CHUNK_BYTES, ReadOutcome};
+
+    impl ByteSource for sys::input::NamedPipeSource {
+        fn read(&mut self, buf: &mut [u8], timeout_ms: u32) -> ReadOutcome {
+            match sys::input::NamedPipeSource::read(self, buf, timeout_ms) {
+                Some(n) => ReadOutcome::Bytes(n),
+                None => ReadOutcome::Idle,
+            }
+        }
+    }
+
+    /// A file or standard input, read as it comes: the read blocks.
+    struct Blocking(Box<dyn Read + Send>);
+
+    impl ByteSource for Blocking {
+        fn read(&mut self, buf: &mut [u8], _timeout_ms: u32) -> ReadOutcome {
+            match self.0.read(buf) {
+                Ok(0) | Err(_) => ReadOutcome::End,
+                Ok(n) => ReadOutcome::Bytes(n),
+            }
+        }
+    }
+
+    /// A named pipe is created here, with nothing in it yet: there is
+    /// nothing stale to drain.
+    pub fn open_pipe(path: &Path, _drain_on_open: bool) -> std::io::Result<Box<dyn ByteSource>> {
+        let name = path.to_string_lossy();
+        let source = sys::input::NamedPipeSource::create(&name, CHUNK_BYTES)
+            .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
+        Ok(Box::new(source))
+    }
+
+    /// The source, and whether a read of it can be waited out: a file's
+    /// always returns, standard input's only when something is written.
+    pub fn open_file(path: &Path) -> std::io::Result<(Box<dyn ByteSource>, bool)> {
+        if path.as_os_str() == "-" {
+            Ok((Box::new(Blocking(Box::new(std::io::stdin()))), false))
+        } else {
+            let file = std::fs::File::open(path)?;
+            Ok((Box::new(Blocking(Box::new(file))), true))
+        }
+    }
 }
 
-fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadShared<'_>) {
+fn read_loop(
+    mut source: Box<dyn ByteSource>,
+    kind: ReadKind,
+    tx: SyncSender<ReaderMsg>,
+    shared: ReadShared<'_>,
+) {
     let ReadShared {
         stats,
         stop,
@@ -348,31 +473,29 @@ fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadSha
             thread::sleep(Duration::from_millis(2));
             continue;
         }
-        if !poll_readable(fd, POLL_MS) {
-            if kind == ReadKind::Fifo
-                && in_stream
-                && reference_now_s() - last_data >= END_OF_STREAM_S
-            {
-                in_stream = false;
-                if tx.send(ReaderMsg::End).is_err() {
-                    break;
-                }
-            }
-            continue;
-        }
-        // SAFETY: `buf` is valid for its length.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n == 0 && kind == ReadKind::ToEnd {
+        let n = match source.read(&mut buf, POLL_MS) {
+            ReadOutcome::Bytes(n) => n,
             // End of file: the stream is over, and so is this reader. (A
             // file that held nothing was no stream at all.)
-            if in_stream {
-                let _ = tx.send(ReaderMsg::End);
+            ReadOutcome::End if kind == ReadKind::ToEnd => {
+                if in_stream {
+                    let _ = tx.send(ReaderMsg::End);
+                }
+                break;
             }
-            break;
-        }
-        if n <= 0 {
-            continue;
-        }
+            ReadOutcome::Idle | ReadOutcome::End => {
+                if kind == ReadKind::Fifo
+                    && in_stream
+                    && reference_now_s() - last_data >= END_OF_STREAM_S
+                {
+                    in_stream = false;
+                    if tx.send(ReaderMsg::End).is_err() {
+                        break;
+                    }
+                }
+                continue;
+            }
+        };
         let t = reference_now_s();
         last_data = t;
         if !in_stream {
@@ -381,7 +504,6 @@ fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadSha
                 break;
             }
         }
-        let n = n as usize;
         stats.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
         let chunk = ReaderMsg::Chunk {
             t,
@@ -417,10 +539,6 @@ fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadSha
             Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => break,
         }
-    }
-    // SAFETY: we own `fd`.
-    unsafe {
-        libc::close(fd);
     }
 }
 

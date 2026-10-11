@@ -93,8 +93,7 @@ pub struct Controls {
 }
 
 fn output_devices() -> Vec<OutputDeviceOption> {
-    audio_output::pipewire::list_pipewire_output_devices()
-        .unwrap_or_default()
+    audio_output::sync_output::list_output_devices()
         .into_iter()
         .map(|(value, label)| OutputDeviceOption { value, label })
         .collect()
@@ -227,10 +226,11 @@ impl Controls {
         self.host.mark_output_changed();
     }
 
-    /// The output opened with `settings`, at `device_rate` Hz: publish what
-    /// plays.
-    pub fn opened(&self, settings: &OutputSettings, device_rate: u32) {
+    /// The output opened with `settings`, at `device_rate` Hz, on `host`
+    /// where the platform has several: publish what plays.
+    pub fn opened(&self, settings: &OutputSettings, device_rate: u32, host: Option<&'static str>) {
         self.audio.set_audio_state(device_rate, "f32");
+        self.audio.set_effective_output_host(host);
         self.audio
             .set_effective_output_device(settings.output_target.clone());
         self.audio.set_audio_error(None);
@@ -411,10 +411,11 @@ mod tests {
         let state = audio_state(handler.as_ref());
         assert_eq!(state["error"], "dac is not playing");
         assert!(state["outputDeviceEffective"].is_null());
-        controls.opened(&controls.settings(), 44_100);
+        controls.opened(&controls.settings(), 44_100, Some("ASIO"));
         let state = audio_state(handler.as_ref());
         assert!(state["error"].is_null());
         assert_eq!(state["outputDeviceEffective"], "dac");
+        assert_eq!(state["outputHost"], "ASIO");
     }
 
     /// The output goes where a client says: a backend named replaces the

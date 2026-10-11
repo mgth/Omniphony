@@ -177,6 +177,12 @@ saf_vbap = ["renderer/saf_vbap"]
 # Usage: cargo build --features example-backend
 example-backend = ["orender_engine/example-backend"]
 
+# Play the sync host's output through cpal (its ALSA host) on Linux: the
+# output code Windows and macOS use, compiled and runnable where the project
+# is developed. Never in a release.
+# Usage: cargo build --features cpal-check
+cpal-check = ["audio_output/cpal-check"]
+
 # Legacy compatibility alias. Windows ASIO support is compiled by default on Windows.
 asio = []
 
