@@ -1221,15 +1221,16 @@ Each is one pull request, stacked in this order.
 - **6d — `none` and files (4b).** DONE, see §22: files, standard input
   and writers faster than real time, held back by the ring; the `file`
   output backend and offline rendering; the `source_clock` option.
-- **6e — formats.** Stream rates other than 48 kHz, `output_sample_rate`,
-  width changes, `output_channel_mapping`.
+- **6e — formats.** DONE, see §23: the output opened for what is rendered
+  (stream rate, width) and reopened when that changes, `output_sample_rate`,
+  `output_channel_mapping`.
 - **6f — the live sink.** PCM on the `own` sink: DONE ahead of its turn,
   see §21. Left: the `live_input.*` options (node, description, LFE mode) and
   their hot apply.
 - **6g — accounting (4d).** The time-conserving deframer, the per-burst
   decoder audit, discontinuity events, and the listener's position.
 - **6h — runtime switches.** Device and latency: done in §20. The idle
-  feed: done in §21. Left: hot switch of the backend and the rate.
+  feed: done in §21. The rate: done in §23. Left: hot switch of the backend.
 - **6i — Windows and macOS.** The cpal adapter wired in (with the timestamp
   patch, §9), the QPC reference clock, the named-pipe reader (§12). Built
   and cross-checked from the Linux workflow as far as it goes; not run on
@@ -1431,7 +1432,8 @@ its engine's (`HostEngine::rows`):
 |---|---|---|
 | `output_device`, `latency_target` | yes | yes |
 | `loop_bandwidth_hz`, `realign_threshold_ms` (group `sync`) | no | yes |
-| `output_backend`, `output_file`, `output_file_format`, `output_sample_rate` | yes | not yet (6d, 6e) |
+| `output_sample_rate` | yes | yes, since §23 |
+| `output_backend`, `output_file`, `output_file_format` | yes | not yet: a flag of the run (§22), no hot switch (6h) |
 | `enable_adaptive_resampling`, `adaptive_resampling_*` | yes | no |
 | `input_mode`, `live_input_*` | yes | not yet (6f) |
 
@@ -1672,4 +1674,118 @@ so two renders of a file are the same.
 - The CAF speaker description was not compared with the legacy host's.
 - The output's width is fixed for a run: a change of output mode while a
   file is being written (speakers to binaural) drops the blocks of the other
-  width instead of starting another capture (6e).
+  width instead of starting another capture (done in §23).
+
+## 23. Phase 6e — formats (2026-10-11)
+
+The engine already rendered at the stream's rate; the host assumed 48 kHz
+and the layout's width everywhere, and tagged its channels by position
+whatever `output_channel_mapping` said.
+
+### The output is opened by what is rendered
+
+An epoch no longer opens its device when the stream starts. The first
+rendered block says what to open it for (`BlockFormat`: the block's rate and
+width, which `RenderedAudio` now carries), and a block in another format
+opens it again:
+
+- **Another width**: the output switched between speakers and headphones
+  while a stream plays. The device is reopened on 2 or N channels.
+- **Another rate** with no new stream announced (rare: a new stream is a new
+  epoch anyway).
+- **Another channel mapping** (`output_channel_mapping` is a live option,
+  read at every turn of the loop).
+
+A reopening keeps the epoch: the parser, the decoder and the capture go on.
+The new device starts with an empty ring, a new servo and a new clock tap,
+and the source's count is moved by what went to the old ring, so the frame
+the new ring starts on is the stream's frame that follows, and the decoder's
+hold stays inside the measured latency. The servo's counts on the closed
+device are added to the host's totals. Measured gap at the output: 84 to
+96 ms per reopening.
+
+The quantum is asked for as a duration (1024 frames at 48 kHz: 940 at
+44.1 kHz, 2048 at 96 kHz). The idle feed renders at the rate the engine was
+last run at.
+
+### Rates
+
+- **The device is opened at the stream's rate**; PipeWire converts when the
+  device runs at another. `output_sample_rate` (now one of this host's rows)
+  opens it at a rate of its own instead, the output core's resampler doing
+  both the conversion and the drift correction. A change of it reopens the
+  output like any other output setting. It does not apply to a file, which
+  is written at the stream's rate.
+- **The transport is counted in the stream's frames** by what the IEC 61937
+  framing fixes, not by the rate the player declares for the carrier (mpv
+  declares 192 kHz for every E-AC-3 and TrueHD stream): one carrier frame
+  per sample for AC-3 and the DTS core, four per sample for E-AC-3, a MAT
+  frame for 1/200 s of the top rate of the content's family; DTS-HD and
+  linear PCM by their duration. TrueHD and DTS-HD need the stream's rate,
+  so their clock is published from the first rendered block.
+- **The `own` sink takes AC-3 and DTS carriers at 44.1 and 32 kHz.** It
+  stated 48 kHz only, as the legacy sink does, and a player passing a
+  44.1 kHz stream through found "no target node available".
+
+### Channel mapping
+
+`by_index` (the default) names the channels `AUX0…`, `by_name` by the
+layout's speakers, as the legacy host does.
+
+**Observed, both engines, PipeWire 1.6.9:** neither names the ports. The
+stream states its positions as the `audio.position` property and not in its
+format, and its ports come out as `output_1…N` either way (`FL`/`FR` for two
+channels), linked to the sink in order. `by_name` is therefore `by_index` on
+PipeWire today. Stating the positions in the format would make it real, and
+would also make PipeWire remix a stream whose layout is not the sink's: a
+change of behaviour to decide, not made here.
+
+### The `file` output
+
+The writer is opened by the first block too, at its rate and width. A block
+in another format starts the file over, with a warning, as the legacy host
+does (the samples are written as they come: they cannot sit under a header
+that describes others). A file that cannot be opened or written now ends
+the run with the error; it was logged and the run went on.
+
+### Fixed on the way: the device's clock was read in the graph's frames
+
+`pw_time.ticks` counts in the graph's rate. The adapter read it as the
+device's position in the stream's frames, which holds only when the two
+rates are the same, so every run so far (48 kHz streams on a 48 kHz graph)
+was right and any other was not: a 44.1 kHz stream saw a device 8.8 % fast,
+a 48 kHz stream on a 96 kHz device rate one twice too slow, the feed-forward
+and the correction both hit their limits and the latency drifted by 1.5 ms
+per second until it was realigned. The position is now scaled to the
+stream's frames (and is exactly the ticks when the rates are equal).
+
+### Verified
+
+- Unit tests: the carrier count per data type and rate; a reopened output
+  keeps the stream's count; a file starts over on another format; the
+  device position in the stream's frames; the codec format pod at one rate
+  or several.
+- Offline, a 44.1 kHz AC-3 file to CAF: the same bytes as the legacy host
+  (12 channels, 44.1 kHz in the header).
+- Live, isolated (private sinks, private config, OSC on a free port), the
+  output recorded at the sink's monitor, a 1 kHz tone at 44.1 kHz:
+
+| Run | Result |
+|---|---|
+| The file to the device (`none`) | 8.5 s for 8 s of audio; 1000 Hz at the output |
+| A timed pipe (`follow`), target 180 ms | 180.00 ±0.05 ms from 8 s on (the first opening starts 0.8 ms short and converges), no realign, no underrun |
+| …output switched to binaural and back | Reopened on 2 then 12 channels, 88 and 96 ms of silence, latency within ±0.05 ms at the next reading (one every 2 s) |
+| …`output_channel_mapping by_name` | Reopened, 84 ms |
+| …`output_sample_rate 96000` | Device at 96 kHz; 180.00 ±0.03 ms |
+| mpv AC-3 passthrough into the `own` sink, 44.1 kHz then 48 kHz | Group forced to 44.1 kHz then 48 kHz, output at each rate; 150.0 ±0.2 ms from 6 s on (0.75 ms short at first), then 150.000 ms |
+
+### Not done
+
+- E-AC-3, TrueHD and DTS-HD at other rates than 48 kHz were not played: no
+  such material here. Their count is unit-tested only.
+- A 44.1 kHz-family E-AC-3 or TrueHD stream from mpv is written on a carrier
+  declared at 192 kHz, so the player paces it 8.8 % fast: nothing the
+  renderer can hold a latency against. Not tried.
+- The rate the device was opened at is not in the audio state: the Studio
+  shows the rate asked for, as it does on the legacy engine.
+- A 32 kHz stream was not played.

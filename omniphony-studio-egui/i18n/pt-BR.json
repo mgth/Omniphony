@@ -594,6 +594,7 @@
   "help.audio.outputFileFormat": "Codificação do backend de arquivo: float de 32 bits intercalado bruto (compatível com ffmpeg -f f32le), ou um contêiner CAF em streaming.",
   "help.audio.namedPipe": "Desligado: escreve em stdout (o pipe para o processo que o iniciou). Ligado: escreve no pipe nomeado (FIFO) ou caminho de arquivo informado abaixo.",
   "help.audio.sampleRate": "Taxa de amostragem de saída em Hz. 0 segue a taxa atual do dispositivo.",
+  "help.audio.sampleRateSync": "Taxa em que a saída é aberta, em Hz. 0 segue a taxa de cada fluxo; o sistema de áudio a converte se o dispositivo estiver em outra.",
   "help.audio.targetLatency": "Latência de buffer alvo de ponta a ponta, em ms. O controlador adaptativo conduz o nível do ring em direção a este valor.",
   "help.audio.targetLatencySync": "Latência de ponta a ponta mantida pelo renderizador, em ms: da chegada do áudio até sua saída do dispositivo. Quando um fluxo precisa de mais, o renderizador mantém o necessário e indica isso aqui.",
   "help.sync.loopBandwidth": "Rapidez com que a malha de latência corrige um erro, em Hz. 0 deixa a fonte decidir: 0,02 Hz para a entrada PipeWire, 0,005 Hz para um pipe. Um valor maior corrige mais rápido e deixa passar mais do jitter de tempo da fonte para a afinação.",

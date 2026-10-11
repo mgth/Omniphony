@@ -44,13 +44,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use audio_output::sync_output::{
     OutputCore, OutputCoreConfig, PipewireSyncOutput, PipewireSyncOutputConfig, SourceTap,
-    SyncTelemetry,
+    SyncSnapshot, SyncTelemetry,
 };
 use audio_rt::{Producer, frame_ring};
 use bridge_api::RInputTransport;
 use clap::Args;
 use orender_engine::engine::{Engine, RenderedAudio};
 use orender_engine::{OscOverrides, OscSettings};
+use renderer::live_params::OutputChannelMapping;
 use spdif::SpdifParser;
 
 use crate::cli::decode::idle_feed::{IdleFeedInputs, IdleFeeder};
@@ -165,10 +166,14 @@ pub enum SourceKind {
     Own,
 }
 
-/// Rate the engine renders at. Slice 4a assumes a 48 kHz family source.
-const RENDER_RATE: u32 = 48_000;
+/// The rate the engine is built at: what it renders before a stream sets its
+/// own (the render follows the stream's rate, and so does the output).
+const ENGINE_RATE: u32 = 48_000;
 /// Ring capacity: comfortably above any latency target.
 const RING_SECONDS: f64 = 4.0;
+/// The device's quantum is asked for as a duration: this many frames at
+/// this rate, whatever the device's own rate.
+const QUANTUM_RATE: u32 = 48_000;
 
 /// Constant decoder hold (frames) by IEC 61937 data type (spike S4 §2).
 /// E-AC-3 with objects holds nothing but cannot be told apart at this level;
@@ -182,14 +187,42 @@ fn decoder_hold_frames(data_type: u8) -> u64 {
 }
 
 /// IEC 61937 carrier (frame rate, channels) a player writing a pipe uses for
-/// a data type, as mpv's spdif wrapper sets it up. DTS-HD (17) is left out:
-/// HRA rides 2 channels and MA 8, which the burst alone does not tell.
+/// a data type, as mpv's spdif wrapper sets it up. The rate is the nominal
+/// one, for the log: the count goes by [`content_per_carrier_frame`]. DTS-HD
+/// (17) is left out: HRA rides 2 channels and MA 8, which the burst alone
+/// does not tell.
 fn pipe_carrier(data_type: u8) -> Option<(u32, u32)> {
     match data_type {
         1 | 11..=13 => Some((48_000, 2)), // AC-3, DTS core
         21 => Some((192_000, 2)),         // E-AC-3
         22 => Some((192_000, 8)),         // TrueHD/MAT
         _ => None,
+    }
+}
+
+/// Source frames one frame of a carrier stands for, for a stream rendered at
+/// `stream_rate`; `None` while that rate is needed and not known yet (no
+/// block rendered).
+///
+/// The IEC 61937 framing fixes it for the core codecs, whatever rate the
+/// player declares for the carrier (mpv declares 192 kHz for every E-AC-3
+/// and TrueHD stream): an AC-3 or DTS burst spans as many carrier frames as
+/// it holds samples, an E-AC-3 one four times as many. A MAT frame holds
+/// 1/200 s of the top rate of the content's family. Anything else (DTS-HD,
+/// linear PCM) lasts on its carrier what it lasts played.
+fn content_per_carrier_frame(
+    tr: Transport,
+    data_type: Option<u8>,
+    stream_rate: Option<u32>,
+) -> Option<f64> {
+    match (tr.format, data_type) {
+        (CarrierFormat::Iec958, Some(1 | 11..=13)) => Some(1.0),
+        (CarrierFormat::Iec958, Some(21)) => Some(0.25),
+        (CarrierFormat::Iec958, Some(22)) => stream_rate.map(|rate| {
+            let family_top = if rate % 11_025 == 0 { 176_400 } else { 192_000 };
+            f64::from(rate) / f64::from(family_top)
+        }),
+        _ => stream_rate.map(|rate| f64::from(rate) / f64::from(tr.rate.max(1))),
     }
 }
 
@@ -217,26 +250,121 @@ enum EpochKind {
     Idle,
 }
 
-/// The device side of an epoch.
+/// What a rendered block is made of, and so what an output is opened for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockFormat {
+    /// The stream's rate, which the render follows (Hz).
+    rate: u32,
+    /// The output's width: the layout's speakers, or the binaural pair.
+    channels: usize,
+}
+
+/// The device side of an epoch: opened for the format of the first block
+/// rendered, and again when that format changes (another stream rate, the
+/// output switched between speakers and headphones) or when the channel
+/// mapping does.
 struct Device {
     producer: Producer,
     output: PipewireSyncOutput,
+    format: BlockFormat,
+    mapping: OutputChannelMapping,
+    /// The rate the device runs at: the stream's, or the one asked for.
+    device_rate: u32,
 }
 
-/// The file the run writes. One writer for the run, shared by its epochs: a
-/// capture holds every stream of the run, and a regular file opened again
-/// would start over.
-type FileOut = Rc<RefCell<FileAudioWriter>>;
+/// The file the run writes. One for the run, shared by its epochs: a capture
+/// holds every stream of the run, and a regular file opened again would
+/// start over.
+type FileOut = Rc<RefCell<FileState>>;
+
+/// See [`FileOut`]. The writer is opened for the first block's format. A
+/// block in another format (a stream at another rate, another output width)
+/// cannot continue what is there: the samples are written as they come, so
+/// they would sit under a header that describes the ones before them. That
+/// block starts the file over, as the legacy host does.
+struct FileState {
+    destination: String,
+    container: FileSinkFormat,
+    open: Option<(FileAudioWriter, BlockFormat)>,
+}
+
+impl FileState {
+    /// Write a block. `speakers` gives the speakers' positions (azimuth,
+    /// elevation, distance) when the render is one of a speaker array.
+    fn write(
+        &mut self,
+        format: BlockFormat,
+        samples: &[f32],
+        speakers: impl FnOnce() -> Option<Vec<[f32; 3]>>,
+    ) -> Result<()> {
+        if self.open.as_ref().is_none_or(|(_, open)| *open != format) {
+            if let Some((mut writer, was)) = self.open.take() {
+                log::warn!(
+                    "sync host: {} Hz x {} cannot continue the {} Hz x {} capture in '{}': \
+                     starting the file over",
+                    format.rate,
+                    format.channels,
+                    was.rate,
+                    was.channels,
+                    self.destination
+                );
+                let _ = writer.flush();
+            }
+            // A CAF capture of a speaker-array render says where its
+            // speakers are.
+            let speakers = speakers()
+                .filter(|positions| positions.len() == format.channels)
+                .map(|positions| {
+                    positions
+                        .into_iter()
+                        .map(|[azimuth, elevation, distance]| {
+                            CafChannelDesc::spherical(azimuth, elevation, distance)
+                        })
+                        .collect()
+                });
+            let writer = FileAudioWriter::new(
+                &self.destination,
+                self.container,
+                format.rate,
+                format.channels as u32,
+                speakers,
+            )
+            .with_context(|| {
+                format!(
+                    "opening the audio output destination '{}'",
+                    self.destination
+                )
+            })?;
+            self.open = Some((writer, format));
+        }
+        let (writer, _) = self.open.as_mut().context("the writer just opened")?;
+        writer
+            .write_samples(samples)
+            .with_context(|| format!("writing '{}'", self.destination))
+    }
+
+    fn flush(&mut self) {
+        if let Some((writer, _)) = self.open.as_mut()
+            && let Err(e) = writer.flush()
+        {
+            log::error!("sync host: flushing the output file: {e}");
+        }
+    }
+}
 
 /// One stream's playback: ring, clock tap and output stream.
 struct Epoch {
     kind: EpochKind,
-    /// The device's ring and stream; `None` when the output is a file.
+    /// The device's ring and stream, once a block has said what to open it
+    /// for; always `None` when the output is a file.
     device: Option<Device>,
+    /// The device could not be opened: not tried again for this epoch.
+    device_failed: bool,
     /// The file the run writes, when the output is one.
     file: Option<FileOut>,
-    /// Channels of the output: what a rendered block must have.
-    channels: usize,
+    /// The stream's rate, once a block has been rendered: what its frames
+    /// are counted at on the transport.
+    stream_rate: Option<u32>,
     tap: Arc<SourceTap>,
     telemetry: Arc<SyncTelemetry>,
     /// The device paces the source: rendered blocks wait in `pending` until
@@ -262,21 +390,29 @@ struct Epoch {
     /// The capture's byte count where this epoch's first chunk started: 0
     /// for a stream the epoch saw open, more for one picked up on the way.
     transport_origin: Option<u64>,
-    /// `follow` source on a pipe: its carrier, once the first burst named
-    /// the data type, and the bytes pushed into the parser since its reset.
+    /// `follow` source on a pipe: the carrier (frame rate, channels) its
+    /// bytes are counted on, set from the data type of its bursts. `None`
+    /// counts decoded frames instead.
     pipe_carrier: Option<(u32, u32)>,
-    /// Whether a burst has named the pipe's carrier (or said it is unknown).
     pipe_carrier_known: bool,
     /// IEC 61937 data type of the last burst: a change is a new stream.
     data_type: Option<u8>,
     parser_bytes: u64,
     started: Instant,
+    /// When the device was last opened: how long it has had to start.
+    device_opened: Instant,
+    /// The servo's last state on each device this epoch closed on the way
+    /// (the output reopened for another format): the host adds their counts
+    /// to its totals.
+    closed: Vec<SyncSnapshot>,
+    /// The output file could not be written: the run ends on it.
+    fatal: Option<anyhow::Error>,
     /// What the clients were last told of this epoch's output.
     output_report: OutputReport,
     /// Set at end of stream: the epoch is dropped once what it queued has
     /// played. The engine thread never waits for it.
     ending_at: Option<Instant>,
-    channel_mismatch_logged: bool,
+    write_error_logged: bool,
     /// A PCM chunk on another channel count than the fixed input map's was
     /// refused, and said so.
     pcm_shape_logged: bool,
@@ -544,14 +680,14 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             config.speaker_layout.as_deref(),
             &config.bridge_paths,
             None,
-            RENDER_RATE,
+            ENGINE_RATE,
         ),
         None => Engine::from_paths(
             config.config_path.as_deref(),
             config.speaker_layout.as_deref(),
             &config.bridge_paths,
             None,
-            RENDER_RATE,
+            ENGINE_RATE,
         ),
     }
     .context("building the render engine")?;
@@ -561,17 +697,10 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     if config.offline {
         engine.set_synchronous_stage_builds(true);
     }
-    let channels = engine.channel_count() as usize;
-    let positions: Vec<String> = engine
-        .channel_layout()
-        .into_iter()
-        .map(|l| bridge_api::labels::canonical_name(l).to_string())
-        .collect();
     let controls = Controls::new(config, engine.renderer_control());
     let mut settings = controls.settings();
     log::info!(
-        "sync host: {channels} channels ({}), target {} ms, output {}",
-        positions.join(","),
+        "sync host: target {} ms, output {}",
         settings.target_ms,
         settings
             .output_target
@@ -586,9 +715,6 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             .context("starting the OSC server")?;
     }
     let mut telemetry = HostTelemetry::new(settings.target_ms);
-    // An output that failed to open is not retried on every chunk: only
-    // when a stream starts or the settings change.
-    let mut output_failed = false;
     let mut idle_feeder = IdleFeeder::default();
     // The capture is done (a file read to its end): nothing more will come.
     let mut capture_gone = false;
@@ -601,12 +727,14 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         OutputKind::File {
             destination,
             format,
-        } => Some(open_file_output(destination, *format, channels, &engine)?),
+        } => Some(Rc::new(RefCell::new(FileState {
+            destination: destination.clone(),
+            container: *format,
+            open: None,
+        }))),
     };
     let env = EpochEnv {
         config,
-        channels,
-        positions: &positions,
         controls: &controls,
         file: file_out.as_ref(),
     };
@@ -626,8 +754,8 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             sys::shutdown::take_standby_request();
             // The audio output goes with the port: the player that asked for
             // it plays through its own.
-            if let Some(ep) = epoch.take() {
-                telemetry.close_epoch(&ep.telemetry.snapshot());
+            if let Some(mut ep) = epoch.take() {
+                close_epoch(&mut telemetry, &mut ep);
             }
             stand_by(&mut engine, capture);
             continue;
@@ -648,16 +776,22 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 controls.held_target(None);
             }
             settings = wanted;
-            output_failed = false;
-            if let Some(ep) = epoch.take() {
-                telemetry.close_epoch(&ep.telemetry.snapshot());
+            if let Some(mut ep) = epoch.take() {
+                close_epoch(&mut telemetry, &mut ep);
             }
         }
+        // What a block needs to open the output it is for.
+        let ctx = PlayCtx {
+            env: &env,
+            settings: &settings,
+            target_ms: telemetry.held_target_ms(),
+        };
         // The setpoint the player syncs to: the target, or what the servo
         // had to raise it to. (A store of the same value changes nothing.)
         capture.advertise_latency_ms(telemetry.held_target_ms());
         capture.set_paced(config.source.device_paced(settings.source_clock));
         if let Some(ep) = epoch.as_mut() {
+            ep.follow_mapping(engine.output_channel_mapping());
             ep.pump_pending(&mut engine);
             ep.finish_when_played(telemetry.held_target_ms());
         }
@@ -665,14 +799,12 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             .as_ref()
             .and_then(|ep| ep.ending_at)
             .is_some_and(|at| Instant::now() >= at)
-            && let Some(ep) = epoch.take()
+            && let Some(mut ep) = epoch.take()
         {
-            if let Some(file) = &ep.file
-                && let Err(e) = file.borrow_mut().flush()
-            {
-                log::error!("sync host: flushing the output file: {e}");
+            if let Some(file) = &ep.file {
+                file.borrow_mut().flush();
             }
-            telemetry.close_epoch(&ep.telemetry.snapshot());
+            close_epoch(&mut telemetry, &mut ep);
             log::info!(
                 "sync host: {} after {:.1} s; {}",
                 match ep.kind {
@@ -710,18 +842,12 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         match msg {
             Some(ReaderMsg::Start) => {
                 // A new stream replaces whatever was still playing out.
-                if let Some(ep) = epoch.take() {
-                    telemetry.close_epoch(&ep.telemetry.snapshot());
+                if let Some(mut ep) = epoch.take() {
+                    close_epoch(&mut telemetry, &mut ep);
                 }
                 engine.reset();
                 stream_ended = false;
-                epoch = open_epoch(
-                    EpochKind::Stream,
-                    &env,
-                    &settings,
-                    telemetry.held_target_ms(),
-                );
-                output_failed = epoch.is_none();
+                epoch = Some(open_epoch(EpochKind::Stream, &env));
                 log::info!("sync host: stream opened, new epoch");
             }
             Some(ReaderMsg::Chunk {
@@ -733,25 +859,19 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 // run took the capture over (a restart from the config, the
                 // end of a standby). It is picked up where it is.
                 // (Or the idle feed was playing: the stream takes over.)
-                if epoch.as_ref().is_none_or(|ep| ep.kind == EpochKind::Idle) && !output_failed {
-                    if let Some(idle) = epoch.take() {
-                        telemetry.close_epoch(&idle.telemetry.snapshot());
+                if epoch.as_ref().is_none_or(|ep| ep.kind == EpochKind::Idle) {
+                    if let Some(mut idle) = epoch.take() {
+                        close_epoch(&mut telemetry, &mut idle);
                     }
                     engine.reset();
-                    epoch = open_epoch(
-                        EpochKind::Stream,
-                        &env,
-                        &settings,
-                        telemetry.held_target_ms(),
-                    );
-                    output_failed = epoch.is_none();
+                    epoch = Some(open_epoch(EpochKind::Stream, &env));
                     log::info!("sync host: stream already running, new epoch");
                 }
                 idle_feeder.note_real_frame(Instant::now());
                 if let Some(ep) = epoch.as_mut() {
                     ep.last_transport =
                         transport_in_epoch(&mut ep.transport_origin, transport, bytes.len());
-                    feed_chunk(&mut engine, ep, t, &bytes);
+                    feed_chunk(&mut engine, ep, &ctx, t, &bytes);
                 }
             }
             Some(ReaderMsg::End) => {
@@ -761,7 +881,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                     .as_mut()
                     .filter(|ep| ep.kind == EpochKind::Stream && !ep.finishing)
                 {
-                    finish_stream(&mut engine, ep, config.quantum);
+                    finish_stream(&mut engine, ep, &ctx);
                 }
             }
             None => {}
@@ -776,19 +896,13 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             let t = reference_now_s();
             match idle_feeder.poll(Instant::now(), &idle_feed_inputs(&engine)) {
                 Some(chunk) => {
-                    if epoch.is_none() && !output_failed {
+                    if epoch.is_none() {
                         engine.reset();
-                        epoch = open_epoch(
-                            EpochKind::Idle,
-                            &env,
-                            &settings,
-                            telemetry.held_target_ms(),
-                        );
-                        output_failed = epoch.is_none();
+                        epoch = Some(open_epoch(EpochKind::Idle, &env));
                         log::info!("sync host: test armed with nothing playing, idle epoch");
                     }
                     if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
-                        feed_silence(&mut engine, ep, t, chunk.sample_count);
+                        feed_silence(&mut engine, ep, &ctx, t, chunk.sample_count);
                     }
                 }
                 None if !idle_feeder.is_feeding() => {
@@ -805,6 +919,16 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         }
         if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
             ep.report_output(&controls, &settings);
+        }
+        if let Some(ep) = epoch.as_mut() {
+            // A file that cannot be written ends the run: there is nothing
+            // else it was asked for.
+            if let Some(e) = ep.fatal.take() {
+                return Err(e);
+            }
+            for closed in ep.closed.drain(..) {
+                telemetry.close_epoch(&closed);
+            }
         }
         telemetry.publish(
             &mut engine,
@@ -825,10 +949,8 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         }
     };
     drop(epoch);
-    if let Some(file) = &file_out
-        && let Err(e) = file.borrow_mut().flush()
-    {
-        log::error!("sync host: flushing the output file: {e}");
+    if let Some(file) = &file_out {
+        file.borrow_mut().flush();
     }
     if exit == HostExit::Shutdown {
         sys::notify_stopping();
@@ -837,6 +959,15 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         exit,
         bridge_paths: engine.bridge_paths(),
     })
+}
+
+/// An epoch is over: its counts, and those of the devices it closed on the
+/// way, stay in the totals.
+fn close_epoch(telemetry: &mut HostTelemetry, ep: &mut Epoch) {
+    for closed in ep.closed.drain(..) {
+        telemetry.close_epoch(&closed);
+    }
+    telemetry.close_epoch(&ep.telemetry.snapshot());
 }
 
 /// Standby: a player on this machine asked for the OSC port (an
@@ -881,11 +1012,11 @@ impl Epoch {
         let playing = device.output.is_streaming();
         let report = match (self.output_report, playing) {
             (OutputReport::Pending | OutputReport::Missing, true) => {
-                controls.opened(settings);
+                controls.opened(settings, device.device_rate);
                 OutputReport::Playing
             }
             (OutputReport::Playing, false) => OutputReport::Missing,
-            (OutputReport::Pending, false) if self.started.elapsed() >= OUTPUT_WAIT => {
+            (OutputReport::Pending, false) if self.device_opened.elapsed() >= OUTPUT_WAIT => {
                 OutputReport::Missing
             }
             (report, _) => report,
@@ -900,145 +1031,18 @@ impl Epoch {
         }
         self.output_report = report;
     }
-}
 
-/// What every epoch of a run is opened with.
-struct EpochEnv<'a> {
-    config: &'a HostConfig,
-    /// The output's channels and their positions (the renderer's layout).
-    channels: usize,
-    positions: &'a [String],
-    controls: &'a Controls,
-    /// The file the run writes, when the output is one.
-    file: Option<&'a FileOut>,
-}
-
-/// [`start_epoch`], with the outcome published to the clients: what plays,
-/// or why nothing does. An output that cannot be opened (a device that is
-/// gone) leaves the host running without one, for the client to pick
-/// another, instead of ending the renderer.
-fn open_epoch(
-    kind: EpochKind,
-    env: &EpochEnv<'_>,
-    settings: &OutputSettings,
-    target_ms: f64,
-) -> Option<Epoch> {
-    let controls = env.controls;
-    match start_epoch(kind, env, settings, target_ms) {
-        // What plays is published once it does ([`Epoch::report_output`]).
-        Ok(epoch) => Some(epoch),
-        Err(e) => {
-            log::error!("sync host: opening the output: {e:#}");
-            controls.failed(format!("{e:#}"));
-            None
-        }
-    }
-}
-
-/// Open a stream's playback. `target_ms` is the latency it starts at: the
-/// configured target, or what an earlier stream showed the pipeline needs.
-fn start_epoch(
-    kind: EpochKind,
-    env: &EpochEnv<'_>,
-    settings: &OutputSettings,
-    target_ms: f64,
-) -> Result<Epoch> {
-    let EpochEnv {
-        config,
-        channels,
-        positions,
-        file,
-        ..
-    } = *env;
-    // The idle feed plays on the device, whatever the run writes.
-    let file = file.filter(|_| kind == EpochKind::Stream);
-    let tap = Arc::new(SourceTap::new());
-    let telemetry = Arc::new(SyncTelemetry::new());
-    if let Some(file) = file {
-        // No ring, no clock: the samples are written as they are rendered.
-        return Ok(Epoch::new(
-            kind,
-            None,
-            Some(Rc::clone(file)),
-            channels,
-            tap,
-            telemetry,
-            None,
-        ));
-    }
-    let capacity = (RING_SECONDS * RENDER_RATE as f64) as usize;
-    let (producer, consumer) = frame_ring(channels, capacity);
-    let mut core_config = OutputCoreConfig::new(channels, RENDER_RATE, RENDER_RATE, 8192);
-    // The device paces a source with no clock: nothing to measure or hold.
-    let paced = kind == EpochKind::Stream && config.source.device_paced(settings.source_clock);
-    if paced {
-        core_config.servo.pacing = audio_sync::Pacing::Device;
-    }
-    // The idle feed is the host's own clock, read exactly: nothing to follow.
-    if kind == EpochKind::Stream && config.source.follows_the_writer(settings.source_clock) {
-        let follow = audio_sync::ServoConfig::follow();
-        core_config.servo = audio_sync::ServoConfig {
-            source_rate_hz: core_config.servo.source_rate_hz,
-            output_rate_hz: core_config.servo.output_rate_hz,
-            resampler_lookahead_frames: core_config.servo.resampler_lookahead_frames,
-            ..follow
-        };
-    }
-    if let Some(hz) = settings.loop_bandwidth_hz {
-        core_config.servo.loop_bandwidth_hz = hz;
-    }
-    core_config.servo.realign_threshold_s = settings.realign_threshold_ms / 1e3;
-    core_config.servo.target_latency_s = target_ms / 1e3;
-    let core = OutputCore::new(
-        core_config,
-        consumer,
-        Arc::clone(&tap),
-        Arc::clone(&telemetry),
-    );
-    let output = PipewireSyncOutput::start(
-        PipewireSyncOutputConfig {
-            node_name: "omniphony-sync".into(),
-            target: settings.output_target.clone(),
-            channels: channels as u32,
-            positions: Some(positions.to_vec()),
-            rate: RENDER_RATE,
-            quantum: config.quantum,
-        },
-        core,
-    )?;
-    // What the source keeps ahead of the device: the latency target, as a
-    // buffer level (there is no end-to-end latency without a source clock).
-    let pace_limit = paced.then(|| (target_ms / 1e3 * RENDER_RATE as f64).round() as usize);
-    Ok(Epoch::new(
-        kind,
-        Some(Device { producer, output }),
-        None,
-        channels,
-        tap,
-        telemetry,
-        pace_limit,
-    ))
-}
-
-impl Epoch {
-    fn new(
-        kind: EpochKind,
-        device: Option<Device>,
-        file: Option<FileOut>,
-        channels: usize,
-        tap: Arc<SourceTap>,
-        telemetry: Arc<SyncTelemetry>,
-        pace_limit_frames: Option<usize>,
-    ) -> Self {
+    fn new(kind: EpochKind, file: Option<FileOut>) -> Self {
         Self {
             kind,
-            device,
+            device: None,
+            device_failed: false,
             file,
-            channels,
-            tap,
-            telemetry,
-            paced: pace_limit_frames.is_some(),
-            pace_limit_frames: pace_limit_frames.unwrap_or(0),
+            stream_rate: None,
+            tap: Arc::new(SourceTap::new()),
+            telemetry: Arc::new(SyncTelemetry::new()),
+            paced: false,
+            pace_limit_frames: 0,
             pending: VecDeque::new(),
             finishing: false,
             hold: 0,
@@ -1054,12 +1058,90 @@ impl Epoch {
             data_type: None,
             parser_bytes: 0,
             started: Instant::now(),
+            device_opened: Instant::now(),
+            closed: Vec::new(),
+            fatal: None,
             output_report: OutputReport::Pending,
             ending_at: None,
-            channel_mismatch_logged: false,
+            write_error_logged: false,
             pcm_shape_logged: false,
             trace: std::env::var_os("ORENDER_SYNC_TRACE").is_some(),
             bytes_in: 0,
+        }
+    }
+
+    /// Open the device for `format`, in place of the one open for another
+    /// format if there is one.
+    fn open_device(&mut self, engine: &Engine, ctx: &PlayCtx<'_>, format: BlockFormat) {
+        if let Some(old) = &self.device {
+            log::info!(
+                "sync host: output format {} Hz x {} -> {} Hz x {}, output reopened",
+                old.format.rate,
+                old.format.channels,
+                format.rate,
+                format.channels
+            );
+        }
+        self.close_device();
+        if self.stream_rate.is_some_and(|rate| rate != format.rate) {
+            // Another rate with no new stream announced: what was counted
+            // was in the old rate's frames. The count starts over at the
+            // next burst.
+            self.transport_base = None;
+        }
+        self.stream_rate = Some(format.rate);
+        self.device_opened = Instant::now();
+        match start_device(self.kind, engine, ctx, format, &self.tap, &self.telemetry) {
+            Ok((device, pace_limit)) => {
+                self.paced = pace_limit.is_some();
+                self.pace_limit_frames = pace_limit.unwrap_or(0);
+                self.device = Some(device);
+            }
+            Err(e) => {
+                log::error!("sync host: opening the output: {e:#}");
+                ctx.env.controls.failed(format!("{e:#}"));
+                self.device_failed = true;
+            }
+        }
+    }
+
+    /// Close the device, if one is open: the next block opens another.
+    fn close_device(&mut self) {
+        if self.device.take().is_some() {
+            self.closed.push(self.telemetry.snapshot());
+            self.restart_count();
+        }
+    }
+
+    /// A device was closed under a stream that goes on: the next one starts
+    /// with an empty ring, a new servo and a new clock tap, and counts its
+    /// frames from 0. The source's count is moved by what went to the old
+    /// ring, so the next ring's first frame is still the stream's frame that
+    /// follows them, and the decoder's hold stays inside the measurement.
+    fn restart_count(&mut self) {
+        // What waited for the old ring was made for it.
+        let waiting: u64 = self
+            .pending
+            .drain(..)
+            .map(|(block, offset)| (block.n_frames - offset) as u64)
+            .sum();
+        self.dropped_frames += waiting;
+        let gone = (self.pushed_frames + waiting) as f64;
+        self.transport_base = self
+            .transport_base
+            .map(|(bytes, frames)| (bytes, frames - gone));
+        self.pushed_frames = 0;
+        self.tap = Arc::new(SourceTap::new());
+        self.telemetry = Arc::new(SyncTelemetry::new());
+        self.output_report = OutputReport::Pending;
+    }
+
+    /// The channel mapping is a live option: a device opened under another
+    /// one is closed, and the next block opens it again.
+    fn follow_mapping(&mut self, mapping: OutputChannelMapping) {
+        if self.device.as_ref().is_some_and(|d| d.mapping != mapping) {
+            log::info!("sync host: output channel mapping changed, output reopened");
+            self.close_device();
         }
     }
 
@@ -1072,7 +1154,7 @@ impl Epoch {
         let (pushed, done) = pump_into(
             &mut self.pending,
             &mut device.producer,
-            self.channels,
+            device.format.channels,
             self.pace_limit_frames,
         );
         self.pushed_frames += pushed;
@@ -1092,13 +1174,128 @@ impl Epoch {
             // What the ring holds, at the device's pace.
             Some(device) if self.paced => {
                 let level = device.producer.capacity() - device.producer.free();
-                level as f64 / RENDER_RATE as f64 + 0.1
+                level as f64 / device.format.rate as f64 + 0.1
             }
             // What the latency holds.
             Some(_) => held_target_ms / 1e3 + 0.05,
         };
         self.ending_at = Some(Instant::now() + Duration::from_secs_f64(play_out_s));
     }
+}
+
+/// What every epoch of a run is opened with.
+struct EpochEnv<'a> {
+    config: &'a HostConfig,
+    controls: &'a Controls,
+    /// The file the run writes, when the output is one.
+    file: Option<&'a FileOut>,
+}
+
+/// What playing a block may need: the run's environment, and the settings
+/// and latency in force now (an output is opened when a block says for what).
+struct PlayCtx<'a> {
+    env: &'a EpochEnv<'a>,
+    settings: &'a OutputSettings,
+    /// The latency a device starts at: the configured target, or what an
+    /// earlier stream showed the pipeline needs.
+    target_ms: f64,
+}
+
+/// A new epoch. Its output is opened by its first block.
+fn open_epoch(kind: EpochKind, env: &EpochEnv<'_>) -> Epoch {
+    // The idle feed plays on the device, whatever the run writes.
+    let file = env.file.filter(|_| kind == EpochKind::Stream);
+    Epoch::new(kind, file.map(Rc::clone))
+}
+
+/// Open the device for blocks of `format`: the ring, the output core with
+/// its servo, and the PipeWire stream. Returns it with the level a paced
+/// source keeps ahead, when the device paces this one.
+fn start_device(
+    kind: EpochKind,
+    engine: &Engine,
+    ctx: &PlayCtx<'_>,
+    format: BlockFormat,
+    tap: &Arc<SourceTap>,
+    telemetry: &Arc<SyncTelemetry>,
+) -> Result<(Device, Option<usize>)> {
+    let (config, settings) = (ctx.env.config, ctx.settings);
+    // The device runs at the stream's rate unless another is asked for, in
+    // which case the output core converts (its drift resampler does both).
+    let device_rate = settings.output_rate_hz.unwrap_or(format.rate);
+    let capacity = (RING_SECONDS * format.rate as f64) as usize;
+    let (producer, consumer) = frame_ring(format.channels, capacity);
+    let quantum = (u64::from(config.quantum) * u64::from(device_rate) / u64::from(QUANTUM_RATE))
+        .clamp(64, 8192) as u32;
+    let mut core_config = OutputCoreConfig::new(format.channels, format.rate, device_rate, 8192);
+    // The device paces a source with no clock: nothing to measure or hold.
+    let paced = kind == EpochKind::Stream && config.source.device_paced(settings.source_clock);
+    if paced {
+        core_config.servo.pacing = audio_sync::Pacing::Device;
+    }
+    // The idle feed is the host's own clock, read exactly: nothing to follow.
+    if kind == EpochKind::Stream && config.source.follows_the_writer(settings.source_clock) {
+        let follow = audio_sync::ServoConfig::follow();
+        core_config.servo = audio_sync::ServoConfig {
+            source_rate_hz: core_config.servo.source_rate_hz,
+            output_rate_hz: core_config.servo.output_rate_hz,
+            resampler_lookahead_frames: core_config.servo.resampler_lookahead_frames,
+            ..follow
+        };
+    }
+    if let Some(hz) = settings.loop_bandwidth_hz {
+        core_config.servo.loop_bandwidth_hz = hz;
+    }
+    core_config.servo.realign_threshold_s = settings.realign_threshold_ms / 1e3;
+    core_config.servo.target_latency_s = ctx.target_ms / 1e3;
+    let core = OutputCore::new(
+        core_config,
+        consumer,
+        Arc::clone(tap),
+        Arc::clone(telemetry),
+    );
+    // The live option says how the device routes the channels: by the
+    // position each is tagged with, or one to one in order (positionless
+    // names), port N being the layout's speaker N.
+    let mapping = engine.output_channel_mapping();
+    let names = match mapping {
+        OutputChannelMapping::ByName => {
+            Some(engine.output_channel_names()).filter(|names| names.len() == format.channels)
+        }
+        OutputChannelMapping::ByIndex => {
+            Some((0..format.channels).map(|i| format!("AUX{i}")).collect())
+        }
+    };
+    log::info!(
+        "sync host: output {} Hz x {} ({}), device at {device_rate} Hz, quantum {quantum}",
+        format.rate,
+        format.channels,
+        names.as_ref().map_or("default map".into(), |n| n.join(",")),
+    );
+    let output = PipewireSyncOutput::start(
+        PipewireSyncOutputConfig {
+            node_name: "omniphony-sync".into(),
+            target: settings.output_target.clone(),
+            channels: format.channels as u32,
+            positions: names,
+            rate: device_rate,
+            quantum,
+        },
+        core,
+    )?;
+    // What the source keeps ahead of the device: the latency target, as a
+    // buffer level (there is no end-to-end latency without a source clock).
+    let pace_limit = paced.then(|| (ctx.target_ms / 1e3 * format.rate as f64).round() as usize);
+    Ok((
+        Device {
+            producer,
+            output,
+            format,
+            mapping,
+            device_rate,
+        },
+        pace_limit,
+    ))
 }
 
 /// Push the blocks in `pending`, oldest first, until the ring holds `limit`
@@ -1138,54 +1335,36 @@ fn pump_into(
 /// device, a cycle of silence, so that the last frames are not left in the
 /// ring for want of a whole cycle to play them with. The epoch closes once
 /// that has played ([`Epoch::finish_when_played`]).
-fn finish_stream(engine: &mut Engine, ep: &mut Epoch, quantum: u32) {
+fn finish_stream(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>) {
     loop {
         match engine.drain() {
             Ok(blocks) if blocks.is_empty() => break,
-            Ok(blocks) => push_blocks(engine, ep, blocks),
+            Ok(blocks) => push_blocks(engine, ep, ctx, blocks),
             Err(e) => {
                 log::debug!("sync host: drain error: {e:#}");
                 break;
             }
         }
     }
-    if ep.device.is_some() {
-        let frames = quantum as usize + 64;
+    if let Some(format) = ep.device.as_ref().map(|d| d.format) {
+        let cycle =
+            u64::from(ctx.env.config.quantum) * u64::from(format.rate) / u64::from(QUANTUM_RATE);
+        let frames = cycle as usize + 64;
         push_blocks(
             engine,
             ep,
+            ctx,
             vec![RenderedAudio {
-                samples: vec![0.0; frames * ep.channels],
-                n_channels: ep.channels as u32,
+                samples: vec![0.0; frames * format.channels],
+                n_channels: format.channels as u32,
                 n_frames: frames,
+                sample_rate: format.rate,
                 sample_pos: 0,
                 input_pts_us: None,
             }],
         );
     }
     ep.finishing = true;
-}
-
-/// Open the file the run writes: `-` for standard output, else a file or a
-/// FIFO. A CAF capture of a speaker-array render carries where its speakers
-/// are.
-fn open_file_output(
-    destination: &str,
-    format: FileSinkFormat,
-    channels: usize,
-    engine: &Engine,
-) -> Result<FileOut> {
-    let speakers = engine.output_speaker_positions().map(|positions| {
-        positions
-            .into_iter()
-            .map(|[azimuth, elevation, distance]| {
-                CafChannelDesc::spherical(azimuth, elevation, distance)
-            })
-            .collect()
-    });
-    let writer = FileAudioWriter::new(destination, format, RENDER_RATE, channels as u32, speakers)
-        .with_context(|| format!("opening the audio output destination '{destination}'"))?;
-    Ok(Rc::new(RefCell::new(writer)))
 }
 
 /// A chunk's transport position counted from an epoch's first chunk, as the
@@ -1213,15 +1392,15 @@ fn idle_feed_inputs(engine: &Engine) -> IdleFeedInputs {
     IdleFeedInputs {
         arm_gen: live.speaker_test_idle_feed_gen,
         test_active: live.speaker_test.is_some() || live.object_test.is_some(),
-        sample_rate: RENDER_RATE,
+        sample_rate: engine.render_rate(),
     }
 }
 
 /// Render `frames` of silence into the idle epoch and publish the host's own
 /// clock as its source: `t` is when the feeder counted them.
-fn feed_silence(engine: &mut Engine, ep: &mut Epoch, t: f64, frames: u32) {
+fn feed_silence(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, t: f64, frames: u32) {
     match engine.render_silence(frames) {
-        Ok(Some(block)) => push_blocks(engine, ep, vec![block]),
+        Ok(Some(block)) => push_blocks(engine, ep, ctx, vec![block]),
         Ok(None) => {}
         Err(e) => log::debug!("sync host: idle render error: {e:#}"),
     }
@@ -1232,7 +1411,7 @@ fn feed_silence(engine: &mut Engine, ep: &mut Epoch, t: f64, frames: u32) {
 
 /// Render one chunk of the sink's linear PCM and push the audio. The clock
 /// is published by the caller, from the transport, as for a bitstream.
-fn feed_pcm(engine: &mut Engine, ep: &mut Epoch, tr: Transport, bytes: &[u8]) {
+fn feed_pcm(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, tr: Transport, bytes: &[u8]) {
     if tr.channels as usize != pcm::INPUT_MAP.len() {
         if !ep.pcm_shape_logged {
             ep.pcm_shape_logged = true;
@@ -1247,19 +1426,19 @@ fn feed_pcm(engine: &mut Engine, ep: &mut Epoch, tr: Transport, bytes: &[u8]) {
     // The count starts with the stream: there is no burst to find first.
     ep.transport_base.get_or_insert((0, 0.0));
     match engine.render_host_pcm(&pcm::frame(bytes, tr.rate)) {
-        Ok(Some(block)) => push_blocks(engine, ep, vec![block]),
+        Ok(Some(block)) => push_blocks(engine, ep, ctx, vec![block]),
         Ok(None) => {}
         Err(e) => log::debug!("sync host: PCM render error: {e:#}"),
     }
 }
 
 /// Deframe, decode and render one chunk, push the audio, publish the clock.
-fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
+fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, t: f64, bytes: &[u8]) {
     let pcm_transport = ep
         .last_transport
         .filter(|tr| tr.format == CarrierFormat::PcmF32);
     if let Some(tr) = pcm_transport {
-        feed_pcm(engine, ep, tr, bytes);
+        feed_pcm(engine, ep, ctx, tr, bytes);
         publish_clock(ep, t, bytes.len());
         return;
     }
@@ -1294,17 +1473,18 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
             if ep.last_transport.is_none() {
                 follow_pipe_carrier(ep, packet.data_type);
             }
-            if ep.transport_base.is_none() && transport(ep).is_some() {
-                ep.transport_base = Some((packet.start_byte, ep.pushed_frames as f64));
-            }
+            // The first burst is the count's origin, whether or not the
+            // carrier it is counted on is known yet.
+            ep.transport_base
+                .get_or_insert((packet.start_byte, ep.pushed_frames as f64));
             match engine.process(&packet.payload, RInputTransport::Iec61937, packet.data_type) {
-                Ok(blocks) => push_blocks(engine, ep, blocks),
+                Ok(blocks) => push_blocks(engine, ep, ctx, blocks),
                 Err(e) => log::debug!("sync host: decode error: {e:#}"),
             }
         }
     } else {
         match engine.process(bytes, RInputTransport::Raw, 0) {
-            Ok(blocks) => push_blocks(engine, ep, blocks),
+            Ok(blocks) => push_blocks(engine, ep, ctx, blocks),
             Err(e) => log::debug!("sync host: decode error: {e:#}"),
         }
     }
@@ -1322,10 +1502,14 @@ fn publish_clock(ep: &mut Epoch, t: f64, chunk_bytes: usize) {
         // free of the decoder's burst granularity, which would otherwise
         // show as up to a chunk of arrival lateness.
         (Some(tr), Some((base_bytes, base_frames))) => {
-            let received =
-                base_frames + transport_frames(tr.bytes_end.saturating_sub(base_bytes), tr);
-            if received > 0.0 {
-                ep.tap.publish(t, received.round() as u64);
+            // (Nothing to say while the count's scale waits for the stream's
+            // rate: nothing has been rendered yet.)
+            let bytes = tr.bytes_end.saturating_sub(base_bytes);
+            if let Some(frames) = transport_frames(bytes, tr, ep.data_type, ep.stream_rate) {
+                let received = base_frames + frames;
+                if received > 0.0 {
+                    ep.tap.publish(t, received.round() as u64);
+                }
             }
         }
         (Some(_), None) => {}
@@ -1374,60 +1558,67 @@ fn transport(ep: &Epoch) -> Option<Transport> {
     })
 }
 
-/// Source PCM frames (at the render rate) a byte offset on a carrier stands
-/// for. IEC 958 carriers run at the content rate times a fixed factor (1 for
-/// AC-3/DTS at 48 kHz, 4 for E-AC-3/TrueHD/DTS-HD at 192 kHz); linear PCM is
-/// its own carrier.
-fn transport_frames(bytes: u64, tr: Transport) -> f64 {
+/// Source frames a byte count on a carrier stands for
+/// ([`content_per_carrier_frame`]).
+fn transport_frames(
+    bytes: u64,
+    tr: Transport,
+    data_type: Option<u8>,
+    stream_rate: Option<u32>,
+) -> Option<f64> {
     let frame_bytes = tr.format.sample_bytes() * tr.channels.max(1);
     let carrier_frames = bytes as f64 / frame_bytes as f64;
-    carrier_frames * RENDER_RATE as f64 / tr.rate.max(1) as f64
+    Some(carrier_frames * content_per_carrier_frame(tr, data_type, stream_rate)?)
 }
 
-fn push_blocks(engine: &mut Engine, ep: &mut Epoch, blocks: Vec<RenderedAudio>) {
+/// Play rendered blocks: into the file the run writes, or into the device's
+/// ring, opened for the first block's format and again when a block comes in
+/// another one.
+fn push_blocks(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, blocks: Vec<RenderedAudio>) {
     let mut done = Vec::with_capacity(blocks.len());
     for block in blocks {
-        if block.n_channels as usize != ep.channels {
-            if !ep.channel_mismatch_logged {
-                ep.channel_mismatch_logged = true;
-                log::error!(
-                    "sync host: rendered {} channels into a {}-channel output; block dropped",
-                    block.n_channels,
-                    ep.channels
-                );
-            }
+        let frames = block.n_frames as u64;
+        if frames == 0 {
             done.push(block);
             continue;
         }
-        let frames = block.n_frames as u64;
-        match (&mut ep.device, &ep.file) {
-            // A paced source: the block waits its turn, nothing is dropped.
-            (Some(_), _) if ep.paced => {
-                ep.pending.push_back((block, 0));
-                continue;
-            }
-            (Some(device), _) => {
-                let pushed = device.producer.push(&block.samples) as u64;
-                ep.pushed_frames += pushed;
-                if pushed < frames {
-                    // The ring is full: the output stopped draining. Counted,
-                    // and the frames never enter `N_in`, so the latency
-                    // measurement stays true.
-                    ep.dropped_frames += frames - pushed;
-                }
-            }
-            (None, Some(file)) => match file.borrow_mut().write_samples(&block.samples) {
+        let format = BlockFormat {
+            rate: block.sample_rate,
+            channels: block.n_channels as usize,
+        };
+        if let Some(file) = &ep.file {
+            let written = file
+                .borrow_mut()
+                .write(format, &block.samples, || engine.output_speaker_positions());
+            match written {
                 Ok(()) => ep.pushed_frames += frames,
                 Err(e) => {
-                    if !ep.channel_mismatch_logged {
-                        ep.channel_mismatch_logged = true;
-                        log::error!("sync host: writing the output file: {e}");
-                    }
                     ep.dropped_frames += frames;
+                    ep.fatal.get_or_insert(e);
                 }
-            },
-            (None, None) => {}
+            }
+            ep.stream_rate = Some(format.rate);
+            done.push(block);
+            continue;
         }
+        if ep.device.as_ref().is_none_or(|d| d.format != format) && !ep.device_failed {
+            ep.open_device(engine, ctx, format);
+        }
+        let Some(device) = ep.device.as_mut().filter(|d| d.format == format) else {
+            // No output to play it on (it could not be opened).
+            ep.dropped_frames += frames;
+            done.push(block);
+            continue;
+        };
+        if ep.paced {
+            // A paced source: the block waits its turn, nothing is dropped.
+            ep.pending.push_back((block, 0));
+            continue;
+        }
+        let pushed = device.producer.push(&block.samples) as u64;
+        ep.pushed_frames += pushed;
+        // A full ring: the output stopped draining. Counted.
+        ep.dropped_frames += frames - pushed;
         done.push(block);
     }
     engine.recycle(done);
@@ -1474,6 +1665,7 @@ mod tests {
                 .collect(),
             n_channels: 2,
             n_frames: frames,
+            sample_rate: 48_000,
             sample_pos: 0,
             input_pts_us: None,
         }
@@ -1633,25 +1825,66 @@ mod tests {
         assert_eq!(origin, Some(0));
     }
 
+    /// What a second of content takes on its carrier counts as a second of
+    /// the stream, at the stream's rate, whatever rate the carrier is said
+    /// to run at.
     #[test]
-    fn pipe_carriers_count_one_second_per_second() {
+    fn a_carrier_is_counted_in_the_streams_frames() {
+        let iec = |rate, channels| Transport {
+            rate,
+            channels,
+            format: CarrierFormat::Iec958,
+            bytes_end: 0,
+        };
+        // Bytes of `frames` carrier frames on `channels` 16-bit channels.
+        let bytes = |frames: u64, channels: u64| frames * channels * 2;
+        let count = |b, tr, data_type, rate| transport_frames(b, tr, Some(data_type), rate);
+
+        // The known pipe carriers at 48 kHz, as before.
         for data_type in [1u8, 11, 12, 13, 21, 22] {
             let (rate, channels) = pipe_carrier(data_type).unwrap();
-            let tr = Transport {
-                rate,
-                channels,
-                format: CarrierFormat::Iec958,
-                bytes_end: 0,
-            };
-            let second = rate as u64 * channels as u64 * 2;
+            let second = bytes(u64::from(rate), u64::from(channels));
             assert_eq!(
-                transport_frames(second, tr),
-                RENDER_RATE as f64,
+                count(second, iec(rate, channels), data_type, Some(48_000)),
+                Some(48_000.0),
                 "data type {data_type}"
             );
         }
         // DTS-HD rides 2 or 8 channels: not guessed.
         assert_eq!(pipe_carrier(17), None);
+
+        // AC-3 and DTS at 44.1 kHz: a frame of carrier per sample. E-AC-3:
+        // four. Neither needs the stream's rate, nor believes the carrier's.
+        assert_eq!(
+            count(bytes(44_100, 2), iec(48_000, 2), 1, None),
+            Some(44_100.0)
+        );
+        assert_eq!(
+            count(bytes(44_100, 2), iec(44_100, 2), 11, None),
+            Some(44_100.0)
+        );
+        assert_eq!(
+            count(bytes(176_400, 2), iec(192_000, 2), 21, None),
+            Some(44_100.0)
+        );
+
+        // TrueHD: a MAT frame (3840 carrier frames) is 1/200 s of the top
+        // rate of the family, so 960 samples at 48 kHz, 1920 at 96 kHz, 3840
+        // at 192 kHz, and 960 at 44.1 kHz. Unknown until a block was rendered.
+        let mat = bytes(3840, 8);
+        assert_eq!(count(mat, iec(192_000, 8), 22, None), None);
+        assert_eq!(count(mat, iec(192_000, 8), 22, Some(48_000)), Some(960.0));
+        assert_eq!(count(mat, iec(192_000, 8), 22, Some(96_000)), Some(1920.0));
+        assert_eq!(count(mat, iec(192_000, 8), 22, Some(192_000)), Some(3840.0));
+        assert_eq!(count(mat, iec(192_000, 8), 22, Some(44_100)), Some(960.0));
+
+        // DTS-HD lasts on its carrier what it lasts played.
+        let second = bytes(192_000, 8);
+        assert_eq!(
+            count(second, iec(192_000, 8), 17, Some(96_000)),
+            Some(96_000.0)
+        );
+
         // The sink's linear PCM: 8 channels of 4-byte floats at 48 kHz.
         let pcm = Transport {
             rate: own_sink::PCM_RATE_HZ,
@@ -1659,6 +1892,64 @@ mod tests {
             format: CarrierFormat::PcmF32,
             bytes_end: 0,
         };
-        assert_eq!(transport_frames(48_000 * 8 * 4, pcm), RENDER_RATE as f64);
+        assert_eq!(
+            transport_frames(48_000 * 8 * 4, pcm, None, Some(48_000)),
+            Some(48_000.0)
+        );
+    }
+
+    /// An output reopened under a running stream starts its ring at 0, and
+    /// the source's count moves with it: the frame the new ring starts on is
+    /// the one that follows what the old ring was given.
+    #[test]
+    fn a_reopened_output_keeps_the_streams_count() {
+        let mut ep = Epoch::new(EpochKind::Stream, None);
+        // 2048 frames of hold before the first block, then 48000 pushed and
+        // a block of 300 with 100 already in the ring.
+        ep.transport_base = Some((4096, 0.0));
+        ep.pushed_frames = 48_000;
+        ep.pending.push_back((block(300, 0.0), 100));
+        let tap = Arc::clone(&ep.tap);
+
+        ep.restart_count();
+
+        assert_eq!(ep.pushed_frames, 0);
+        assert!(ep.pending.is_empty());
+        assert_eq!(ep.dropped_frames, 200);
+        // 50248 received when 48200 had gone to the old ring: 2048 ahead of
+        // the new ring's frame 0, the same hold as before.
+        assert_eq!(ep.transport_base, Some((4096, -48_200.0)));
+        assert!(!Arc::ptr_eq(&tap, &ep.tap), "the new servo reads a new tap");
+    }
+
+    /// A file holds one format: a block in another starts it over, so the
+    /// header always describes the samples under it.
+    #[test]
+    fn a_file_starts_over_on_another_format() {
+        let dir = std::env::temp_dir().join(format!("sync-host-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.raw");
+        let mut file = FileState {
+            destination: path.to_string_lossy().into_owned(),
+            container: FileSinkFormat::RawF32,
+            open: None,
+        };
+        let stereo_48 = BlockFormat {
+            rate: 48_000,
+            channels: 2,
+        };
+        let stereo_44 = BlockFormat {
+            rate: 44_100,
+            channels: 2,
+        };
+        file.write(stereo_48, &[1.0; 8], || None).unwrap();
+        file.write(stereo_48, &[1.0; 8], || None).unwrap();
+        file.flush();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 16 * 4);
+        file.write(stereo_44, &[2.0; 6], || None).unwrap();
+        file.flush();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 6 * 4);
+        drop(file);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

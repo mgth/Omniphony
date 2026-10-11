@@ -594,6 +594,7 @@
   "help.audio.outputFileFormat": "Kodierung für das Datei-Backend: rohes verschachteltes 32-Bit-Float (von ffmpeg -f f32le lesbar) oder ein Streaming-CAF-Container.",
   "help.audio.namedPipe": "Aus: Ausgabe nach stdout (die Pipe zum aufrufenden Prozess). Ein: Ausgabe in die unten angegebene Named Pipe (FIFO) oder den Dateipfad.",
   "help.audio.sampleRate": "Ausgabe-Abtastrate in Hz. 0 folgt der aktuellen Rate des Geräts.",
+  "help.audio.sampleRateSync": "Rate, mit der die Ausgabe geöffnet wird, in Hz. 0 folgt der Rate des jeweiligen Streams; das Audiosystem wandelt sie um, wenn das Gerät mit einer anderen läuft.",
   "help.audio.targetLatency": "Ziel-Ende-zu-Ende-Pufferlatenz, in ms. Der adaptive Controller steuert den Ring-Füllstand auf diesen Wert zu.",
   "help.audio.targetLatencySync": "Ende-zu-Ende-Latenz, die der Renderer hält, in ms: vom Eintreffen des Audios bis zum Verlassen des Ausgabegeräts. Braucht ein Stream mehr, hält der Renderer stattdessen das Nötige und zeigt es hier an.",
   "help.sync.loopBandwidth": "Wie schnell die Latenzschleife einen Fehler korrigiert, in Hz. 0 überlässt es der Quelle: 0,02 Hz für den PipeWire-Eingang, 0,005 Hz für eine Pipe. Ein höherer Wert korrigiert schneller und lässt mehr vom Zeit-Jitter der Quelle in die Tonhöhe.",

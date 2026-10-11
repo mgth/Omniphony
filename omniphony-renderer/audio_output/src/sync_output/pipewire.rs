@@ -7,7 +7,10 @@
 //!
 //! - `now`: the cycle start on `CLOCK_MONOTONIC` (already smoothed by the
 //!   driver's own DLL);
-//! - `ticks`: the graph position at `now`, for the device-rate DLL;
+//! - `ticks`: the graph position at `now`, for the device-rate DLL. It counts
+//!   in the graph's rate, which is not the stream's when PipeWire converts
+//!   between the two (a 44.1 kHz stream in a 48 kHz graph): it is scaled to
+//!   the stream's frames, the unit of everything else here;
 //! - `delay` + `buffered`: with this cycle's `N`, a frame queued now is heard
 //!   `(buffered + N)/fs + delay·rate` after `now` (the stream runs one cycle
 //!   behind the graph). The DAC's own 1–3 ms is not reported by anyone.
@@ -206,6 +209,25 @@ fn run(
     Ok(())
 }
 
+/// A cycle's timing in the stream's own frames, from what PipeWire reports
+/// of it; `None` before the stream has a clock.
+///
+/// `ticks` and `delay` count in `time.rate` (the graph's: 1/48000 s on a
+/// 48 kHz graph), `buffered` and `frames` in the stream's rate.
+fn device_timing(time: &pw::sys::pw_time, frames: usize, stream_rate: f64) -> Option<DeviceTiming> {
+    if time.now <= 0 || time.rate.denom == 0 {
+        return None;
+    }
+    let (num, denom) = (time.rate.num as f64, time.rate.denom as f64);
+    Some(DeviceTiming {
+        t_s: time.now as f64 * 1e-9,
+        // (One multiplication by exactly 1 when the two rates are the same.)
+        position_frames: time.ticks as f64 * (num * stream_rate / denom),
+        heard_delay_s: (time.buffered as f64 + frames as f64) / stream_rate
+            + time.delay as f64 * (num / denom),
+    })
+}
+
 /// The realtime callback: timing, then the core, then the chunk header.
 fn process(stream: &pw::stream::Stream, data: &mut CallbackData) {
     let Some(mut buffer) = stream.dequeue_buffer() else {
@@ -241,19 +263,13 @@ fn process(stream: &pw::stream::Stream, data: &mut CallbackData) {
             let dest = unsafe {
                 std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, frames * ch)
             };
-            if time.now <= 0 || time.rate.denom == 0 {
+            match device_timing(&time, frames, data.rate) {
+                Some(timing) => data.core.process(timing, dest, ch),
                 // No timing yet (first cycles): nothing to regulate against.
-                dest.fill(0.0);
-                frames
-            } else {
-                let tick_s = time.rate.num as f64 / time.rate.denom as f64;
-                let timing = DeviceTiming {
-                    t_s: time.now as f64 * 1e-9,
-                    position_frames: time.ticks as f64,
-                    heard_delay_s: (time.buffered as f64 + frames as f64) / data.rate
-                        + time.delay as f64 * tick_s,
-                };
-                data.core.process(timing, dest, ch)
+                None => {
+                    dest.fill(0.0);
+                    frames
+                }
             }
         }
         None => 0,
@@ -262,4 +278,59 @@ fn process(stream: &pw::stream::Stream, data: &mut CallbackData) {
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = (4 * ch) as i32;
     *chunk.size_mut() = (written_frames * 4 * ch) as u32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn time(ticks: u64, graph_rate: u32, delay: i64, buffered: u64) -> pw::sys::pw_time {
+        // SAFETY: `pw_time` is plain integers; all-zero is a valid value.
+        let mut time: pw::sys::pw_time = unsafe { std::mem::zeroed() };
+        time.now = 5_000_000_000;
+        time.rate.num = 1;
+        time.rate.denom = graph_rate;
+        time.ticks = ticks;
+        time.delay = delay;
+        time.buffered = buffered;
+        time
+    }
+
+    /// A stream at the graph's rate reads the graph's position as it is.
+    #[test]
+    fn a_stream_at_the_graphs_rate_counts_its_ticks() {
+        let timing = device_timing(&time(123_456_789, 48_000, 2048, 0), 1024, 48_000.0).unwrap();
+        assert_eq!(timing.t_s, 5.0);
+        assert_eq!(timing.position_frames, 123_456_789.0);
+        assert_eq!(timing.heard_delay_s, (1024.0 + 2048.0) / 48_000.0);
+    }
+
+    /// A stream PipeWire converts for the graph advances by its own frames:
+    /// a second of a 48 kHz graph is 44100 frames of a 44.1 kHz stream, and
+    /// 96000 of a 96 kHz one. (Read as ticks, the device looked 8.8 % fast
+    /// or twice too slow, past anything the servo follows.)
+    #[test]
+    fn the_position_is_in_the_streams_frames() {
+        for stream_rate in [44_100.0, 96_000.0] {
+            let at = |ticks| {
+                device_timing(&time(ticks, 48_000, 0, 0), 0, stream_rate)
+                    .unwrap()
+                    .position_frames
+            };
+            let second = at(48_000 * 11) - at(48_000 * 10);
+            assert!((second - stream_rate).abs() < 1e-6, "{second}");
+        }
+        // The graph's delay is in its ticks, what the stream holds in its
+        // own frames.
+        let timing = device_timing(&time(0, 48_000, 4800, 441), 441, 44_100.0).unwrap();
+        assert!((timing.heard_delay_s - 0.12).abs() < 1e-12);
+    }
+
+    #[test]
+    fn no_clock_is_no_timing() {
+        let mut none = time(0, 48_000, 0, 0);
+        none.now = 0;
+        assert!(device_timing(&none, 1024, 48_000.0).is_none());
+        assert!(device_timing(&time(0, 0, 0, 0), 1024, 48_000.0).is_none());
+    }
 }

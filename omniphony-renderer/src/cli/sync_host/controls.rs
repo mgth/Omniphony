@@ -20,7 +20,7 @@ use host_audio::HostAudio;
 use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
 
-use super::{DEFAULT_TARGET_LATENCY_MS, HostConfig, RENDER_RATE, Source};
+use super::{DEFAULT_TARGET_LATENCY_MS, HostConfig, Source};
 
 /// What the output is opened with: a change in any of it reopens it.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +35,8 @@ pub struct OutputSettings {
     pub realign_threshold_ms: f64,
     /// The clock the source is taken to run on.
     pub source_clock: SourceClock,
+    /// Rate the device is opened at (Hz); `None` is the stream's own.
+    pub output_rate_hz: Option<u32>,
 }
 
 /// See the [module docs](self).
@@ -113,12 +115,14 @@ impl Controls {
                 .then(|| f64::from(requested.loop_bandwidth_hz)),
             realign_threshold_ms: f64::from(requested.realign_threshold_ms),
             source_clock: requested.source_clock,
+            output_rate_hz: requested.output_sample_rate_hz,
         }
     }
 
-    /// The output opened with `settings`: publish what plays.
-    pub fn opened(&self, settings: &OutputSettings) {
-        self.audio.set_audio_state(RENDER_RATE, "f32");
+    /// The output opened with `settings`, at `device_rate` Hz: publish what
+    /// plays.
+    pub fn opened(&self, settings: &OutputSettings, device_rate: u32) {
+        self.audio.set_audio_state(device_rate, "f32");
         self.audio
             .set_effective_output_device(settings.output_target.clone());
         self.audio.set_audio_error(None);
@@ -187,6 +191,7 @@ mod tests {
                 loop_bandwidth_hz: None,
                 realign_threshold_ms: 20.0,
                 source_clock: SourceClock::Auto,
+                output_rate_hz: None,
             }
         );
 
@@ -229,6 +234,7 @@ mod tests {
             keys,
             [
                 "output_device",
+                "output_sample_rate",
                 "latency_target",
                 "loop_bandwidth_hz",
                 "source_clock",
@@ -238,7 +244,7 @@ mod tests {
         let refused = handler.apply_options(&[
             ("adaptive_resampling_kp_near", RawOptionValue::Number(2.0)),
             ("live_input_clock_mode", RawOptionValue::Str("dac")),
-            ("output_sample_rate", RawOptionValue::Number(96_000.0)),
+            ("output_backend", RawOptionValue::Str("pipewire")),
         ]);
         assert!(refused.results.iter().all(Option::is_none));
         assert!(!handler.capabilities().adaptive_resampling);
@@ -282,7 +288,7 @@ mod tests {
         let state = audio_state(handler.as_ref());
         assert_eq!(state["error"], "dac is not playing");
         assert!(state["outputDeviceEffective"].is_null());
-        controls.opened(&controls.settings());
+        controls.opened(&controls.settings(), 44_100);
         let state = audio_state(handler.as_ref());
         assert!(state["error"].is_null());
         assert_eq!(state["outputDeviceEffective"], "dac");

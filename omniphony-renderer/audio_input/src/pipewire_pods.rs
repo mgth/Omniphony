@@ -228,7 +228,7 @@ pub fn build_pipewire_bridge_format_pod(
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
     build_format_pod(
-        sample_rate_hz,
+        &[sample_rate_hz],
         channels,
         iec958_codec_for_channels(channels),
         param_type,
@@ -247,7 +247,24 @@ pub fn build_pipewire_bridge_codec_format_pod(
     channels: u16,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
-    build_format_pod(sample_rate_hz, channels, codec, param_type)
+    build_format_pod(&[sample_rate_hz], channels, codec, param_type)
+}
+
+/// Carrier rates of the codecs that ride theirs at the content's own rate
+/// (AC-3, the DTS core): the first is the one a player with no preference
+/// gets. A 44.1 kHz stream is passed through on a 44.1 kHz carrier, and a
+/// sink that only states 48 kHz refuses it ("no target node available").
+pub const IEC958_CONTENT_RATES_HZ: [u32; 3] = [48_000, 44_100, 32_000];
+
+/// [`build_pipewire_bridge_codec_format_pod`] for a codec whose carrier runs
+/// at the content's rate: any of `rates_hz`, the first by default.
+pub fn build_pipewire_bridge_codec_format_pod_at_rates(
+    codec: u32,
+    rates_hz: &[u32],
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    build_format_pod(rates_hz, channels, codec, param_type)
 }
 
 /// Advertise a linear-PCM alternative next to the IEC 61937 formats.
@@ -350,18 +367,32 @@ fn raw_audio_positions(channels: u16) -> Vec<pw::spa::utils::Id> {
 }
 
 fn build_format_pod(
-    sample_rate_hz: u32,
+    rates_hz: &[u32],
     channels: u16,
     codec: u32,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
+    let default_rate = rates_hz.first().copied().unwrap_or_default() as i32;
+    // One rate is stated as it always was; several are a choice.
+    let rate = match rates_hz {
+        [_] | [] => pw::spa::pod::Value::Int(default_rate),
+        rates => {
+            pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
+                pw::spa::utils::ChoiceFlags::empty(),
+                pw::spa::utils::ChoiceEnum::Enum {
+                    default: default_rate,
+                    alternatives: rates.iter().map(|rate| *rate as i32).collect(),
+                },
+            )))
+        }
+    };
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamFormat,
         param_type,
         property!(spa::param::format::FormatProperties::MediaType, Id, spa::param::format::MediaType::Audio),
         property!(spa::param::format::FormatProperties::MediaSubtype, Id, spa::param::format::MediaSubtype::Iec958),
         property!(spa::param::format::FormatProperties::AudioFormat, Id, spa::param::audio::AudioFormat::Encoded),
-        property!(spa::param::format::FormatProperties::AudioRate, Int, sample_rate_hz as i32),
+        property!(spa::param::format::FormatProperties::AudioRate, rate),
         property!(spa::param::format::FormatProperties::AudioChannels, Int, channels as i32),
         property!(
             spa::param::format::FormatProperties::AudioIec958Codec,
@@ -574,6 +605,7 @@ pub fn spa_param_info(id: u32, flags: u32) -> spa::sys::spa_param_info {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pw::spa::pod::Pod;
 
     /// A PCM buffer carries a whole graph cycle, so sizing it from the 10 ms
     /// window that suits the deframer makes every cycle arrive oversized and
@@ -593,6 +625,33 @@ mod tests {
                 size >= PW_QUANTUM_LIMIT_FRAMES as usize * stride,
                 "rate {rate}: buffer of {size} B cannot hold a {PW_QUANTUM_LIMIT_FRAMES}-frame quantum",
             );
+        }
+    }
+
+    /// A codec format at one rate is the pod it always was; at several, the
+    /// rate becomes a choice and nothing else changes.
+    #[test]
+    fn a_codec_format_states_one_rate_or_a_choice_of_them() {
+        let codec = spa::sys::SPA_AUDIO_IEC958_CODEC_AC3;
+        let enum_fmt = spa::param::ParamType::EnumFormat;
+        let one = build_pipewire_bridge_codec_format_pod(codec, 48_000, 2, enum_fmt).unwrap();
+        let same =
+            build_pipewire_bridge_codec_format_pod_at_rates(codec, &[48_000], 2, enum_fmt).unwrap();
+        assert_eq!(one, same);
+        let several = build_pipewire_bridge_codec_format_pod_at_rates(
+            codec,
+            &IEC958_CONTENT_RATES_HZ,
+            2,
+            enum_fmt,
+        )
+        .unwrap();
+        assert!(several.len() > one.len());
+        assert!(Pod::from_bytes(&several).is_some());
+        // 44100 and 32000 are in it, little-endian, after the default.
+        for rate in [44_100i32, 32_000] {
+            let needle = rate.to_le_bytes();
+            assert!(several.windows(4).any(|w| w == needle), "{rate}");
+            assert!(!one.windows(4).any(|w| w == needle), "{rate}");
         }
     }
 

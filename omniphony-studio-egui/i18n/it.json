@@ -594,6 +594,7 @@
   "help.audio.outputFileFormat": "Codifica per il backend file: float a 32 bit interlacciato grezzo (leggibile da ffmpeg -f f32le), oppure un contenitore CAF in streaming.",
   "help.audio.namedPipe": "Off: scrive su stdout (la pipe verso il processo chiamante). On: scrive sulla named pipe (FIFO) o sul percorso file indicato sotto.",
   "help.audio.sampleRate": "Frequenza di campionamento di uscita in Hz. 0 segue la frequenza corrente del dispositivo.",
+  "help.audio.sampleRateSync": "Frequenza a cui viene aperta l'uscita, in Hz. 0 segue la frequenza di ogni flusso; il sistema audio la converte se il dispositivo funziona a un'altra.",
   "help.audio.targetLatency": "Latenza di buffer obiettivo end-to-end, in ms. Il controller adattivo porta il livello del ring verso questo valore.",
   "help.audio.targetLatencySync": "Latenza end-to-end mantenuta dal renderer, in ms: dall'arrivo dell'audio alla sua uscita dal dispositivo. Quando un flusso richiede di più, il renderer mantiene ciò che serve e lo indica qui.",
   "help.sync.loopBandwidth": "Rapidità con cui l'anello di latenza corregge un errore, in Hz. 0 lascia decidere alla sorgente: 0,02 Hz per l'ingresso PipeWire, 0,005 Hz per una pipe. Un valore più alto corregge più in fretta e lascia passare più jitter temporale della sorgente nell'intonazione.",

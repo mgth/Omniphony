@@ -26,11 +26,11 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use audio_input::pipewire_pods::{
-    IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_DTS_CHANNELS, IEC958_DTS_RATE_HZ,
-    IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ, build_pipewire_bridge_codec_format_pod,
-    build_pipewire_bridge_format_pod, build_pipewire_bridge_iec958_quantum_buffers_pod,
-    build_pipewire_bridge_latency_pod, build_pipewire_bridge_raw_format_pod_at,
-    build_pipewire_bridge_stream_properties,
+    IEC958_AC3_CHANNELS, IEC958_CONTENT_RATES_HZ, IEC958_DTS_CHANNELS, IEC958_DTSHD_CHANNELS,
+    IEC958_DTSHD_RATE_HZ, build_pipewire_bridge_codec_format_pod,
+    build_pipewire_bridge_codec_format_pod_at_rates, build_pipewire_bridge_format_pod,
+    build_pipewire_bridge_iec958_quantum_buffers_pod, build_pipewire_bridge_latency_pod,
+    build_pipewire_bridge_raw_format_pod_at, build_pipewire_bridge_stream_properties,
 };
 use audio_rt::{Consumer, Producer, frame_ring};
 use pipewire as pw;
@@ -340,15 +340,17 @@ fn run_sink(
             IEC958_DTSHD_CHANNELS,
             enum_fmt,
         )?,
-        build_pipewire_bridge_codec_format_pod(
+        // AC-3 and the DTS core ride a carrier at the content's own rate:
+        // 44.1 kHz and 32 kHz streams are taken as they are.
+        build_pipewire_bridge_codec_format_pod_at_rates(
             spa::sys::SPA_AUDIO_IEC958_CODEC_AC3,
-            IEC958_AC3_RATE_HZ,
+            &IEC958_CONTENT_RATES_HZ,
             IEC958_AC3_CHANNELS,
             enum_fmt,
         )?,
-        build_pipewire_bridge_codec_format_pod(
+        build_pipewire_bridge_codec_format_pod_at_rates(
             spa::sys::SPA_AUDIO_IEC958_CODEC_DTS,
-            IEC958_DTS_RATE_HZ,
+            &IEC958_CONTENT_RATES_HZ,
             IEC958_DTS_CHANNELS,
             enum_fmt,
         )?,

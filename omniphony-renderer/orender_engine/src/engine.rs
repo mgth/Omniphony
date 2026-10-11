@@ -61,6 +61,9 @@ pub struct RenderedAudio {
     pub n_channels: u32,
     /// Number of sample frames in this block.
     pub n_frames: usize,
+    /// Rate of these samples (Hz): the stream's, which the render follows.
+    /// Not the rate the engine was built at when the two differ.
+    pub sample_rate: u32,
     /// Absolute decoded sample position at the start of this block, in input
     /// samples (monotonic across the stream; reset by [`Engine::reset`]).
     pub sample_pos: u64,
@@ -427,6 +430,30 @@ impl Engine {
         ));
         self.osc = Some(sender);
         Ok(())
+    }
+
+    /// The rate the renderer runs at now (Hz): the last stream's, or the one
+    /// the engine was built at before any.
+    pub fn render_rate(&self) -> u32 {
+        self.renderer.sample_rate()
+    }
+
+    /// The names of the output's channels, in order: the layout's speakers,
+    /// or the binaural pair. What a host that plays the audio tags its
+    /// channels with when they are routed by position.
+    pub fn output_channel_names(&self) -> Vec<String> {
+        self.renderer.output_channel_names()
+    }
+
+    /// How the output's channels are to be routed on the device: by their
+    /// position, or one to one in order (the live option).
+    pub fn output_channel_mapping(&self) -> renderer::live_params::OutputChannelMapping {
+        self.renderer
+            .renderer_control()
+            .live
+            .read()
+            .options
+            .output_channel_mapping
     }
 
     /// Have the binaural stages build their filters on the render path
@@ -1090,7 +1117,9 @@ impl Engine {
     pub fn render_silence(&mut self, sample_count: u32) -> Result<Option<RenderedAudio>> {
         const CHANNELS: u32 = 2;
         let frame = RDecodedFrame {
-            sampling_frequency: self.sample_rate,
+            // The rate the renderer runs at now: silence must not make it
+            // rebuild its DSP for another one between two streams.
+            sampling_frequency: self.renderer.sample_rate(),
             sample_count,
             channel_count: CHANNELS,
             pcm: vec![0i32; (sample_count * CHANNELS) as usize].into(),
@@ -1556,6 +1585,7 @@ impl Engine {
             samples,
             n_channels,
             n_frames: sample_count,
+            sample_rate: self.renderer.sample_rate(),
             sample_pos: sample_pos_at_start,
             input_pts_us: None,
         }))
@@ -1575,6 +1605,7 @@ impl Engine {
             samples,
             n_channels: channels as u32,
             n_frames: sample_count,
+            sample_rate: self.renderer.sample_rate(),
             sample_pos: self.decoded_samples - sample_count as u64,
             input_pts_us: None,
         }

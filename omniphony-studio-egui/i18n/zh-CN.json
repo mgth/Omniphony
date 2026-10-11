@@ -594,6 +594,7 @@
   "help.audio.outputFileFormat": "文件后端的编码：原始交错 32 位浮点（可由 ffmpeg -f f32le 读取），或流式 CAF 容器。",
   "help.audio.namedPipe": "关闭：写入 stdout（连接到启动进程的管道）。开启：写入下方填写的命名管道（FIFO）或文件路径。",
   "help.audio.sampleRate": "输出采样率（Hz）。0 跟随设备当前的速率。",
+  "help.audio.sampleRateSync": "输出打开时使用的采样率（Hz）。0 跟随每个音频流自身的速率；如果设备以其他速率运行，音频系统会进行转换。",
   "help.audio.targetLatency": "端到端缓冲目标延迟（毫秒）。自适应控制器将环形缓冲电平导向该值。",
   "help.audio.targetLatencySync": "渲染器保持的端到端延迟（毫秒）：从音频到达渲染器到离开输出设备。当音频流需要更多时，渲染器会改为保持所需的值，并在此处提示。",
   "help.sync.loopBandwidth": "延迟环路修正误差的速度（Hz）。0 表示由信号源决定：PipeWire 输入为 0.02 Hz，管道为 0.005 Hz。数值越高修正越快，但信号源的时序抖动会更多地反映到音高上。",

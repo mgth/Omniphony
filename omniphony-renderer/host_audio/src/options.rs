@@ -116,7 +116,11 @@ fn in_group(spec: &HostOptionSpec<HostIo>, group: &'static OptionGroup) -> bool 
 /// file, rate) and the live input join as the engine learns them (plan §17,
 /// slices 6d to 6f).
 fn on_sync_engine(spec: &HostOptionSpec<HostIo>) -> bool {
-    in_group(spec, &SYNC) || matches!(spec.key, "output_device" | "latency_target")
+    in_group(spec, &SYNC)
+        || matches!(
+            spec.key,
+            "output_device" | "latency_target" | "output_sample_rate"
+        )
 }
 
 // ── Value helpers ───────────────────────────────────────────────────────

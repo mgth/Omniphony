@@ -92,7 +92,11 @@ impl StudioSpike {
                     if advanced {
                         self.channel_mapping_row(ui, &mapping, &unroutable);
                         if rate_declared {
-                            self.sample_rate_row(ui, audio.audio_sample_rate.unwrap_or(0));
+                            self.sample_rate_row(
+                                ui,
+                                audio.audio_sample_rate.unwrap_or(0),
+                                policy.sync_engine,
+                            );
                         }
                     }
                 });
@@ -308,9 +312,16 @@ impl StudioSpike {
     /// The rate is a text field with a menu of presets beside it, not a plain
     /// select: a device may run at a rate nobody thought to list, and the
     /// renderer accepts any of them. The presets are a shortcut, not the set.
-    fn sample_rate_row(&mut self, ui: &mut Ui, current: u32) {
+    fn sample_rate_row(&mut self, ui: &mut Ui, current: u32, sync_engine: bool) {
         let mut apply: Option<u32> = None;
-        widgets::label_row_help(ui, t("audio.sampleRate"), "help.audio.sampleRate", |ui| {
+        // Unset means two things: the legacy engine follows the device, the
+        // sync engine each stream.
+        let help = if sync_engine {
+            "help.audio.sampleRateSync"
+        } else {
+            "help.audio.sampleRate"
+        };
+        widgets::label_row_help(ui, t("audio.sampleRate"), help, |ui| {
             // A preset picks a value *and* applies it, as the web's menu
             // does.
             egui::ComboBox::from_id_salt("audio-sample-rate")

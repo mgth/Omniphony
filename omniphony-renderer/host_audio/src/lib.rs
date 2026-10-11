@@ -1470,6 +1470,7 @@ mod tests {
             sync,
             [
                 "output_device",
+                "output_sample_rate",
                 "latency_target",
                 "loop_bandwidth_hz",
                 "source_clock",
