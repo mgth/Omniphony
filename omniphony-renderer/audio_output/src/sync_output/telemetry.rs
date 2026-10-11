@@ -26,6 +26,9 @@ pub struct SyncTelemetry {
     /// Ring reads that came up short after the servo had planned them: a
     /// planning bug or a ring the producer rewound; zero in normal running.
     short_reads: AtomicU64,
+    /// See [`SyncTelemetry::heard_frame`].
+    heard_origin: AtomicU64,
+    heard_rate: AtomicU64,
 }
 
 /// A consistent-enough copy for display.
@@ -67,7 +70,37 @@ impl SyncTelemetry {
         let t = Self::default();
         put(&t.target_ms, f64::NAN);
         put(&t.latency_ms, f64::NAN);
+        put(&t.heard_origin, f64::NAN);
         t
+    }
+
+    /// The cycle that starts at `t_s` reads the ring from frame
+    /// `play_position`, and what it reads is heard `heard_delay_s` later; the
+    /// ring plays at `rate` frames a second.
+    ///
+    /// Kept as one number, the ring frame heard at time 0 of the reference
+    /// clock, so that a reader never pairs one cycle's time with another's
+    /// position.
+    pub(crate) fn publish_heard(
+        &self,
+        t_s: f64,
+        play_position: f64,
+        heard_delay_s: f64,
+        rate: f64,
+    ) {
+        put(&self.heard_rate, rate);
+        put(
+            &self.heard_origin,
+            play_position - (t_s + heard_delay_s) * rate,
+        );
+    }
+
+    /// The ring frame the listener hears at `now_s` on the reference clock
+    /// (fractional, and negative before the first frame is out); `None`
+    /// before the first cycle.
+    pub fn heard_frame(&self, now_s: f64) -> Option<f64> {
+        let origin = get(&self.heard_origin);
+        (!origin.is_nan()).then(|| origin + now_s * get(&self.heard_rate))
     }
 
     pub(crate) fn publish(&self, phase: Phase, t: &Telemetry) {

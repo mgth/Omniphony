@@ -936,6 +936,16 @@ impl Engine {
         }
     }
 
+    /// [`set_heard_us`](Self::set_heard_us) for a host that counts in the
+    /// blocks' own positions ([`RenderedAudio::sample_pos`]): the listener is
+    /// hearing sample `pos` of a timeline that plays at `rate` samples a
+    /// second (the stream's rate, which is the blocks').
+    pub fn set_heard_at(&mut self, pos: u64, rate: u32) {
+        if let Some(osc) = self.osc.as_mut() {
+            osc.send_heard(pos, rate.max(1));
+        }
+    }
+
     /// Reset the session after a seek or stream discontinuity. Flushes the
     /// bridge pipeline and the renderer's per-object/ramp state, and clears the
     /// per-stream spatial state. Live parameters (gains, layout, OSC-applied

@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use audio_output::sync_output::SyncSnapshot;
+use audio_sync::DiscontinuityEvent;
 use diag::DiagRegistry;
 use orender_engine::engine::Engine;
 use orender_engine::osc::MeterTimings;
@@ -65,6 +66,12 @@ pub struct HostTelemetry {
     realigns: Arc<AtomicU64>,
     underruns: Arc<AtomicU64>,
     rephases: Arc<AtomicU64>,
+    /// Frames lost and frames made up between the capture point and the
+    /// ring, for the life of the host (plan §25).
+    frames_lost: Arc<AtomicU64>,
+    frames_filled: Arc<AtomicU64>,
+    lost_total: u64,
+    filled_total: u64,
     /// Counts of the streams already over: an epoch's servo starts from zero,
     /// the channels count for the life of the host.
     carried: Counts,
@@ -129,6 +136,10 @@ impl HostTelemetry {
             realigns: channel("realigns", "Realigns", "sync", "count"),
             underruns: channel("underruns", "Underruns", "sync", "count"),
             rephases: channel("source_rephases", "Source rephases", "sync", "count"),
+            frames_lost: channel("frames_lost", "Frames lost", "accounting", "frames"),
+            frames_filled: channel("frames_filled", "Frames filled", "accounting", "frames"),
+            lost_total: 0,
+            filled_total: 0,
             carried: Counts::default(),
             registry,
         };
@@ -207,6 +218,45 @@ impl HostTelemetry {
         put(&self.source_ppm, s.source_ppm);
         put(&self.device_ppm, s.device_ppm);
         self.put_counts(self.carried.plus(Counts::of(s)));
+    }
+
+    /// Frames were lost or made up between the capture point and the ring:
+    /// said in the log, and counted. (A change of the renderer's own delay
+    /// moves frames, it does not lose or make any.)
+    pub fn note_discontinuity(&mut self, event: &DiscontinuityEvent) {
+        use audio_sync::DiscontinuityReason as Reason;
+        let frames = event.delta_frames;
+        match event.reason {
+            Reason::RenderDelay => {
+                log::info!("sync host: the render's own delay changed by {frames:+} frames");
+                return;
+            }
+            // A source that pauses does so burst after burst.
+            Reason::GapFill => log::debug!(
+                "sync host: {frames} frames of silence for a gap in the source (stream frame {})",
+                event.position
+            ),
+            // What a player does when it resumes or seeks.
+            Reason::Overlap => log::debug!(
+                "sync host: {} frames of a burst cut short dropped (stream frame {})",
+                frames.unsigned_abs(),
+                event.position
+            ),
+            reason => log::warn!(
+                "sync host: {} frames {} at the {:?} ({reason:?}, stream frame {})",
+                frames.unsigned_abs(),
+                if frames < 0 { "lost" } else { "made up" },
+                event.stage,
+                event.position
+            ),
+        }
+        if frames < 0 {
+            self.lost_total += frames.unsigned_abs();
+        } else {
+            self.filled_total += frames as u64;
+        }
+        put(&self.frames_lost, self.lost_total as f64);
+        put(&self.frames_filled, self.filled_total as f64);
     }
 
     /// A stream is over: its counts stay in the totals.
@@ -324,6 +374,25 @@ mod tests {
 
     /// The counts are the host's, not the stream's: a new stream's servo
     /// starts from zero and the channels go on from where they were.
+    /// Frames lost and frames that filled a gap are counted for the life of
+    /// the host; a change of the render's own delay is neither.
+    #[test]
+    fn what_was_lost_and_filled_is_counted() {
+        use audio_sync::{Accounting, DiscontinuityReason as Reason, Stage};
+        let mut t = HostTelemetry::new(150.0);
+        let mut accounting = Accounting::new();
+        for (stage, delta, reason) in [
+            (Stage::Decoder, -1536, Reason::DecoderShortfall),
+            (Stage::Deframer, 38_400, Reason::GapFill),
+            (Stage::Ring, -64, Reason::Overflow),
+            (Stage::Renderer, 1024, Reason::RenderDelay),
+        ] {
+            t.note_discontinuity(&accounting.note(stage, 0, delta, reason));
+        }
+        assert_eq!(value(&t, "frames_lost"), 1600.0);
+        assert_eq!(value(&t, "frames_filled"), 38_400.0);
+    }
+
     #[test]
     fn counts_carry_across_streams() {
         let mut t = HostTelemetry::new(150.0);

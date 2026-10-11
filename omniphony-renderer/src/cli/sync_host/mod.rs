@@ -47,6 +47,7 @@ use audio_output::sync_output::{
     SyncSnapshot, SyncTelemetry,
 };
 use audio_rt::{Producer, frame_ring};
+use audio_sync::{Accounting, DiscontinuityEvent, DiscontinuityReason, InFlightAudit, Stage};
 use bridge_api::RInputTransport;
 use clap::Args;
 use orender_engine::engine::{Engine, RenderedAudio};
@@ -175,6 +176,19 @@ const RING_SECONDS: f64 = 4.0;
 /// The device's quantum is asked for as a duration: this many frames at
 /// this rate, whatever the device's own rate.
 const QUANTUM_RATE: u32 = 48_000;
+
+/// The low point of what is in flight is taken over this long (s): longer
+/// than any decoder's batch (TrueHD delivers every 20 ms).
+const AUDIT_WINDOW_S: f64 = 0.2;
+/// A change of what is in flight below this is nothing (frames).
+const AUDIT_TOLERANCE_FRAMES: f64 = 8.0;
+/// The longest gap in the source that is filled with silence (s). A longer
+/// one is a stream that stopped: its count starts over when it resumes.
+const MAX_GAP_FILL_S: f64 = 1.0;
+/// `RenderedAudio::sample_pos` of a block the host made itself (silence for
+/// a gap, the cycle that ends a stream): it has no place on the engine's
+/// timeline.
+const FILL_POS: u64 = u64::MAX;
 
 /// Constant decoder hold (frames) by IEC 61937 data type (spike S4 §2).
 /// E-AC-3 with objects holds nothing but cannot be told apart at this level;
@@ -399,6 +413,30 @@ struct Epoch {
     /// IEC 61937 data type of the last burst: a change is a new stream.
     data_type: Option<u8>,
     parser_bytes: u64,
+    /// Where on the transport the bytes the parser was last reset on start:
+    /// a burst's place is this plus the parser's own count.
+    parser_origin: u64,
+    /// How far the stream is covered on its transport, to find its gaps.
+    coverage: Coverage,
+    /// The fraction of a frame the last gap fill left over.
+    fill_carry: f64,
+    /// Frames to drop from what the decoder delivers next: what a burst cut
+    /// short holds beyond the time it was given on the transport.
+    trim_frames: u64,
+    /// Frames the full ring refused since the device was opened: delivered
+    /// by the decoder all the same.
+    refused_frames: u64,
+    /// Finds the frames a stage lost or made up without saying so.
+    audit: InFlightAudit,
+    accounting: Accounting,
+    /// What was lost or made up, for the host to log and count.
+    events: Vec<DiscontinuityEvent>,
+    /// The render's own delay (frames) the source's count allows for;
+    /// `None` until it was first read.
+    render_delay: Option<u64>,
+    /// A ring frame and the engine's sample that sits there: where the
+    /// listener is on the engine's timeline, from where it is in the ring.
+    anchor: Option<(u64, u64)>,
     started: Instant,
     /// When the device was last opened: how long it has had to start.
     device_opened: Instant,
@@ -1021,6 +1059,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 t,
                 bytes,
                 transport,
+                skipped,
             }) => {
                 // No epoch for it: the stream was already running when this
                 // run took the capture over (a restart from the config, the
@@ -1038,7 +1077,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 if let Some(ep) = epoch.as_mut() {
                     ep.last_transport =
                         transport_in_epoch(&mut ep.transport_origin, transport, bytes.len());
-                    feed_chunk(&mut engine, ep, &ctx, t, &bytes);
+                    feed_chunk(&mut engine, ep, &ctx, t, &bytes, skipped);
                 }
             }
             Some(ReaderMsg::End) => {
@@ -1096,6 +1135,15 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             for closed in ep.closed.drain(..) {
                 telemetry.close_epoch(&closed);
             }
+            ep.follow_render_delay(engine.output_latency_samples());
+            for event in ep.events.drain(..) {
+                telemetry.note_discontinuity(&event);
+            }
+            // Where the listener is, for a client to show each block when
+            // it is heard.
+            if let Some((sample, rate)) = ep.heard_position(reference_now_s()) {
+                engine.set_heard_at(sample, rate);
+            }
         }
         telemetry.publish(
             &mut engine,
@@ -1131,6 +1179,9 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
 /// An epoch is over: its counts, and those of the devices it closed on the
 /// way, stay in the totals.
 fn close_epoch(telemetry: &mut HostTelemetry, ep: &mut Epoch) {
+    for event in ep.events.drain(..) {
+        telemetry.note_discontinuity(&event);
+    }
     for closed in ep.closed.drain(..) {
         telemetry.close_epoch(&closed);
     }
@@ -1224,6 +1275,16 @@ impl Epoch {
             pipe_carrier_known: false,
             data_type: None,
             parser_bytes: 0,
+            parser_origin: 0,
+            coverage: Coverage::default(),
+            fill_carry: 0.0,
+            trim_frames: 0,
+            refused_frames: 0,
+            audit: InFlightAudit::new(AUDIT_WINDOW_S, AUDIT_TOLERANCE_FRAMES),
+            accounting: Accounting::new(),
+            events: Vec::new(),
+            render_delay: None,
+            anchor: None,
             started: Instant::now(),
             device_opened: Instant::now(),
             closed: Vec::new(),
@@ -1254,7 +1315,7 @@ impl Epoch {
             // Another rate with no new stream announced: what was counted
             // was in the old rate's frames. The count starts over at the
             // next burst.
-            self.transport_base = None;
+            self.restart_transport();
         }
         self.stream_rate = Some(format.rate);
         self.device_opened = Instant::now();
@@ -1298,9 +1359,83 @@ impl Epoch {
             .transport_base
             .map(|(bytes, frames)| (bytes, frames - gone));
         self.pushed_frames = 0;
+        self.refused_frames = 0;
+        // What the count allows for (frames lost, the render's delay) is
+        // still true of the stream.
+        let allowed = self.tap.offset() as i64;
         self.tap = Arc::new(SourceTap::new());
+        self.tap.account(allowed);
+        self.audit.reset();
+        self.anchor = None;
         self.telemetry = Arc::new(SyncTelemetry::new());
         self.output_report = OutputReport::Pending;
+    }
+
+    /// Whether the source is counted on its transport. The frames lost on
+    /// the way to the ring then have to be said; counted as what the decoder
+    /// delivered, they never were in the count.
+    fn counts_transport(&self) -> bool {
+        self.transport_base.is_some() && transport(self).is_some()
+    }
+
+    /// The count of the source's frames starts over at the next burst (a
+    /// new phase: another content, another rate, a stream that stopped).
+    /// What was lost before is behind the new origin; the render's own
+    /// delay is not.
+    fn restart_transport(&mut self) {
+        self.transport_base = None;
+        self.coverage = Coverage::default();
+        self.fill_carry = 0.0;
+        self.trim_frames = 0;
+        self.audit.reset();
+        self.tap
+            .account(self.render_delay.unwrap_or(0) as i64 - self.tap.offset() as i64);
+    }
+
+    /// `delta` frames were made up (positive) or lost (negative) between the
+    /// capture point and the ring. With `counted`, the source's count is
+    /// moved by as much, so the latency stays the one a frame really has;
+    /// without, the frames are in step already (silence that fills a gap of
+    /// the same length).
+    fn note(&mut self, stage: Stage, delta: i64, reason: DiscontinuityReason, counted: bool) {
+        if delta == 0 {
+            return;
+        }
+        if counted {
+            self.tap.account(delta);
+        }
+        self.events.push(
+            self.accounting
+                .note(stage, self.pushed_frames, delta, reason),
+        );
+    }
+
+    /// The render's own delay (a linear-phase filter): the content sits that
+    /// many frames later in the blocks, and the count allows for it, so the
+    /// latency held is the content's.
+    fn follow_render_delay(&mut self, frames: u64) {
+        match self.render_delay.replace(frames) {
+            // What the render is built with, taken in as the epoch starts.
+            None => self.tap.account(frames as i64),
+            Some(before) => self.note(
+                Stage::Renderer,
+                frames as i64 - before as i64,
+                DiscontinuityReason::RenderDelay,
+                true,
+            ),
+        }
+    }
+
+    /// Where the listener is on the engine's timeline at `now_s`: the sample
+    /// and the rate it plays at. `None` until the device plays.
+    fn heard_position(&self, now_s: f64) -> Option<(u64, u32)> {
+        let device = self.device.as_ref()?;
+        if !device.output.is_streaming() {
+            return None;
+        }
+        let heard = self.telemetry.heard_frame(now_s)?;
+        let sample = heard_sample(self.anchor?, heard, self.render_delay.unwrap_or(0));
+        Some((sample, device.format.rate))
     }
 
     /// The channel mapping is a live option: a device opened under another
@@ -1325,6 +1460,14 @@ impl Epoch {
             self.pace_limit_frames,
         );
         self.pushed_frames += pushed;
+        // The ring's last frame, on the engine's timeline.
+        let last = match self.pending.front() {
+            Some((block, offset)) if *offset > 0 => Some((block.sample_pos, *offset)),
+            _ => done.last().map(|block| (block.sample_pos, block.n_frames)),
+        };
+        if let Some((pos, frames)) = last.filter(|(pos, _)| *pos != FILL_POS) {
+            self.anchor = Some((self.pushed_frames, pos + frames as u64));
+        }
         if !done.is_empty() {
             engine.recycle(done);
         }
@@ -1518,20 +1661,7 @@ fn finish_stream(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>) {
     if let Some(format) = ep.device.as_ref().map(|d| d.format) {
         let cycle =
             u64::from(ctx.env.config.quantum) * u64::from(format.rate) / u64::from(QUANTUM_RATE);
-        let frames = cycle as usize + 64;
-        push_blocks(
-            engine,
-            ep,
-            ctx,
-            vec![RenderedAudio {
-                samples: vec![0.0; frames * format.channels],
-                n_channels: format.channels as u32,
-                n_frames: frames,
-                sample_rate: format.rate,
-                sample_pos: 0,
-                input_pts_us: None,
-            }],
-        );
+        push_fill(engine, ep, ctx, cycle as usize + 64);
     }
     ep.finishing = true;
 }
@@ -1602,13 +1732,25 @@ fn feed_pcm(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, tr: Transpor
 }
 
 /// Deframe, decode and render one chunk, push the audio, publish the clock.
-fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, t: f64, bytes: &[u8]) {
+/// Deframe, decode and render one chunk, push the audio, publish the clock.
+/// `skipped`: bytes a pipe's reader read before these and could not hand
+/// over.
+fn feed_chunk(
+    engine: &mut Engine,
+    ep: &mut Epoch,
+    ctx: &PlayCtx<'_>,
+    t: f64,
+    bytes: &[u8],
+    skipped: u64,
+) {
     let pcm_transport = ep
         .last_transport
         .filter(|tr| tr.format == CarrierFormat::PcmF32);
     if let Some(tr) = pcm_transport {
         feed_pcm(engine, ep, ctx, tr, bytes);
         publish_clock(ep, t, bytes.len());
+        // Linear PCM has no hold: what is in flight is what was lost.
+        audit_in_flight(ep, t, tr.bytes_end);
         return;
     }
     let has_sync = spdif::contains_sync(bytes);
@@ -1616,14 +1758,39 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, t: f64, by
         ep.is_spdif = Some(has_sync);
     } else if ep.is_spdif == Some(false) && has_sync {
         ep.is_spdif = Some(true);
-        ep.parser.reset();
-        ep.parser_bytes = 0;
-        ep.transport_base = None;
+        ep.restart_transport();
     }
     if ep.is_spdif == Some(true) {
+        // Where these bytes start on the transport: the capture's count
+        // when it has one, else what was fed plus what the reader skipped.
+        // Bytes that never reached the parser cut a burst: it starts again
+        // from here, on the same count. The time they spanned is a gap like
+        // any other, filled when the next burst shows where it ends.
+        let starts_at = match ep.last_transport {
+            Some(tr) => tr.bytes_end.saturating_sub(bytes.len() as u64),
+            None => ep.parser_bytes + skipped,
+        };
+        if starts_at != ep.parser_bytes {
+            if starts_at > ep.parser_bytes && ep.parser_bytes > ep.parser_origin {
+                log::warn!(
+                    "sync host: {} bytes of the input never reached the deframer",
+                    starts_at - ep.parser_bytes
+                );
+            }
+            ep.parser.reset();
+            ep.parser_origin = starts_at;
+        }
         ep.parser.push_bytes(bytes);
-        ep.parser_bytes += bytes.len() as u64;
+        ep.parser_bytes = starts_at + bytes.len() as u64;
         while let Some(packet) = ep.parser.get_next_packet() {
+            let at = ep.parser_origin + packet.start_byte;
+            if spdif::is_pause(packet.data_type) {
+                // No audio, and the time passes: silence up to here, and
+                // from here at the next burst.
+                fill_gap(engine, ep, ctx, at);
+                ep.coverage.pause_burst();
+                continue;
+            }
             ep.hold = decoder_hold_frames(packet.data_type);
             if ep.data_type.is_some_and(|d| d != packet.data_type) {
                 // A track change: the content and its timing start over. The
@@ -1635,17 +1802,35 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, t: f64, by
                     ep.data_type.unwrap_or_default(),
                     packet.data_type
                 );
-                ep.transport_base = None;
+                ep.restart_transport();
                 ep.tap.mark_break();
             }
             ep.data_type = Some(packet.data_type);
             if ep.last_transport.is_none() {
                 follow_pipe_carrier(ep, packet.data_type);
             }
+            if log::log_enabled!(log::Level::Debug)
+                && let (Some(last), Some(spacing)) =
+                    (ep.coverage.last_burst_at, ep.coverage.spacing)
+                && at.saturating_sub(last) != spacing
+            {
+                log::debug!(
+                    "sync host: burst at byte {at}, {} after the last one ({spacing} expected), \
+                     covered to {:?}, in flight {:?}",
+                    at.saturating_sub(last),
+                    ep.coverage.covered_to,
+                    ep.audit.baseline(),
+                );
+            }
+            fill_gap(engine, ep, ctx, at);
+            trim_overlap(ep, at);
+            ep.coverage.audio_burst(at, packet.payload.len());
             // The first burst is the count's origin, whether or not the
             // carrier it is counted on is known yet.
             ep.transport_base
-                .get_or_insert((packet.start_byte, ep.pushed_frames as f64));
+                .get_or_insert((at, ep.pushed_frames as f64));
+            // Everything before this burst has been through the decoder.
+            audit_in_flight(ep, t, at);
             match engine.process(&packet.payload, RInputTransport::Iec61937, packet.data_type) {
                 Ok(blocks) => push_blocks(engine, ep, ctx, blocks),
                 Err(e) => log::debug!("sync host: decode error: {e:#}"),
@@ -1658,6 +1843,217 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, t: f64, by
         }
     }
     publish_clock(ep, t, bytes.len());
+}
+
+/// The burst preamble (Pa, Pb, Pc, Pd), before the payload.
+const IEC61937_PREAMBLE_BYTES: u64 = 8;
+/// How many equal steps from one audio burst to the next make the spacing.
+const SPACING_STEPS: u32 = 3;
+
+/// How far a stream is covered on its transport (bytes), by its audio
+/// bursts and by the silence that filled its gaps.
+///
+/// The audio bursts of a stream are evenly spaced, and each covers the
+/// transport from its start to the next one's nominal start. Where the next
+/// burst starts later than that, the stream has a gap: pause bursts,
+/// stuffing, bursts that were lost.
+///
+/// The spacing is the step that [`SPACING_STEPS`] bursts in a row agree on.
+/// One odd step never changes it: a burst cut short by a seek is followed
+/// by one that starts early, and taking that step for the spacing would
+/// find a gap after every burst from then on.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Coverage {
+    covered_to: Option<u64>,
+    /// The start of the last audio burst, while no pause burst followed it.
+    last_burst_at: Option<u64>,
+    spacing: Option<u64>,
+    /// A step other than the spacing, and how many bursts in a row took it.
+    candidate: Option<(u64, u32)>,
+    /// Where the last audio burst's payload ended.
+    payload_end: Option<u64>,
+}
+
+impl Coverage {
+    /// The gap before a burst that starts at `at`: 0 when the stream is
+    /// covered up to there, or to within half a burst of it (a step that
+    /// small is not a gap, and filling it would be a click). Nothing is a
+    /// gap until the spacing is known.
+    fn gap_before(&self, at: u64) -> u64 {
+        let (Some(covered_to), Some(spacing)) = (self.covered_to, self.spacing) else {
+            return 0;
+        };
+        let gap = at.saturating_sub(covered_to);
+        if gap < spacing / 2 { 0 } else { gap }
+    }
+
+    /// The gap before `at` was filled.
+    fn filled_to(&mut self, at: u64) {
+        self.covered_to = Some(at);
+    }
+
+    /// The overlap before a burst that starts at `at`: how much of the time
+    /// the last burst covers the new one takes over, when it starts before
+    /// that burst was through (a player that resumes or seeks does not wait
+    /// for the end of the burst it was in). 0 when the last burst's payload
+    /// itself was cut: what a decoder makes of that is not known here.
+    fn overlap_before(&self, at: u64) -> u64 {
+        match (self.covered_to, self.payload_end, self.spacing) {
+            (Some(covered_to), Some(payload_end), Some(_)) if at >= payload_end => {
+                covered_to.saturating_sub(at)
+            }
+            _ => 0,
+        }
+    }
+
+    /// An audio burst starts at `at`, with a payload of `payload` bytes.
+    fn audio_burst(&mut self, at: u64, payload: usize) {
+        self.payload_end = Some(at + IEC61937_PREAMBLE_BYTES + payload as u64);
+        let step = self
+            .last_burst_at
+            .map(|last| at.saturating_sub(last))
+            .filter(|step| *step > 0);
+        match (step, self.candidate) {
+            (Some(step), _) if Some(step) == self.spacing => self.candidate = None,
+            (Some(step), Some((candidate, steps))) if candidate == step => {
+                if steps + 1 >= SPACING_STEPS {
+                    self.spacing = Some(step);
+                    self.candidate = None;
+                } else {
+                    self.candidate = Some((step, steps + 1));
+                }
+            }
+            (Some(step), _) => self.candidate = Some((step, 1)),
+            (None, _) => {}
+        }
+        self.last_burst_at = Some(at);
+        self.covered_to = Some(at + self.spacing.unwrap_or(0));
+    }
+
+    /// A pause burst: what follows it is not one spacing after the last
+    /// audio burst.
+    fn pause_burst(&mut self) {
+        self.last_burst_at = None;
+    }
+}
+
+/// A burst starts at `at` on the transport: if the stream is not covered up
+/// to there, the gap is played as silence of the same length, so the frames
+/// that follow keep their place. A gap too long to be one, or one with
+/// nothing rendered yet to fill it in, is a new phase: the count starts at
+/// the burst that follows.
+fn fill_gap(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, at: u64) {
+    let gap = ep.coverage.gap_before(at);
+    if gap == 0 {
+        return;
+    }
+    let frames = transport(ep)
+        .and_then(|tr| transport_frames(gap, tr, ep.data_type, ep.stream_rate))
+        .filter(|_| ep.transport_base.is_some());
+    let format = ep.device.as_ref().map(|d| d.format);
+    match (frames, format) {
+        (Some(frames), Some(format)) if frames <= MAX_GAP_FILL_S * f64::from(format.rate) => {
+            let whole = (frames + ep.fill_carry).floor();
+            ep.fill_carry = frames + ep.fill_carry - whole;
+            push_fill(engine, ep, ctx, whole as usize);
+            ep.note(
+                Stage::Deframer,
+                whole as i64,
+                DiscontinuityReason::GapFill,
+                false,
+            );
+            ep.coverage.filled_to(at);
+        }
+        _ => {
+            ep.restart_transport();
+            if ep.device.is_some() {
+                ep.tap.mark_break();
+            }
+        }
+    }
+}
+
+/// A burst starts at `at` on the transport, before the last one was through:
+/// the decoder delivers all of that burst all the same, more than the time
+/// it was given. That many frames are dropped from what it delivers next, so
+/// the frames that follow keep their place.
+fn trim_overlap(ep: &mut Epoch, at: u64) {
+    let overlap = ep.coverage.overlap_before(at);
+    // A paced source holds no latency: nothing to keep in place.
+    if overlap == 0 || ep.paced || ep.transport_base.is_none() {
+        return;
+    }
+    let frames =
+        transport(ep).and_then(|tr| transport_frames(overlap, tr, ep.data_type, ep.stream_rate));
+    if let Some(frames) = frames {
+        ep.trim_frames += frames.round() as u64;
+    }
+}
+
+/// Silence the host makes itself, in the format the device is open for.
+fn push_fill(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, frames: usize) {
+    let Some(format) = ep.device.as_ref().map(|d| d.format) else {
+        return;
+    };
+    if frames == 0 {
+        return;
+    }
+    push_blocks(
+        engine,
+        ep,
+        ctx,
+        vec![RenderedAudio {
+            samples: vec![0.0; frames * format.channels],
+            n_channels: format.channels as u32,
+            n_frames: frames,
+            sample_rate: format.rate,
+            sample_pos: FILL_POS,
+            input_pts_us: None,
+        }],
+    );
+}
+
+/// One reading of what is in flight between the capture point and the ring:
+/// the source frames received up to `at` on the transport, less what was
+/// delivered. A step that stays is frames a stage lost or made up.
+fn audit_in_flight(ep: &mut Epoch, t: f64, at: u64) {
+    // A paced source holds no latency: nothing depends on its count.
+    if ep.paced || ep.device.is_none() {
+        return;
+    }
+    let (Some(tr), Some((base_bytes, base_frames))) = (transport(ep), ep.transport_base) else {
+        return;
+    };
+    let received = transport_frames(
+        at.saturating_sub(base_bytes),
+        tr,
+        ep.data_type,
+        ep.stream_rate,
+    );
+    let Some(received) = received else {
+        return;
+    };
+    let delivered = (ep.pushed_frames + ep.refused_frames) as f64;
+    if let Some(step) = ep.audit.observe(t, base_frames + received - delivered) {
+        let reason = if step < 0 {
+            DiscontinuityReason::DecoderShortfall
+        } else {
+            DiscontinuityReason::DecoderExcess
+        };
+        ep.note(Stage::Decoder, step, reason, true);
+    }
+}
+
+/// Where the listener is on the engine's timeline: `anchor` is a ring frame
+/// and the engine's sample that sits there, `heard` the ring frame heard
+/// now; the content is `render_delay` frames behind its place in the blocks.
+/// Never past the anchor: what follows it in the ring (silence that fills a
+/// gap) is not on the timeline, and the listener stays on the last sample
+/// rendered until more is.
+fn heard_sample(anchor: (u64, u64), heard: f64, render_delay: u64) -> u64 {
+    let (ring_frame, sample) = anchor;
+    let behind = (ring_frame as f64 - heard).max(0.0);
+    (sample as f64 - behind - render_delay as f64).max(0.0) as u64
 }
 
 /// Publish where the source stood when the chunk that ends at `t` arrived.
@@ -1784,10 +2180,43 @@ fn push_blocks(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, blocks: V
             ep.pending.push_back((block, 0));
             continue;
         }
-        let pushed = device.producer.push(&block.samples) as u64;
+        // What a burst cut short holds beyond its time is dropped here.
+        let trim = if block.sample_pos == FILL_POS {
+            0
+        } else {
+            ep.trim_frames.min(frames)
+        };
+        let frames = frames - trim;
+        let from = trim as usize * format.channels;
+        let pushed = device.producer.push(&block.samples[from..]) as u64;
         ep.pushed_frames += pushed;
-        // A full ring: the output stopped draining. Counted.
-        ep.dropped_frames += frames - pushed;
+        if block.sample_pos != FILL_POS {
+            ep.anchor = Some((ep.pushed_frames, block.sample_pos + trim + pushed));
+        }
+        if trim > 0 {
+            ep.trim_frames -= trim;
+            ep.dropped_frames += trim;
+            ep.note(
+                Stage::Deframer,
+                -(trim as i64),
+                DiscontinuityReason::Overlap,
+                false,
+            );
+        }
+        // A full ring: the output stopped draining. Said, so that the
+        // frames that follow keep their latency.
+        let refused = frames - pushed;
+        if refused > 0 {
+            ep.dropped_frames += refused;
+            ep.refused_frames += refused;
+            let counted = ep.counts_transport();
+            ep.note(
+                Stage::Ring,
+                -(refused as i64),
+                DiscontinuityReason::Overflow,
+                counted,
+            );
+        }
         done.push(block);
     }
     engine.recycle(done);
@@ -2122,6 +2551,123 @@ mod tests {
         );
     }
 
+    /// Evenly spaced bursts leave no gap. Pause bursts, a burst that went
+    /// missing and stuffing are gaps of exactly the time they span; a step
+    /// smaller than half a burst is not one.
+    #[test]
+    fn a_stream_is_covered_by_its_bursts_and_its_gaps_are_found() {
+        const S: u64 = 6144;
+        let mut coverage = Coverage::default();
+        // Nothing is a gap until the spacing is known: three steps alike.
+        assert_eq!(coverage.gap_before(0), 0);
+        coverage.audio_burst(0, 1792);
+        coverage.audio_burst(S, 1792);
+        coverage.audio_burst(2 * S, 1792);
+        assert_eq!(coverage.gap_before(9 * S), 0);
+        coverage.audio_burst(3 * S, 1792);
+        assert_eq!(coverage.spacing, Some(S));
+        for i in 4..10 {
+            assert_eq!(coverage.gap_before(i * S), 0);
+            coverage.audio_burst(i * S, 1792);
+        }
+        // Pause bursts every 256 bytes for three spacings, then audio: the
+        // gaps found add up to the pause, whatever the pause bursts' own
+        // spacing.
+        let pause_from = 10 * S;
+        let resume = 13 * S;
+        let mut filled = 0;
+        let mut at = pause_from;
+        while at < resume {
+            let gap = coverage.gap_before(at);
+            if gap > 0 {
+                filled += gap;
+                coverage.filled_to(at);
+            }
+            coverage.pause_burst();
+            at += 256;
+        }
+        let gap = coverage.gap_before(resume);
+        filled += gap;
+        coverage.filled_to(resume);
+        coverage.audio_burst(resume, 1792);
+        assert_eq!(filled, resume - pause_from);
+        // The spacing was not learned from the step across the pause.
+        assert_eq!(coverage.gap_before(resume + S), 0);
+        coverage.audio_burst(resume + S, 1792);
+        // A burst went missing: one spacing of gap.
+        assert_eq!(coverage.gap_before(resume + 3 * S), S);
+        coverage.filled_to(resume + 3 * S);
+        coverage.audio_burst(resume + 3 * S, 1792);
+        // A few bytes late is not a gap.
+        assert_eq!(coverage.gap_before(resume + 4 * S + 16), 0);
+    }
+
+    /// A burst that starts before the last one was through takes over the
+    /// rest of its time: that much is to drop, when the last burst's payload
+    /// was whole. Bursts in step overlap nothing.
+    #[test]
+    fn a_burst_that_starts_early_overlaps_the_one_before() {
+        const S: u64 = 6144;
+        let mut coverage = Coverage::default();
+        for i in 0..8 {
+            assert_eq!(coverage.overlap_before(i * S), 0);
+            coverage.audio_burst(i * S, 1792);
+        }
+        // 2048 bytes into the burst's time, past its payload (8 + 1792).
+        assert_eq!(coverage.overlap_before(7 * S + 2048), S - 2048);
+        // Inside its payload: not known what the decoder makes of it.
+        assert_eq!(coverage.overlap_before(7 * S + 1000), 0);
+        coverage.audio_burst(7 * S + 2048, 1792);
+        assert_eq!(coverage.overlap_before(8 * S + 2048), 0);
+    }
+
+    /// A seek cuts a burst short: the next one starts early, then the stream
+    /// goes on at its spacing from there. The odd step is not the spacing,
+    /// and nothing is a gap.
+    #[test]
+    fn a_burst_cut_short_does_not_change_the_spacing() {
+        const S: u64 = 6144;
+        let mut coverage = Coverage::default();
+        for i in 0..8 {
+            coverage.audio_burst(i * S, 1792);
+        }
+        let cut = 7 * S + 1000;
+        assert_eq!(coverage.gap_before(cut), 0);
+        coverage.audio_burst(cut, 1792);
+        for i in 1..20 {
+            assert_eq!(
+                coverage.gap_before(cut + i * S),
+                0,
+                "burst {i} after the cut"
+            );
+            coverage.audio_burst(cut + i * S, 1792);
+        }
+        assert_eq!(coverage.spacing, Some(S));
+        // Another stream's spacing takes over once it has shown itself.
+        let other = cut + 20 * S;
+        for i in 0..4 {
+            coverage.audio_burst(other + i * 2048, 1792);
+        }
+        assert_eq!(coverage.spacing, Some(2048));
+    }
+
+    /// The listener is behind the ring's last frame by what the ring and
+    /// the device hold, and the content behind its place in the blocks by
+    /// the render's own delay. Never before the stream's first sample.
+    #[test]
+    fn the_listener_is_placed_on_the_engines_timeline() {
+        // Ring frame 48000 holds the engine's sample 96000 (the ring was
+        // reopened a second into the stream); the listener hears ring frame
+        // 40800 (150 ms behind).
+        assert_eq!(heard_sample((48_000, 96_000), 40_800.0, 0), 88_800);
+        assert_eq!(heard_sample((48_000, 96_000), 40_800.0, 1_024), 87_776);
+        // Before anything is out.
+        assert_eq!(heard_sample((1_024, 1_024), -7_200.0, 0), 0);
+        // Silence filled a gap after the anchor and is being heard: the
+        // listener is on the last sample rendered, not past it.
+        assert_eq!(heard_sample((48_000, 96_000), 60_000.0, 0), 96_000);
+    }
+
     /// An output reopened under a running stream starts its ring at 0, and
     /// the source's count moves with it: the frame the new ring starts on is
     /// the one that follows what the old ring was given.
@@ -2133,6 +2679,12 @@ mod tests {
         ep.transport_base = Some((4096, 0.0));
         ep.pushed_frames = 48_000;
         ep.pending.push_back((block(300, 0.0), 100));
+        ep.note(
+            Stage::Decoder,
+            -1_536,
+            DiscontinuityReason::DecoderShortfall,
+            true,
+        );
         let tap = Arc::clone(&ep.tap);
 
         ep.restart_count();
@@ -2144,6 +2696,41 @@ mod tests {
         // the new ring's frame 0, the same hold as before.
         assert_eq!(ep.transport_base, Some((4096, -48_200.0)));
         assert!(!Arc::ptr_eq(&tap, &ep.tap), "the new servo reads a new tap");
+        assert_eq!(ep.tap.offset(), -1_536.0, "what was lost is still lost");
+    }
+
+    /// Frames lost on the way to the ring move the source's count when it
+    /// is the transport's (they were counted in), and silence that fills a
+    /// gap does not (it is as long as the gap). A new phase forgets the
+    /// losses and keeps the render's own delay.
+    #[test]
+    fn what_is_lost_moves_the_count_and_what_fills_a_gap_does_not() {
+        let mut ep = Epoch::new(EpochKind::Stream, None);
+        ep.follow_render_delay(1_024);
+        assert_eq!(ep.tap.offset(), 1_024.0);
+        assert!(
+            ep.events.is_empty(),
+            "the delay the epoch starts with is no event"
+        );
+
+        ep.note(
+            Stage::Decoder,
+            -1_536,
+            DiscontinuityReason::DecoderShortfall,
+            true,
+        );
+        ep.note(Stage::Deframer, 4_800, DiscontinuityReason::GapFill, false);
+        assert_eq!(ep.tap.offset(), 1_024.0 - 1_536.0);
+        assert_eq!(ep.events.len(), 2);
+
+        ep.follow_render_delay(0);
+        assert_eq!(ep.tap.offset(), -1_536.0);
+        assert_eq!(ep.events.len(), 3);
+
+        ep.follow_render_delay(2_048);
+        ep.restart_transport();
+        assert_eq!(ep.tap.offset(), 2_048.0);
+        assert_eq!(ep.transport_base, None);
     }
 
     /// A file holds one format: a block in another starts it over, so the

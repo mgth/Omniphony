@@ -77,6 +77,8 @@ pub struct OutputCore {
     telemetry: Arc<SyncTelemetry>,
     channels: usize,
     max_frames: usize,
+    /// The ring's rate (Hz): what its frames are counted at.
+    source_rate_hz: f64,
     /// Resampler output before channel mapping and fades.
     scratch: Vec<f32>,
     fade_in_done: usize,
@@ -102,6 +104,7 @@ impl OutputCore {
         resampler.reset(ring.read() as i64);
         resampler.set_ratio(nominal);
         Self {
+            source_rate_hz: config.servo.source_rate_hz,
             servo: Servo::new(config.servo),
             resampler,
             ring,
@@ -142,6 +145,12 @@ impl OutputCore {
             source_offset: self.tap.offset(),
             source_breaks: self.tap.breaks(),
         };
+        self.telemetry.publish_heard(
+            input.t,
+            input.play_position,
+            input.heard_delay_s,
+            self.source_rate_hz,
+        );
         let plan = self.servo.plan(&input);
         let silence = plan.silence_frames.min(frames);
         let played = frames - silence;

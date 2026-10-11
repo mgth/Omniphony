@@ -37,6 +37,10 @@ pub enum ReaderMsg {
         t: f64,
         bytes: Vec<u8>,
         transport: Option<Transport>,
+        /// Bytes read just before these and not handed over (the host was
+        /// behind): the time they spanned on the carrier passed all the
+        /// same. Always 0 with a `transport`, which counts them itself.
+        skipped: u64,
     },
     /// The pipe went silent.
     End,
@@ -332,6 +336,8 @@ fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadSha
     } = shared;
     let mut buf = vec![0u8; CHUNK_BYTES];
     let mut in_stream = false;
+    // Bytes read and not handed over since the last chunk that was.
+    let mut skipped = 0u64;
     let mut last_data = 0.0f64;
     while !stop.load(Ordering::Relaxed) {
         let paced_now = paced.load(Ordering::Relaxed);
@@ -381,6 +387,7 @@ fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadSha
             t,
             bytes: buf[..n].to_vec(),
             transport: None,
+            skipped: std::mem::take(&mut skipped),
         };
         queued.fetch_add(1, Ordering::Relaxed);
         if paced_now {
@@ -392,7 +399,13 @@ fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadSha
         }
         match tx.try_send(chunk) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+            Err(TrySendError::Full(ReaderMsg::Chunk {
+                bytes,
+                skipped: before,
+                ..
+            })) => {
+                // The next chunk that gets through says what went missing.
+                skipped = before + bytes.len() as u64;
                 queued.fetch_sub(1, Ordering::Relaxed);
                 let dropped = stats.chunks_dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 if dropped.is_power_of_two() {
@@ -401,6 +414,7 @@ fn read_loop(fd: i32, kind: ReadKind, tx: SyncSender<ReaderMsg>, shared: ReadSha
                     );
                 }
             }
+            Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => break,
         }
     }

@@ -502,6 +502,7 @@ fn pump(
                 format: s.format,
                 bytes_end: s.bytes_end - stream_base,
             }),
+            skipped: 0,
         };
         if tx.send(msg).is_err() {
             return;
@@ -538,6 +539,7 @@ mod tests {
                 t,
                 bytes,
                 transport: Some(transport),
+                ..
             } => (t, bytes.len(), transport.bytes_end),
             _ => panic!("expected a chunk with its transport"),
         }

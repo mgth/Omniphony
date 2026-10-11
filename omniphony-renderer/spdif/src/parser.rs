@@ -24,6 +24,13 @@ pub fn contains_sync(bytes: &[u8]) -> bool {
     find_sync(bytes).is_some()
 }
 
+/// Whether an IEC 61937 data type is a burst that carries no audio: a null
+/// burst (0) or a pause burst (3). The time it spans on the carrier passes
+/// all the same.
+pub fn is_pause(data_type: u8) -> bool {
+    matches!(data_type, 0x00 | 0x03)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Iec61937Packet {
     pub data_type: u8,
@@ -167,6 +174,10 @@ fn payload_size_from_pd(data_type: u8, pd_raw: u16) -> (usize, &'static str) {
         // for eight times the burst it will ever receive, so the packet is
         // never completed and the stream decodes to silence.
         0x01 | 0x0B | 0x0C | 0x0D => (usize::from(pd_raw) / 8, "bits"),
+        // Null (0) and pause (3) bursts (IEC 61937-1): a bit count too. A
+        // pause burst carries 32 bits; read as 32 bytes it would run into
+        // whatever follows a short one.
+        0x00 | 0x03 => (usize::from(pd_raw) / 8, "bits"),
         // E-AC3 (0x15), TrueHD/MAT (0x16) and DTS-HD type IV (0x11): byte count.
         _ => (usize::from(pd_raw), "bytes"),
     }
@@ -194,6 +205,26 @@ mod tests {
         assert!(!contains_sync(&[0x1F, 0x4E, 0x72, 0xF8]));
         assert!(!contains_sync(&[0x72, 0xF8, 0x1F]));
         assert!(!contains_sync(&[]));
+    }
+
+    /// A pause burst's length code counts bits (32 of them): the burst that
+    /// follows a short one is not swallowed as its payload.
+    #[test]
+    fn a_pause_burst_is_four_bytes_long() {
+        let mut parser = SpdifParser::new();
+        let pause = [
+            0x72, 0xF8, 0x1F, 0x4E, 0x03, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let audio = [0x72, 0xF8, 0x1F, 0x4E, 0x01, 0x00, 0x10, 0x00, 0xAA, 0xBB];
+        parser.push_bytes(&pause);
+        parser.push_bytes(&[0; 4]);
+        parser.push_bytes(&audio);
+        let first = parser.get_next_packet().unwrap();
+        assert!(super::is_pause(first.data_type));
+        assert_eq!((first.payload.len(), first.start_byte), (4, 0));
+        let second = parser.get_next_packet().unwrap();
+        assert!(!super::is_pause(second.data_type));
+        assert_eq!((second.payload, second.start_byte), (vec![0xAA, 0xBB], 16));
     }
 
     #[test]

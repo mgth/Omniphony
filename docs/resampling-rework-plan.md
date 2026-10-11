@@ -1227,8 +1227,9 @@ Each is one pull request, stacked in this order.
 - **6f — the live sink.** DONE. PCM on the `own` sink: §21. The input
   chosen and reconfigured live (mode, the sink's node and description):
   §24.
-- **6g — accounting (4d).** The time-conserving deframer, the per-burst
-  decoder audit, discontinuity events, and the listener's position.
+- **6g — accounting (4d).** DONE, see §25: gaps in the source played as
+  silence of their length, the decoder audit, discontinuity events, the
+  render's own delay inside the latency, and the listener's position.
 - **6h — runtime switches.** Device and latency: done in §20. The idle
   feed: done in §21. The rate: done in §23. Left: hot switch of the backend.
 - **6i — Windows and macOS.** The cpal adapter wired in (with the timestamp
@@ -1873,3 +1874,134 @@ needs one to open a pipe or to start the sink).
   carries the mode, the node and the description).
 - A switch away from a pipe closes it under its writer, which gets `EPIPE`,
   as with any reader that goes away.
+
+## 25. Phase 6g — accounting, and where the listener is (2026-10-11)
+
+The latency the servo holds is `(N_in − N_play)/fs + D`. It is a frame's
+real latency only while the frame the ring holds at index `n` is the
+source's frame `n`. Whatever breaks that (a gap in the source with nothing
+put in its place, a burst a decoder skips, frames a full ring refuses) moves
+every later frame by as much, for good, without the servo seeing it: a
+restart after an underrun re-anchors on the same wrong count. This slice
+keeps the two counts in step, and says each time it had to.
+
+### Gaps and overlaps: the deframer conserves time
+
+The host follows how far the stream is covered on its transport
+(`Coverage`): each audio burst covers from its start to the next one's
+nominal start, the spacing being the step several bursts in a row agree on.
+
+- **A gap** (the next burst starts later: pause bursts, stuffing, bursts
+  that never reached the deframer) is played as silence of exactly its
+  length, pushed into the ring as the gap is found, so a long pause is
+  silence as it goes and not an underrun. A gap longer than 1 s, or one
+  with nothing rendered yet to fill it in, is a new phase instead: the
+  count starts at the burst that follows.
+- **An overlap** (the next burst starts before the last one was through): a
+  player that resumes or seeks starts a new burst at once and cuts the
+  stuffing of the one it was in. The decoder delivers all of the cut burst
+  all the same, more than the time it was given; that many frames are
+  dropped from what it delivers next. Only when the cut burst's payload was
+  whole: what a decoder makes of a truncated one is left to the audit.
+- **Pause and null bursts** (IEC 61937 data types 3 and 0) are not fed to
+  the decoder, and are no longer taken for a change of track (each one
+  restarted the phase). The parser read their length as bytes; it is bits.
+- **Bytes that never reached the deframer** (a pipe's reader that could not
+  hand a chunk over now says how many bytes it skipped; the sink's count
+  shows it by itself) keep their place on the transport: the deframer
+  starts again after them, and the time they spanned is a gap like another.
+
+### The audit: what a decoder loses or makes up
+
+What is in flight between the capture point and the ring (frames received
+up to the start of a burst, less frames delivered) is the decoder's hold
+plus what it batches: its low points are one constant. `InFlightAudit`
+takes the low point over 0.2 s windows; a step of more than 8 frames that
+a second window confirms is frames lost (or made up), accounted to the
+source's count through the clock tap (`N_in + inserted − dropped`, which
+the servo has read since phase 3 and nothing fed). The servo then sees the
+latency error it really has: it corrects it by rate under the realign
+threshold, and realigns once above.
+
+Frames a full ring refuses are accounted the same way, at once.
+
+What the pipeline holds when the audit starts is taken as its hold: frames
+a decoder discards while it finds its first sync point are not seen (the
+count cannot tell a hold from a loss; the decoder would have to say).
+
+### The render's own delay
+
+A linear-phase crossover delays the content inside the blocks by
+`Engine::output_latency_samples`. The source's count allows for it (as
+frames inserted at the renderer), so the latency held is the content's and
+not the blocks'. It was outside the measurement.
+
+### Where the listener is
+
+The output core publishes, each cycle, the ring frame being heard (one
+number: the frame heard at time 0 of the reference clock, so a reader never
+pairs one cycle's time with another's position). The host keeps one ring
+frame and the engine's sample that sits there, and tells the engine where
+the listener is on its timeline (`Engine::set_heard_at`, sent as
+`/playout/heard` at the rate the OSC layer already limits it to), less the
+render's own delay. Never past the last sample rendered: silence that fills
+a gap is not on the timeline.
+
+### Telemetry
+
+Two diag channels, for the life of the host: `frames_lost` and
+`frames_filled`. Each loss is a warning in the log, with its stage and its
+place in the stream; gap fills and overlaps are debug lines (a source that
+pauses does so burst after burst).
+
+### Fixed on the way
+
+- On the `own` sink, an epoch whose first chunk held no burst (it starts in
+  a burst's stuffing: about one AC-3 stream in three at a 1024 quantum)
+  counted the transport from the wrong origin: the bytes before the first
+  burst were in the capture's count and not in the deframer's. The latency
+  held was short by their duration (up to a quantum). Found by reading; the
+  servo's own figure cannot show it.
+- The first attempt took the smallest step between bursts for the spacing:
+  one burst cut short by a seek then made a gap of every burst after it,
+  and the audit and the gap filler fought (15 realigns in 8 s). The spacing
+  is now the step three bursts in a row agree on.
+
+### Verified
+
+- Unit tests: the audit (a steady hold, a loss reported once, a passing
+  rise, a reset); the coverage (even bursts, pause bursts of any spacing
+  adding up to the pause, a missing burst, a few bytes late, a burst cut
+  short, another stream's spacing); what moves the count and what does not;
+  a reopened output keeps what was lost; the listener's place; the parser's
+  pause burst; the telemetry counts.
+- Live, isolated (private sinks, private config, OSC on a free port), the
+  output recorded at the sink's monitor; a 440 Hz tone, on a timed pipe
+  unless said:
+
+| Stream | Result |
+|---|---|
+| AC-3 with 0.8 s of pause bursts | 799.8 ms of silence where the pause is; 38 400 frames filled (25 bursts); latency within ±0.05 ms, no realign |
+| …one burst gone, zeros in its place | 31.7 ms of silence; 1 536 frames filled; no realign |
+| …one corrupt burst | The decoder conceals it (34.5 ms of silence, its 1 536 frames delivered): nothing to account |
+| …the whole 40 s | 39.952 s from the tone's first cycle to its last: time is conserved |
+| DTS with three corrupt bursts in a row | The decoder drops them: 1 536 frames said lost at the decoder 0.3 to 0.6 s later (in one step or two); one realign |
+| …then one corrupt burst | 512 frames lost (10.7 ms, under the threshold): corrected by rate, no realign |
+| …the whole 40 s | 39.945 s from the tone's first cycle to its last, and 9.987 to 9.993 s between the two losses for 9.995 s in the stream: the frames after a loss keep their time |
+| mpv into the `own` sink, paused 0.4 s, paused 3 s, sought | At the seek, 1 024 frames of the cut burst dropped, no realign, 150.000 ms; before, the audio played 21 ms late from there on |
+| The listener's position | Advances at the stream's rate, about 6 000 frames (125 ms) behind the block being rendered at a 180 ms target |
+| The runs of §21, §23 and §24 again | No loss reported, latencies as before |
+
+### Not done
+
+- Frames a decoder discards before its first sync point (see the audit).
+- A decoder audit per burst against its nominal length (S4's wording): the
+  bridge does not say what a burst holds, so the audit works on the count,
+  0.4 s late. A loss that empties the ring before that is an underrun
+  first.
+- The render's own delay was not exercised live (no linear-phase crossover
+  in the test config).
+- E-AC-3, TrueHD and DTS-HD streams with gaps were not played: the coverage
+  is the same code, their spacing is learned as AC-3's is.
+- The Studio does nothing new with `/playout/heard` here: it follows the
+  sound when asked to, as it did with the legacy host's.
