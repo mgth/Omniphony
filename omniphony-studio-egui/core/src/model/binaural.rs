@@ -23,7 +23,7 @@ pub const HRIR_SOURCES: &[(&str, &str)] = &[
 /// The source id of a measured room.
 pub const BRIR: &str = "brir";
 
-/// The output-mode select: the pair `(outputMode, mode)` of the binaural
+/// The output-mode choice: the pair `(outputMode, mode)` of the binaural
 /// state flattened into one choice.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OutputMode {
@@ -33,7 +33,7 @@ pub enum OutputMode {
 }
 
 impl OutputMode {
-    /// The select's entries, in order.
+    /// The entries offered, in order.
     pub const ALL: [OutputMode; 3] = [
         OutputMode::Speaker,
         OutputMode::BinauralDirect,

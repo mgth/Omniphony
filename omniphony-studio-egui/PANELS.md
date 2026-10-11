@@ -61,9 +61,16 @@ read. A section that the bar already has a button for uses the bar's icon
 `SECTION_*`. The pinned editors have no icon: they are not sections that
 fold, they close with their selection.
 
+**Kept rows.** `Section::show_keeping` draws rows under the header whether
+the section is folded or not, before the body. It is for the one choice a
+section hangs on and that is made more often than the section is opened — the
+output mode's cards, under the Renderer and Listening headers — and for
+nothing else: a section that keeps its favourite rows out is not folded.
+What the kept rows already say is left out of the `summary`.
+
 **Section body, before the groups.** Readouts that belong to the header
 widget (the numbers under a gauge), then the rows that apply to the whole
-section (the output mode), then a `tab_bar` if the section has tabs. Then
+section (the decode thread), then a `tab_bar` if the section has tabs. Then
 the groups.
 
 **Group bar.** Left to right: the title; a short **status** in its own colour
@@ -111,6 +118,7 @@ controls are placed from the right and never overflow the panel.
 | Note | `note` | One line of `FONT_SIZE_SMALL` in `TEXT_MUTED` under the rows it explains. |
 | Banner | `banner`, `banner_with` | Something the user has to act on: a missing bridge, an update. |
 | Tabs | `tab_bar` | Equal-width tabs, one active, above the groups they switch. |
+| Choice cards | `choice_cards` under a `help::label`, its `help::card` after them | The few-way choice that decides what the rest of the section shows (the output mode): cards, each with an icon (or several, for a choice that combines others) and a short label, the one in force in the accent. Side by side at equal widths, icons over label and always two label lines high, while every label fits its share without a word broken; stacked one per line, icons before label, where it would not (a narrow panel). A card says the choice's full name on hover when its label shortens it or is cut. Not for a setting among others: that is a select. |
 
 Sizes and colours, so a title is read as a title:
 
@@ -216,8 +224,8 @@ if chosen != current {
 
 | Section | Groups | Status |
 |---|---|---|
-| Renderer (`renderer.rs`) | Output mode and decode thread (always offered; a note says it takes effect in the embedded engine only) above the tabs; Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs | follows this document |
-| Renderer › Binaural tab (`binaural.rs`) | HRTF, Distance, Listening room, Head tracking | follows |
+| Renderer (`renderer.rs`) | Output mode (`choice_cards`: speakers, headphones, headphones on a virtual room) kept under the header, folded or not; decode thread (always offered; a note says it takes effect in the embedded engine only) above the tabs; Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs. The tab bar is drawn only where the render runs both stages (a virtual or measured room on headphones): on the speakers the Renderer groups stand alone, on the direct headphone path the Binaural groups do, without the crossover (`RendererTab::on_path`) | follows this document |
+| Renderer › Binaural tab (`binaural.rs`) | HRTF, Distance, Listening room, Head tracking; not drawn while the output is the speakers | follows |
 | Latency (`latency.rs`) | Global far actions, Local resampling controller (its switch in the bar, pause and the wizard in the inset), Stabilization phases | follows |
 | Master (`audio.rs`) | Auto-gain (switch and clip dot in the bar, ceiling in the inset) | follows |
 | DRC / Loudness (`drc.rs`) | DRC (mode; weight), Loudness (switch; readouts) | follows |
