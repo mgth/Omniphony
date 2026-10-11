@@ -1,5 +1,5 @@
 //! The options the standalone renderer's host declares: its audio output,
-//! the output's adaptive resampler and its live input
+//! the loop that holds the output's latency and its live input
 //! (`renderer::options::HostOptionSpec` rows over [`HostIo`], the output and input of [`crate::HostAudio`]).
 //!
 //! The engine publishes, sets and applies them like the core's options —

@@ -1,5 +1,5 @@
 //! Dump the schema of the options the standalone renderer's host declares
-//! (audio output, adaptive resampling, live input) as JSON on stdout.
+//! (audio output, latency loop, live input) as JSON on stdout.
 //!
 //! CI pipes this into `omniphony-studio-egui/scripts/check-options-schema.mjs`,
 //! next to the core schema (`renderer`'s `dump_options_schema`), so the

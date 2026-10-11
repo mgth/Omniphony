@@ -1,14 +1,12 @@
-//! Audio input controls: bridged-input config and the live device/backend path
-//! (node, layout, mapping, clock, LFE handling), plus importing
-//! a layout file for the live input.
+//! Audio input controls: which input the renderer reads (the bridge's pipe
+//! or its own PipeWire sink), the sink's name, and the Apply that makes a
+//! change take.
 //!
 //! Each command forwards a value to the renderer over OSC.
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
-use crate::model::layouts;
 use crate::osc_contract;
-use std::fs;
 
 pub fn control_input_config(state: &SharedState, payload: serde_json::Value) {
     let text = match serde_json::to_string(&payload) {
@@ -62,22 +60,6 @@ pub fn control_input_mode(state: &SharedState, value: String) {
     );
 }
 
-pub fn control_input_live_backend(state: &SharedState, value: String) {
-    // PipeWire is the only live-input backend; the renderer rejects the
-    // retired `asio` value (and anything else), so do not send it.
-    let trimmed = value.trim().to_ascii_lowercase();
-    if trimmed != "pipewire" {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_INPUT_LIVE_BACKEND.to_string(),
-            value: trimmed,
-        },
-    );
-}
-
 pub fn control_input_live_node(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
@@ -98,107 +80,6 @@ pub fn control_input_live_description(state: &SharedState, value: String) {
     );
 }
 
-pub fn control_input_live_layout(state: &SharedState, value: String) {
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_INPUT_LIVE_LAYOUT.to_string(),
-            value: value.trim().to_string(),
-        },
-    );
-}
-
-pub fn import_input_layout_from_path(
-    state: &SharedState,
-    path: String,
-) -> Result<serde_json::Value, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("empty layout path".to_string());
-    }
-    layouts::load_layout_file(std::path::Path::new(trimmed))
-        .ok_or_else(|| "failed to parse layout file".to_string())?;
-    let contents =
-        fs::read_to_string(trimmed).map_err(|e| format!("failed to read layout file: {e}"))?;
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_INPUT_LIVE_LAYOUT.to_string(),
-            value: trimmed.to_string(),
-        },
-    );
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_INPUT_LIVE_LAYOUT_IMPORT.to_string(),
-            value: contents,
-        },
-    );
-    Ok(serde_json::json!({ "path": trimmed }))
-}
-
-pub fn control_input_live_channels(state: &SharedState, value: i32) {
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendInt {
-            address: osc_contract::CONTROL_INPUT_LIVE_CHANNELS.to_string(),
-            value: value.max(1),
-        },
-    );
-}
-
-pub fn control_input_live_sample_rate(state: &SharedState, value: i32) {
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendInt {
-            address: osc_contract::CONTROL_INPUT_LIVE_SAMPLE_RATE.to_string(),
-            value: value.max(1),
-        },
-    );
-}
-
-pub fn control_input_live_clock_mode(state: &SharedState, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "dac" | "pipewire" | "upstream") {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_INPUT_LIVE_CLOCK_MODE.to_string(),
-            value: trimmed,
-        },
-    );
-}
-
-pub fn control_input_live_map(state: &SharedState, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "7.1-fixed") {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_INPUT_LIVE_MAP.to_string(),
-            value: trimmed,
-        },
-    );
-}
-
-pub fn control_input_live_lfe_mode(state: &SharedState, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "object" | "direct" | "drop") {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: osc_contract::CONTROL_INPUT_LIVE_LFE_MODE.to_string(),
-            value: trimmed,
-        },
-    );
-}
-
 /// `sendInputConfig`: the whole input document, as the renderer takes it,
 /// built from the model. Every input control writes the model first and then
 /// asks for the document, so the document has one shape in one place.
@@ -209,15 +90,8 @@ pub fn send_input_document(state: &SharedState, apply: bool) {
         serde_json::json!({
             "mode": live.app.input_mode,
             "liveInput": {
-                "backend": input.backend,
                 "node": input.node,
                 "description": input.description,
-                "layout": input.layout,
-                "clockMode": input.clock_mode.clone().unwrap_or_else(|| "dac".into()),
-                "channels": input.channels.unwrap_or(2),
-                "sampleRate": input.sample_rate.unwrap_or(192_000),
-                "map": input.map.clone().unwrap_or_else(|| "7.1-fixed".into()),
-                "lfeMode": input.lfe_mode.clone().unwrap_or_else(|| "object".into()),
             }
         })
     };
@@ -227,17 +101,9 @@ pub fn send_input_document(state: &SharedState, apply: bool) {
     }
 }
 
-/// The input mode. The PipeWire path comes with its own channel and rate
-/// defaults, as the web sets them.
+/// The input mode: shown at once and sent, to take at the next Apply.
 pub fn set_input_mode(state: &SharedState, mode: String) {
-    {
-        let mut live = state.inner.lock().unwrap();
-        live.app.input_mode = Some(mode.clone());
-        if mode == "pipewire" {
-            live.app.live_input.channels = Some(2);
-            live.app.live_input.sample_rate = Some(192_000);
-        }
-    }
+    state.inner.lock().unwrap().app.input_mode = Some(mode);
     send_input_document(state, false);
 }
 
@@ -257,12 +123,6 @@ pub fn set_live_input_description(state: &SharedState, description: String) {
     send_input_document(state, false);
 }
 
-/// The clock mode is held until Apply: it cannot change under a running
-/// bridge, so this only records the choice.
-pub fn set_live_input_clock_mode(state: &SharedState, clock: String) {
-    state.inner.lock().unwrap().app.live_input.clock_mode = Some(clock);
-}
-
 /// A single bridge library path; empty means "auto-detect". The list of one
 /// it is, sent as the list to an engine that has one.
 pub fn set_render_bridge_path(state: &SharedState, path: String) {
@@ -276,40 +136,12 @@ pub fn set_orender_input_pipe(state: &SharedState, path: String) {
     super::render::control_render_input_pipe(state, value);
 }
 
-/// Apply: a bridge that has to be (re)started needs its path and clock set
-/// and the pipeline restarted — keeping, not saving, the unsaved edits;
-/// otherwise the input document is enough.
-///
-/// A renderer on the sync engine (`sync_engine`) reopens its capture in
-/// place, whatever changed, and has no clock mode: the document and its
-/// apply are all it takes.
-pub fn apply_input(state: &SharedState, mode: &str, active: Option<&str>, sync_engine: bool) {
-    if sync_engine {
-        state.inner.lock().unwrap().app.input_apply_pending = Some(1);
-        send_input_document(state, true);
-        return;
-    }
-    let clock = {
-        let live = state.inner.lock().unwrap();
-        live.app
-            .live_input
-            .clock_mode
-            .clone()
-            .unwrap_or_else(|| "dac".to_owned())
-    };
-    let needs_bootstrap =
-        mode == "pipe_bridge" || (mode == "pipewire" && active != Some("pipewire"));
-    if needs_bootstrap {
-        // The whole bridge list, not only its first entry: the single
-        // path would cut it down to one bridge.
-        super::bridges::resend_for_restart(state);
-        control_input_live_clock_mode(state, clock);
-        super::engine::control_restart(state);
-    } else {
-        state.inner.lock().unwrap().app.input_apply_pending = Some(1);
-        control_input_live_clock_mode(state, clock);
-        send_input_document(state, true);
-    }
+/// Apply: the renderer reopens its capture in place, whatever changed (the
+/// mode, the sink's name, the pipe), so the document and its apply are all it
+/// takes — nothing restarts and nothing is saved.
+pub fn apply_input(state: &SharedState) {
+    state.inner.lock().unwrap().app.input_apply_pending = Some(1);
+    send_input_document(state, true);
 }
 
 pub fn control_input_apply(state: &SharedState) {
@@ -326,38 +158,51 @@ mod apply_tests {
     use super::*;
     use crate::host::commands::tests::{sent_addresses, state_with_outbox};
 
-    /// A bridge that needs a restart gets one, and the unsaved edits ride it
-    /// over: nothing Apply does writes the renderer's config.
+    /// The renderer reopens its capture in place: the document and its
+    /// apply, with no restart, and nothing Apply does writes the config.
     #[test]
-    fn a_bridge_apply_restarts_without_saving() {
+    fn an_apply_sends_the_document_and_restarts_nothing() {
         let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
-        apply_input(&state, "pipe_bridge", Some("pipe_bridge"), false);
-        let sent = sent_addresses(&rx);
+        apply_input(&state);
         assert_eq!(
-            sent.last().map(String::as_str),
-            Some(osc_contract::CONTROL_RESTART)
+            sent_addresses(&rx),
+            [
+                osc_contract::CONTROL_CONFIG_INPUT,
+                osc_contract::CONTROL_CONFIG_INPUT_APPLY
+            ]
         );
-        assert!(
-            !sent.iter().any(|a| a == osc_contract::CONTROL_SAVE_CONFIG
-                || a == osc_contract::CONTROL_RELOAD_CONFIG),
-            "{sent:?}"
-        );
+        assert_eq!(state.read().app.input_apply_pending, Some(1));
     }
 
-    /// The sync engine reopens its capture in place: the document and its
-    /// apply, whatever the mode, with no restart and no clock mode.
+    /// The document carries what the renderer's input takes: the mode and
+    /// its sink's name, nothing of the shape the old capture needed.
     #[test]
-    fn an_apply_on_the_sync_engine_restarts_nothing() {
-        for (mode, active) in [("pipe_bridge", "pipewire"), ("pipewire", "pipe_bridge")] {
-            let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
-            apply_input(&state, mode, Some(active), true);
-            assert_eq!(
-                sent_addresses(&rx),
-                [
-                    osc_contract::CONTROL_CONFIG_INPUT,
-                    osc_contract::CONTROL_CONFIG_INPUT_APPLY
-                ]
-            );
-        }
+    fn the_document_is_the_mode_and_the_sink() {
+        let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        set_input_mode(&state, "pipewire".into());
+        set_live_input_node(&state, " my-sink ".into());
+        let last = rx
+            .try_iter()
+            .filter_map(|control| match control {
+                crate::osc::Control::Send { address, args }
+                    if address == osc_contract::CONTROL_CONFIG_INPUT =>
+                {
+                    match args.first() {
+                        Some(rosc::OscType::String(text)) => Some(text.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .last()
+            .expect("a document was sent");
+        let document: serde_json::Value = serde_json::from_str(&last).unwrap();
+        assert_eq!(
+            document,
+            serde_json::json!({
+                "mode": "pipewire",
+                "liveInput": { "node": "my-sink", "description": null }
+            })
+        );
     }
 }

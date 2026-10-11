@@ -1503,7 +1503,7 @@ mod connection_tests {
         {
             let mut live = state.inner.lock().unwrap();
             for value in [10.0, 20.0, 30.0] {
-                apply_event(&mut live, parser::OscEvent::StateLatencySmoothed { value });
+                apply_event(&mut live, parser::OscEvent::StateLatencyInstant { value });
             }
             apply_event(
                 &mut live,
@@ -1516,7 +1516,7 @@ mod connection_tests {
             reset_connection_model(&mut live);
             apply_event(
                 &mut live,
-                parser::OscEvent::StateLatencySmoothed { value: 40.0 },
+                parser::OscEvent::StateLatencyInstant { value: 40.0 },
             );
             live.resampling.copy_to(&mut trace);
             assert_eq!(trace.series["latency"].len(), 1);

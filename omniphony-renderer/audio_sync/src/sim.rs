@@ -826,9 +826,9 @@ mod tests {
     }
 
     /// The same with TrueHD at 60 ms, the kind of value a config written for
-    /// the legacy engine carries (its target was the output buffer).
+    /// the adaptive resampler carries (its target was the output buffer).
     #[test]
-    fn a_legacy_sized_target_is_raised_with_truehd() {
+    fn a_buffer_sized_target_is_raised_with_truehd() {
         let sc = Scenario {
             duration_s: 3_600.0,
             servo: with_target(0.060),

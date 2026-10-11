@@ -28,12 +28,8 @@ impl StudioSpike {
         if !policy.audio_output {
             return;
         }
-        let (audio, devices, ready, unroutable, mapping, backend_declared, rate_declared) = {
+        let (audio, devices, ready, unroutable, mapping) = {
             let live = self.host.read();
-            // The sync engine's renderer says which parts of the output it
-            // can change (its declared options); an older renderer, which
-            // says nothing, can change them all.
-            let declared = |key: &str| !policy.sync_engine || live.declares_option(key);
             (
                 live.app.audio.clone(),
                 live.app.audio.audio_output_devices.clone(),
@@ -45,8 +41,6 @@ impl StudioSpike {
                     .unwrap_or_default(),
                 live.option_str("output_channel_mapping")
                     .unwrap_or_else(|| "by_index".to_owned()),
-                declared("output_backend"),
-                declared("output_sample_rate"),
             )
         };
         let file_backend = audio.audio_output_backend.as_deref() == Some("file");
@@ -81,7 +75,7 @@ impl StudioSpike {
                 // the backend select that leads back to a device.
                 let advanced = self.advanced;
                 ui.add_enabled_ui(ready, |ui| {
-                    if backend_declared && (advanced || file_backend) {
+                    if advanced || file_backend {
                         self.output_backend_row(ui, file_backend);
                     }
                     if file_backend {
@@ -91,13 +85,7 @@ impl StudioSpike {
                     }
                     if advanced {
                         self.channel_mapping_row(ui, &mapping, &unroutable);
-                        if rate_declared {
-                            self.sample_rate_row(
-                                ui,
-                                audio.audio_sample_rate.unwrap_or(0),
-                                policy.sync_engine,
-                            );
-                        }
+                        self.sample_rate_row(ui, audio.audio_sample_rate.unwrap_or(0));
                     }
                 });
             });
@@ -312,16 +300,10 @@ impl StudioSpike {
     /// The rate is a text field with a menu of presets beside it, not a plain
     /// select: a device may run at a rate nobody thought to list, and the
     /// renderer accepts any of them. The presets are a shortcut, not the set.
-    fn sample_rate_row(&mut self, ui: &mut Ui, current: u32, sync_engine: bool) {
+    /// The rate the output is opened at; unset follows each stream.
+    fn sample_rate_row(&mut self, ui: &mut Ui, current: u32) {
         let mut apply: Option<u32> = None;
-        // Unset means two things: the legacy engine follows the device, the
-        // sync engine each stream.
-        let help = if sync_engine {
-            "help.audio.sampleRateSync"
-        } else {
-            "help.audio.sampleRate"
-        };
-        widgets::label_row_help(ui, t("audio.sampleRate"), help, |ui| {
+        widgets::label_row_help(ui, t("audio.sampleRate"), "help.audio.sampleRate", |ui| {
             // A preset picks a value *and* applies it, as the web's menu
             // does.
             egui::ComboBox::from_id_salt("audio-sample-rate")

@@ -120,16 +120,8 @@ pub struct MeterTimings {
     pub write_time_ms: Option<f32>,
     pub frame_duration_ms: Option<f32>,
     pub latency_instant_ms: Option<f32>,
-    pub latency_control_ms: Option<f32>,
-    pub latency_smoothed_ms: Option<f32>,
     pub latency_target_ms: Option<f32>,
-    pub latency_downstream_ms: Option<f32>,
-    pub latency_avail_input_ms: Option<f32>,
-    pub latency_output_fifo_ms: Option<f32>,
-    pub latency_resampler_pending_ms: Option<f32>,
     pub resample_ratio: Option<f32>,
-    pub adaptive_band: Option<&'static str>,
-    pub adaptive_state: Option<&'static str>,
     pub drc_gain: Option<f32>,
 }
 

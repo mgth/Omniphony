@@ -401,8 +401,8 @@ pub fn build_renderer_state_json(
 /// actually do, so studio can label the connection and hide inapplicable panels.
 ///
 /// Capabilities are derived from the host's actual control surfaces:
-/// - `has_audio` (an [`AudioControl`] is attached) → output device + adaptive
-///   resampling + latency-target controls apply (the standalone CLI/service).
+/// - `has_audio` (an [`AudioControl`] is attached) → output device and
+///   latency-target controls apply (the standalone CLI/service).
 /// - `has_input` (an [`InputControl`] is attached) → input-source controls apply.
 ///
 /// The embedded host (`liborender` inside mpv) owns no audio output or input

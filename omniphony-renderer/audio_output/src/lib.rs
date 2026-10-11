@@ -5,7 +5,6 @@
 pub mod control;
 pub mod file_sink;
 pub mod host_choice;
-pub mod iir;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
 #[cfg(target_os = "linux")]

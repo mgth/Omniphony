@@ -4,8 +4,8 @@
 //! (`/omniphony/control/audio/*` and `/omniphony/control/input/*`): it applies
 //! those messages to the shared [`audio_output::AudioControl`] and
 //! [`audio_input::InputControl`] and publishes their state. The device I/O
-//! itself (backends, the adaptive resampler, the pacer) lives in the
-//! `audio_output` and `audio_input` crates and is driven by the host. It sits
+//! itself (the backends, the loop that holds the latency) lives in the
+//! `audio_output` and `audio_sync` crates and is driven by the host. It sits
 //! *above* the engine: it depends on `runtime_control` (the audio-free core),
 //! `audio_output` and `audio_input` — never the other way around.
 //!
@@ -395,7 +395,7 @@ impl HostControlHandler for HostAudio {
         let input = &self.input;
         let mut messages = Vec::with_capacity(2);
 
-        // /state/audio: full output-device + adaptive-resampling state.
+        // /state/audio: the output device, its format and the latency target.
         messages.push(OscPacket::Message(OscMessage {
             addr: osc_contract::STATE_AUDIO.to_string(),
             args: vec![OscType::String(build_audio_state_json(audio))],
@@ -501,9 +501,7 @@ impl HostControlHandler for HostAudio {
     }
 
     fn amend_saved_config(&self, render: &mut renderer::config::RenderConfig) {
-        // Every declared option (audio output, adaptive resampling, live
-        // input), then the imported live-input layout, which is structured
-        // data rather than an option.
+        // Every declared option (audio output, latency loop, live input).
         renderer::options::host_store_to_config(render, &self.io, self.rows());
     }
 }
@@ -754,12 +752,12 @@ mod tests {
             host.input.requested_snapshot().node_name.as_deref(),
             Some("den")
         );
+        // An address of the regulation this host replaced is not one of its.
+        let retired = osc_contract::CONTROL_LATENCY_TARGET
+            .replace("latency_target", "adaptive_resampling/kp_near");
         assert!(
-            host.handle(
-                "/omniphony/control/adaptive_resampling/kp_near",
-                &msg("", vec![OscType::Float(2.0)])
-            )
-            .is_none()
+            host.handle(&retired, &msg("", vec![OscType::Float(2.0)]))
+                .is_none()
         );
     }
 

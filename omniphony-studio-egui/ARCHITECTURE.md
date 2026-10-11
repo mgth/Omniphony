@@ -24,7 +24,7 @@ it is planned in [`docs/studio-egui-boundary-plan.md`](../docs/studio-egui-bound
 
 | Tier | Where | Owns | Must not |
 |---|---|---|---|
-| **Core** | `core/`, the crate `omniphony-studio-core`: `model/`, `osc/`, `host/`, `auto_tune/`, `i18n.rs`, `stats.rs` | the renderer protocol, the application and session state, everything that happens over time, all I/O | depend on any UI crate |
+| **Core** | `core/`, the crate `omniphony-studio-core`: `model/`, `osc/`, `host/`, `i18n.rs`, `stats.rs` | the renderer protocol, the application and session state, everything that happens over time, all I/O | depend on any UI crate |
 | **Scene** | `scene/`, the crate `omniphony-studio-scene`: `view/`, `render/` | what the 3D scene shows, and the wgpu that draws it | depend on a UI toolkit |
 | **UI** | this crate: `app.rs`, `main.rs`, `panels/`, `prefs/`, `ui/` | drawing, input, view state (camera, selection, tabs, text being typed), native dialogs | spell an OSC address, send raw control messages, write the model, do I/O, run periodic behaviour |
 

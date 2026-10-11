@@ -24,10 +24,7 @@ where
 
     let known_subcommands = [
         OsString::from("render"),
-        OsString::from("input-live"),
         OsString::from("generate-vbap"),
-        #[cfg(target_os = "linux")]
-        OsString::from("sync-play"),
         #[cfg(target_os = "windows")]
         OsString::from("list-asio-devices"),
         #[cfg(target_os = "macos")]

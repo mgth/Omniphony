@@ -222,7 +222,7 @@ type FileOut = Rc<RefCell<FileState>>;
 /// block in another format (a stream at another rate, another output width)
 /// cannot continue what is there: the samples are written as they come, so
 /// they would sit under a header that describes the ones before them. That
-/// block starts the file over, as the legacy host does.
+/// block starts the file over.
 struct FileState {
     destination: String,
     container: FileSinkFormat,
@@ -524,8 +524,8 @@ pub enum OutputKind {
     },
 }
 
-/// Everything a run of the host is given: what `sync-play` and `render`
-/// each resolve from their own arguments and the config. The latency, the
+/// Everything a run of the host is given: what `render` resolves from its
+/// arguments and the config. The latency, the
 /// loop settings and the output device are what the run starts with: OSC
 /// clients change them while it runs ([`controls`]).
 #[derive(Debug, Clone)]
@@ -753,7 +753,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     let mut stream_ended = false;
 
     // The path the run was given is the input path a client is shown and a
-    // Save writes, as the legacy host records it.
+    // Save writes.
     if let Some(path) = &config.input_path {
         engine
             .renderer_control()

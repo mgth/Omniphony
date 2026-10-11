@@ -400,36 +400,12 @@ pub enum OscEvent {
     StateLatencyInstant {
         value: f64,
     },
-    #[serde(rename = "state:latency:control")]
-    StateLatencyControl {
-        value: f64,
-    },
-    #[serde(rename = "state:latency:smoothed")]
-    StateLatencySmoothed {
-        value: f64,
-    },
-    #[serde(rename = "state:latency:downstream")]
-    StateLatencyDownstream {
-        value: f64,
-    },
     #[serde(rename = "state:latency:target")]
     StateLatencyTarget {
         value: f64,
     },
     #[serde(rename = "state:latency:target_requested")]
     StateLatencyTargetRequested {
-        value: f64,
-    },
-    #[serde(rename = "state:latency:avail_input")]
-    StateLatencyAvailInput {
-        value: f64,
-    },
-    #[serde(rename = "state:latency:output_fifo")]
-    StateLatencyOutputFifo {
-        value: f64,
-    },
-    #[serde(rename = "state:latency:resampler_pending")]
-    StateLatencyResamplerPending {
         value: f64,
     },
     #[serde(rename = "state:diag:schema")]
@@ -630,66 +606,6 @@ pub enum OscEvent {
     #[serde(rename = "state:config:save_error")]
     StateConfigSaveError {
         message: String,
-    },
-    #[serde(rename = "state:adaptive_resampling")]
-    StateAdaptiveResampling {
-        enabled: bool,
-    },
-    #[serde(rename = "state:adaptive_resampling:enable_far_mode")]
-    StateAdaptiveResamplingEnableFarMode {
-        enabled: bool,
-    },
-    #[serde(rename = "state:adaptive_resampling:force_silence_in_far_mode")]
-    StateAdaptiveResamplingForceSilenceInFarMode {
-        enabled: bool,
-    },
-    #[serde(rename = "state:adaptive_resampling:hard_recover_high_in_far_mode")]
-    StateAdaptiveResamplingHardRecoverHighInFarMode {
-        enabled: bool,
-    },
-    #[serde(rename = "state:adaptive_resampling:hard_recover_low_in_far_mode")]
-    StateAdaptiveResamplingHardRecoverLowInFarMode {
-        enabled: bool,
-    },
-    #[serde(rename = "state:adaptive_resampling:far_mode_return_fade_in_ms")]
-    StateAdaptiveResamplingFarModeReturnFadeInMs {
-        value: f64,
-    },
-    #[serde(rename = "state:adaptive_resampling:kp_near")]
-    StateAdaptiveResamplingKpNear {
-        value: f64,
-    },
-    #[serde(rename = "state:adaptive_resampling:ki")]
-    StateAdaptiveResamplingKi {
-        value: f64,
-    },
-    #[serde(rename = "state:adaptive_resampling:integral_discharge_ratio")]
-    StateAdaptiveResamplingIntegralDischargeRatio {
-        value: f64,
-    },
-    #[serde(rename = "state:adaptive_resampling:max_adjust")]
-    StateAdaptiveResamplingMaxAdjust {
-        value: f64,
-    },
-    #[serde(rename = "state:adaptive_resampling:update_interval_callbacks")]
-    StateAdaptiveResamplingUpdateIntervalCallbacks {
-        value: f64,
-    },
-    #[serde(rename = "state:adaptive_resampling:high_recover_entry_margin_ms")]
-    StateAdaptiveResamplingHighRecoverEntryMarginMs {
-        value: f64,
-    },
-    #[serde(rename = "state:adaptive_resampling:band")]
-    StateAdaptiveResamplingBand {
-        value: String,
-    },
-    #[serde(rename = "state:adaptive_resampling:state")]
-    StateAdaptiveResamplingState {
-        value: String,
-    },
-    #[serde(rename = "state:adaptive_resampling:pause")]
-    StateAdaptiveResamplingPaused {
-        enabled: bool,
     },
     #[serde(rename = "state:config:saved")]
     StateConfigSaved {
@@ -936,28 +852,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "latency_instant") => Some(OscEvent::StateLatencyInstant {
             value: to_number(*args.first()?)?,
         }),
-        (3, "latency_control") => Some(OscEvent::StateLatencyControl {
-            value: to_number(*args.first()?)?,
-        }),
-        (3, "latency_smoothed") => Some(OscEvent::StateLatencySmoothed {
-            value: to_number(*args.first()?)?,
-        }),
-        (3, "latency_downstream") => Some(OscEvent::StateLatencyDownstream {
-            value: to_number(*args.first()?)?,
-        }),
         (3, "latency_target") => Some(OscEvent::StateLatencyTarget {
             value: to_number(*args.first()?)?,
         }),
         (3, "latency_target_requested") => Some(OscEvent::StateLatencyTargetRequested {
-            value: to_number(*args.first()?)?,
-        }),
-        (3, "latency_avail_input") => Some(OscEvent::StateLatencyAvailInput {
-            value: to_number(*args.first()?)?,
-        }),
-        (3, "latency_output_fifo") => Some(OscEvent::StateLatencyOutputFifo {
-            value: to_number(*args.first()?)?,
-        }),
-        (3, "latency_resampler_pending") => Some(OscEvent::StateLatencyResamplerPending {
             value: to_number(*args.first()?)?,
         }),
         (3, "diag_schema") => Some(OscEvent::StateDiagSchema {
@@ -1185,68 +1083,6 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 key: raw_args.get(1).and_then(unwrap_string)?,
                 message: raw_args.get(2).and_then(unwrap_string).unwrap_or_default(),
                 request_id: raw_args.get(3).and_then(unwrap_string),
-            }),
-            _ => None,
-        },
-        (3, "adaptive_resampling") => Some(OscEvent::StateAdaptiveResampling {
-            enabled: to_number(*args.first()?)? != 0.0,
-        }),
-        (4, "adaptive_resampling") => match parts[3] {
-            "enable_far_mode" => Some(OscEvent::StateAdaptiveResamplingEnableFarMode {
-                enabled: to_number(*args.first()?)? != 0.0,
-            }),
-            "force_silence_in_far_mode" => {
-                Some(OscEvent::StateAdaptiveResamplingForceSilenceInFarMode {
-                    enabled: to_number(*args.first()?)? != 0.0,
-                })
-            }
-            "hard_recover_in_far_mode" | "hard_recover_high_in_far_mode" => {
-                Some(OscEvent::StateAdaptiveResamplingHardRecoverHighInFarMode {
-                    enabled: to_number(*args.first()?)? != 0.0,
-                })
-            }
-            "hard_recover_low_in_far_mode" => {
-                Some(OscEvent::StateAdaptiveResamplingHardRecoverLowInFarMode {
-                    enabled: to_number(*args.first()?)? != 0.0,
-                })
-            }
-            "far_mode_return_fade_in_ms" => {
-                Some(OscEvent::StateAdaptiveResamplingFarModeReturnFadeInMs {
-                    value: to_number(*args.first()?)?,
-                })
-            }
-            "kp_near" => Some(OscEvent::StateAdaptiveResamplingKpNear {
-                value: to_number(*args.first()?)?,
-            }),
-            "ki" => Some(OscEvent::StateAdaptiveResamplingKi {
-                value: to_number(*args.first()?)?,
-            }),
-            "integral_discharge_ratio" => {
-                Some(OscEvent::StateAdaptiveResamplingIntegralDischargeRatio {
-                    value: to_number(*args.first()?)?,
-                })
-            }
-            "max_adjust" => Some(OscEvent::StateAdaptiveResamplingMaxAdjust {
-                value: to_number(*args.first()?)?,
-            }),
-            "update_interval_callbacks" => {
-                Some(OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks {
-                    value: to_number(*args.first()?)?,
-                })
-            }
-            "high_recover_entry_margin_ms" => {
-                Some(OscEvent::StateAdaptiveResamplingHighRecoverEntryMarginMs {
-                    value: to_number(*args.first()?)?,
-                })
-            }
-            "band" => Some(OscEvent::StateAdaptiveResamplingBand {
-                value: unwrap_string(raw_args.first()?)?,
-            }),
-            "state" => Some(OscEvent::StateAdaptiveResamplingState {
-                value: unwrap_string(raw_args.first()?)?,
-            }),
-            "pause" => Some(OscEvent::StateAdaptiveResamplingPaused {
-                enabled: to_number(*args.first()?)? != 0.0,
             }),
             _ => None,
         },

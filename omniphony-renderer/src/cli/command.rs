@@ -468,7 +468,7 @@ pub enum OutputBackend {
     #[cfg(target_os = "macos")]
     Coreaudio,
     /// Write rendered interleaved f32 to stdout / a file / a named pipe (FIFO).
-    /// Non-realtime: no device clock, no adaptive resampling. See
+    /// Non-realtime: no device clock, no resampling. See
     /// `--output-file` and `--output-file-format`.
     File,
     /// Placeholder used when no realtime output backend is compiled in.

@@ -20,7 +20,7 @@ fn round6(v: f32) -> f32 {
 /// Save the live config to disk at the control's config path. The audio-free
 /// core writes core fields (renderer/layout/speakers/loudness/DRC/monitoring);
 /// the optional host handler (e.g. `host_audio::HostAudio`) appends its own
-/// fields (output device, live input, adaptive resampling, latency target) via
+/// fields (output device, live input, latency target and its loop) via
 /// [`HostControlHandler::amend_saved_config`] before the file is written.
 pub fn save_live_config(
     control: &Arc<RendererControl>,
@@ -178,7 +178,7 @@ pub fn store_live_into_config(
 
     drop(live);
 
-    // Audio output, live input, adaptive resampling, latency target — written
+    // Audio output, live input, latency target and its loop — written
     // by the host's `host_audio::HostAudio` (via the trait). The audio-free
     // core never references those fields directly.
     if let Some(h) = host {

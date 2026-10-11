@@ -575,7 +575,7 @@ mod tests {
     }
 
     /// A file is one stream: it starts, every byte comes once and in order,
-    /// in the chunks the legacy host read it in, it ends, and the reader is
+    /// in chunks of the size a pipe is read in, it ends, and the reader is
     /// done.
     #[test]
     fn a_file_is_read_to_its_end_as_one_stream() {

@@ -46,7 +46,7 @@ pub trait HostControlHandler: Send + Sync {
     fn extend_snapshot(&self) -> Vec<OscPacket>;
 
     /// Amend the config being saved with host-owned fields (output device,
-    /// live input, adaptive resampling, latency target) before it is written.
+    /// live input, latency target and its loop) before it is written.
     fn amend_saved_config(&self, render: &mut renderer::config::RenderConfig);
 
     /// Monotonic generation counter the engine's OSC listener polls to decide

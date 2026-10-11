@@ -224,16 +224,8 @@ fn meter_messages(report: &MeterReport) -> Vec<OscPacket> {
         write_time_ms,
         frame_duration_ms,
         latency_instant_ms,
-        latency_control_ms,
-        latency_smoothed_ms,
         latency_target_ms,
-        latency_downstream_ms,
-        latency_avail_input_ms,
-        latency_output_fifo_ms,
-        latency_resampler_pending_ms,
         resample_ratio,
-        adaptive_band,
-        adaptive_state,
         drc_gain,
     } = *timings;
     let object_test_position = *object_test_position;
@@ -261,10 +253,7 @@ fn meter_messages(report: &MeterReport) -> Vec<OscPacket> {
 
     let mut messages =
         Vec::with_capacity(snapshot.object_levels.len() * 2 + snapshot.speaker_levels.len() + 1);
-    if let Some(ms) = latency_control_ms
-        .or(latency_instant_ms)
-        .or(latency_target_ms)
-    {
+    if let Some(ms) = latency_instant_ms.or(latency_target_ms) {
         messages.push(OscPacket::Message(OscMessage {
             addr: osc_contract::STATE_LATENCY.to_string(),
             args: vec![OscType::Float(ms)],
@@ -306,45 +295,9 @@ fn meter_messages(report: &MeterReport) -> Vec<OscPacket> {
             args: vec![OscType::Float(ms)],
         }));
     }
-    if let Some(ms) = latency_control_ms {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_LATENCY_CONTROL.to_string(),
-            args: vec![OscType::Float(ms)],
-        }));
-    }
-    if let Some(ms) = latency_smoothed_ms {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_LATENCY_SMOOTHED.to_string(),
-            args: vec![OscType::Float(ms)],
-        }));
-    }
     if let Some(ms) = latency_target_ms {
         messages.push(OscPacket::Message(OscMessage {
             addr: osc_contract::STATE_LATENCY_TARGET.to_string(),
-            args: vec![OscType::Float(ms)],
-        }));
-    }
-    if let Some(ms) = latency_downstream_ms {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_LATENCY_DOWNSTREAM.to_string(),
-            args: vec![OscType::Float(ms)],
-        }));
-    }
-    if let Some(ms) = latency_avail_input_ms {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_LATENCY_AVAIL_INPUT.to_string(),
-            args: vec![OscType::Float(ms)],
-        }));
-    }
-    if let Some(ms) = latency_output_fifo_ms {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_LATENCY_OUTPUT_FIFO.to_string(),
-            args: vec![OscType::Float(ms)],
-        }));
-    }
-    if let Some(ms) = latency_resampler_pending_ms {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_LATENCY_RESAMPLER_PENDING.to_string(),
             args: vec![OscType::Float(ms)],
         }));
     }
@@ -352,18 +305,6 @@ fn meter_messages(report: &MeterReport) -> Vec<OscPacket> {
         messages.push(OscPacket::Message(OscMessage {
             addr: osc_contract::STATE_RESAMPLE_RATIO.to_string(),
             args: vec![OscType::Float(ratio)],
-        }));
-    }
-    if let Some(band) = adaptive_band {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_ADAPTIVE_RESAMPLING_BAND.to_string(),
-            args: vec![OscType::String(band.to_string())],
-        }));
-    }
-    if let Some(state) = adaptive_state {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: osc_contract::STATE_ADAPTIVE_RESAMPLING_STATE.to_string(),
-            args: vec![OscType::String(state.to_string())],
         }));
     }
     if let Some(gain) = drc_gain {

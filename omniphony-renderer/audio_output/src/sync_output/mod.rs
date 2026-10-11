@@ -1,7 +1,5 @@
-//! The rewritten output stage (resampling rework, `docs/resampling-rework-plan.md`).
-//!
-//! It lives beside the legacy regulation (`adaptive_runtime`, `pipewire`,
-//! `cpal_output`) until the cutover, which deletes that code.
+//! The output stage: a device held at a latency target
+//! (`docs/latency-regulation.md`, `docs/resampling-rework-plan.md`).
 //!
 //! - [`core`]: the callback body shared by every backend;
 //! - [`clock`]: the reference clock all timestamps are taken on;

@@ -3,8 +3,8 @@
 //! A test only makes sound while the render loop runs, and the render
 //! loop only runs when decoded frames arrive. With no input stream nothing
 //! flows, so a test started from idle stayed silent (or, with the reverted
-//! render-pump approach, starved the adaptive latency controller by writing
-//! output the input path never saw — converge, hard-recover, cut).
+//! render-pump approach, starved the latency controller of the time by
+//! writing output the input path never saw).
 //!
 //! The fix mirrors what PipeWire live input mode does naturally: keep the
 //! *input* flowing. While a client's test pane is armed (or a test is

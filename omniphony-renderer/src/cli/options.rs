@@ -19,8 +19,6 @@ const NOT_GENERATED: &[&str] = &[
     // The flag takes decibels, as the config stores them; the option's wire
     // value is linear (`--master-gain -6` would mean silence).
     "master_gain",
-    // Not a tuning lever of the controller as it stands.
-    "adaptive_resampling_integral_discharge_ratio",
 ];
 
 /// One registered option, as the command line sees it.

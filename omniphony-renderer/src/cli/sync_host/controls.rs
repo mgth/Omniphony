@@ -43,7 +43,7 @@ pub struct OutputSettings {
 }
 
 /// Where the rendered audio goes, from what a client asked for and what the
-/// run was launched on. As on the legacy host: a backend named replaces the
+/// run was launched on: a backend named replaces the
 /// run's (`device` is this platform's, an unknown one changes nothing), and
 /// a file or a format named apply while the output is a file. A file output
 /// with no file named anywhere has an empty destination: nothing is written
@@ -342,11 +342,11 @@ mod tests {
         assert_eq!(controls.settings().target_ms, DEFAULT_TARGET_LATENCY_MS);
     }
 
-    /// The sync engine's host declares its own rows and none of the legacy
-    /// resampler's: a write to one of those is refused, not stored for an
+    /// The host declares its own rows and none of the adaptive resampler's
+    /// it replaced: a write to one of those is refused, not stored for an
     /// output that would ignore it.
     #[test]
-    fn the_legacy_tuning_is_not_this_hosts() {
+    fn the_retired_tuning_is_not_this_hosts() {
         let controls = Controls::new(&config(), fixture_control());
         let handler = controls.handler();
         let schema = handler.options_schema();
@@ -501,7 +501,7 @@ mod tests {
     }
 
     /// Save writes this host's settings and leaves the rest of the file's
-    /// audio section alone: the legacy tuning, and what of the live input
+    /// audio section alone: the retired tuning, and what of the live input
     /// this host has no row for, are kept as they were read.
     #[test]
     fn save_keeps_what_this_host_does_not_own() {
