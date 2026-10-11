@@ -20,7 +20,8 @@ use host_audio::HostAudio;
 use renderer::live_params::RendererControl;
 use runtime_control::HostControlHandler;
 
-use super::{DEFAULT_TARGET_LATENCY_MS, HostConfig, InputRequest, Source};
+use super::{DEFAULT_TARGET_LATENCY_MS, HostConfig, InputRequest, OutputKind, Source};
+use audio_output::FileSinkFormat;
 
 /// What the output is opened with: a change in any of it reopens it.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +38,48 @@ pub struct OutputSettings {
     pub source_clock: SourceClock,
     /// Rate the device is opened at (Hz); `None` is the stream's own.
     pub output_rate_hz: Option<u32>,
+    /// Where the rendered audio goes: the device, or a file.
+    pub output: OutputKind,
+}
+
+/// Where the rendered audio goes, from what a client asked for and what the
+/// run was launched on. As on the legacy host: a backend named replaces the
+/// run's (`device` is this platform's, an unknown one changes nothing), and
+/// a file or a format named apply while the output is a file. A file output
+/// with no file named anywhere has an empty destination: nothing is written
+/// until one is (standard output is `-`, and has to be asked for).
+fn resolve_output(
+    launch: &OutputKind,
+    named_file: Option<&str>,
+    backend: Option<&str>,
+    file: Option<String>,
+    format: Option<&str>,
+) -> OutputKind {
+    let to_file = match backend.map(|b| b.trim().to_ascii_lowercase()).as_deref() {
+        Some("file") => true,
+        Some("device" | "pipewire") => false,
+        _ => matches!(launch, OutputKind::File { .. }),
+    };
+    if !to_file {
+        return OutputKind::Device;
+    }
+    let (launch_file, launch_format) = match launch {
+        OutputKind::File {
+            destination,
+            format,
+        } => (Some(destination.as_str()), *format),
+        OutputKind::Device => (named_file, FileSinkFormat::RawF32),
+    };
+    OutputKind::File {
+        destination: file
+            .or_else(|| launch_file.map(str::to_string))
+            .unwrap_or_default(),
+        format: match format.map(|f| f.trim().to_ascii_lowercase()).as_deref() {
+            Some("caf") => FileSinkFormat::Caf,
+            Some("raw_f32" | "rawf32" | "raw" | "f32") => FileSinkFormat::RawF32,
+            _ => launch_format,
+        },
+    }
 }
 
 /// See the [module docs](self).
@@ -44,6 +87,9 @@ pub struct Controls {
     audio: Arc<AudioControl>,
     input: Arc<InputControl>,
     host: Arc<HostAudio>,
+    /// The output the run was launched on, and the file its config names.
+    launch_output: OutputKind,
+    named_file: Option<String>,
 }
 
 fn output_devices() -> Vec<OutputDeviceOption> {
@@ -82,7 +128,13 @@ impl Controls {
         // Launch values come from config.yaml, which is edited by hand:
         // bound them as an OSC write would be.
         host.bound_options_to_their_kinds();
-        let controls = Self { audio, input, host };
+        let controls = Self {
+            audio,
+            input,
+            host,
+            launch_output: config.output.clone(),
+            named_file: config.output_file.clone(),
+        };
         controls.input_applied(&config.source);
         controls
     }
@@ -156,7 +208,23 @@ impl Controls {
             realign_threshold_ms: f64::from(requested.realign_threshold_ms),
             source_clock: requested.source_clock,
             output_rate_hz: requested.output_sample_rate_hz,
+            output: resolve_output(
+                &self.launch_output,
+                self.named_file.as_deref(),
+                requested.output_backend.as_deref(),
+                requested.output_file,
+                requested.output_file_format.as_deref(),
+            ),
         }
+    }
+
+    /// The file the output is asked to be is being written: nothing to
+    /// report as wrong, and no device plays.
+    pub fn writing(&self, rate: u32) {
+        self.audio.set_audio_state(rate, "f32");
+        self.audio.set_effective_output_device(None);
+        self.audio.set_audio_error(None);
+        self.host.mark_output_changed();
     }
 
     /// The output opened with `settings`, at `device_rate` Hz: publish what
@@ -209,6 +277,7 @@ mod tests {
             },
             input_path: Some("/in".into()),
             drain_pipe: true,
+            output_file: None,
             target_latency_ms: 180.0,
             loop_bandwidth_hz: None,
             realign_threshold_ms: 20.0,
@@ -239,6 +308,7 @@ mod tests {
                 realign_threshold_ms: 20.0,
                 source_clock: SourceClock::Auto,
                 output_rate_hz: None,
+                output: OutputKind::Device,
             }
         );
 
@@ -281,6 +351,9 @@ mod tests {
             keys,
             [
                 "output_device",
+                "output_backend",
+                "output_file",
+                "output_file_format",
                 "output_sample_rate",
                 "latency_target",
                 "loop_bandwidth_hz",
@@ -294,7 +367,7 @@ mod tests {
         let refused = handler.apply_options(&[
             ("adaptive_resampling_kp_near", RawOptionValue::Number(2.0)),
             ("live_input_clock_mode", RawOptionValue::Str("dac")),
-            ("output_backend", RawOptionValue::Str("pipewire")),
+            ("live_input_lfe_mode", RawOptionValue::Str("drop")),
         ]);
         assert!(refused.results.iter().all(Option::is_none));
         assert!(!handler.capabilities().adaptive_resampling);
@@ -342,6 +415,82 @@ mod tests {
         let state = audio_state(handler.as_ref());
         assert!(state["error"].is_null());
         assert_eq!(state["outputDeviceEffective"], "dac");
+    }
+
+    /// The output goes where a client says: a backend named replaces the
+    /// run's, a file and a format apply while the output is a file, and a
+    /// file output with no file named writes nowhere until one is.
+    #[test]
+    fn the_output_follows_the_backend_and_the_file_asked_for() {
+        let file = |destination: &str, format| OutputKind::File {
+            destination: destination.into(),
+            format,
+        };
+        let raw = FileSinkFormat::RawF32;
+        let device = OutputKind::Device;
+        // Launched on the device.
+        assert_eq!(resolve_output(&device, None, None, None, None), device);
+        assert_eq!(
+            resolve_output(&device, None, None, Some("a.f32".into()), Some("caf")),
+            device,
+            "a file named while the device plays waits for the backend"
+        );
+        assert_eq!(
+            resolve_output(&device, None, Some("file"), None, None),
+            file("", raw)
+        );
+        assert_eq!(
+            resolve_output(&device, Some("cfg.caf"), Some(" File "), None, Some("CAF")),
+            file("cfg.caf", FileSinkFormat::Caf)
+        );
+        assert_eq!(
+            resolve_output(
+                &device,
+                Some("cfg.caf"),
+                Some("file"),
+                Some("-".into()),
+                None
+            ),
+            file("-", raw)
+        );
+        assert_eq!(
+            resolve_output(&device, None, Some("asio"), None, None),
+            device
+        );
+        // Launched on a file.
+        let launched = file("out.f32", raw);
+        assert_eq!(resolve_output(&launched, None, None, None, None), launched);
+        assert_eq!(
+            resolve_output(&launched, None, None, Some("b.caf".into()), Some("caf")),
+            file("b.caf", FileSinkFormat::Caf)
+        );
+        assert_eq!(
+            resolve_output(&launched, None, Some("device"), None, None),
+            device
+        );
+        assert_eq!(
+            resolve_output(&launched, None, Some("pipewire"), None, None),
+            device
+        );
+        assert_eq!(
+            resolve_output(&launched, None, Some("nonsense"), None, None),
+            launched
+        );
+
+        // Through the controls: a write is the next setting.
+        let controls = Controls::new(&config(), fixture_control());
+        let handler = controls.handler();
+        handler.apply_options(&[
+            ("output_backend", RawOptionValue::Str("file")),
+            ("output_file", RawOptionValue::Str("/tmp/x.caf")),
+            ("output_file_format", RawOptionValue::Str("caf")),
+        ]);
+        assert_eq!(
+            controls.settings().output,
+            file("/tmp/x.caf", FileSinkFormat::Caf)
+        );
+        handler.apply_options(&[("output_backend", RawOptionValue::Str("device"))]);
+        assert_eq!(controls.settings().output, device);
     }
 
     /// Save writes this host's settings and leaves the rest of the file's

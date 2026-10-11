@@ -1471,6 +1471,9 @@ mod tests {
             sync,
             [
                 "output_device",
+                "output_backend",
+                "output_file",
+                "output_file_format",
                 "output_sample_rate",
                 "latency_target",
                 "loop_bandwidth_hz",

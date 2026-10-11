@@ -304,6 +304,21 @@ struct FileState {
 }
 
 impl FileState {
+    /// The file `output` asks for, if it is one.
+    fn for_output(output: &OutputKind) -> Option<FileOut> {
+        match output {
+            OutputKind::Device => None,
+            OutputKind::File {
+                destination,
+                format,
+            } => Some(Rc::new(RefCell::new(FileState {
+                destination: destination.clone(),
+                container: *format,
+                open: None,
+            }))),
+        }
+    }
+
     /// Write a block. `speakers` gives the speakers' positions (azimuth,
     /// elevation, distance) when the render is one of a speaker array.
     fn write(
@@ -312,6 +327,9 @@ impl FileState {
         samples: &[f32],
         speakers: impl FnOnce() -> Option<Vec<[f32; 3]>>,
     ) -> Result<()> {
+        if self.destination.is_empty() {
+            anyhow::bail!("the output is a file and none is named (`output_file`)");
+        }
         if self.open.as_ref().is_none_or(|(_, open)| *open != format) {
             if let Some((mut writer, was)) = self.open.take() {
                 log::warn!(
@@ -617,8 +635,12 @@ pub struct HostConfig {
     pub realign_threshold_ms: f64,
     /// PipeWire sink to play into (pinned); `None` is the session's choice.
     pub output_target: Option<String>,
-    /// Where the rendered audio goes.
+    /// Where the rendered audio goes as the run starts. A client can ask for
+    /// the other kind, or another file, while it runs.
     pub output: OutputKind,
+    /// The file the config names for the `file` backend, if any: what a
+    /// switch to it writes until a client names another.
+    pub output_file: Option<String>,
     /// The clock the source is taken to run on, as asked for.
     pub source_clock: SourceClock,
     /// Stay up after a stream ends, for the next one. Without it the run
@@ -795,6 +817,7 @@ pub fn cmd_sync_play(args: &SyncPlayArgs, config_path: Option<PathBuf>) -> Resul
             .or(render.loop_bandwidth_hz.map(f64::from)),
         realign_threshold_ms: resolve_realign_threshold_ms(render.realign_threshold_ms),
         output: OutputKind::Device,
+        output_file: render.output_file.clone(),
         source_clock: resolve_source_clock(render.source_clock.as_deref()),
         continuous: true,
         offline: false,
@@ -874,21 +897,12 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     let mut source = config.source.clone();
     session.open(&source, config)?;
     let mut capture = session.current()?;
-    let file_out = match &config.output {
-        OutputKind::Device => None,
-        OutputKind::File {
-            destination,
-            format,
-        } => Some(Rc::new(RefCell::new(FileState {
-            destination: destination.clone(),
-            container: *format,
-            open: None,
-        }))),
-    };
+    // The file the run writes, while its output is one: kept across the
+    // epochs (a capture holds every stream), replaced when the output is.
+    let mut file_out = FileState::for_output(&settings.output);
     let env = EpochEnv {
         config,
         controls: &controls,
-        file: file_out.as_ref(),
     };
     sys::notify_ready();
     let started = Instant::now();
@@ -979,6 +993,12 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 telemetry.set_configured_target(wanted.target_ms);
                 controls.held_target(None);
             }
+            if wanted.output != settings.output {
+                if let Some(file) = &file_out {
+                    file.borrow_mut().flush();
+                }
+                file_out = FileState::for_output(&wanted.output);
+            }
             settings = wanted;
             if let Some(mut ep) = epoch.take() {
                 close_epoch(&mut telemetry, &mut ep);
@@ -987,6 +1007,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         // What a block needs to open the output it is for.
         let ctx = PlayCtx {
             env: &env,
+            file: file_out.as_ref(),
             source: &source,
             settings: &settings,
             target_ms: telemetry.held_target_ms(),
@@ -1052,7 +1073,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 }
                 engine.reset();
                 stream_ended = false;
-                epoch = Some(open_epoch(EpochKind::Stream, &env));
+                epoch = Some(open_epoch(EpochKind::Stream, file_out.as_ref()));
                 log::info!("sync host: stream opened, new epoch");
             }
             Some(ReaderMsg::Chunk {
@@ -1070,7 +1091,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                         close_epoch(&mut telemetry, &mut idle);
                     }
                     engine.reset();
-                    epoch = Some(open_epoch(EpochKind::Stream, &env));
+                    epoch = Some(open_epoch(EpochKind::Stream, file_out.as_ref()));
                     log::info!("sync host: stream already running, new epoch");
                 }
                 idle_feeder.note_real_frame(Instant::now());
@@ -1098,13 +1119,13 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         let stream_playing = epoch
             .as_ref()
             .is_some_and(|ep| ep.kind == EpochKind::Stream);
-        if !stream_playing && config.output == OutputKind::Device {
+        if !stream_playing && settings.output == OutputKind::Device {
             let t = reference_now_s();
             match idle_feeder.poll(Instant::now(), &idle_feed_inputs(&engine)) {
                 Some(chunk) => {
                     if epoch.is_none() {
                         engine.reset();
-                        epoch = Some(open_epoch(EpochKind::Idle, &env));
+                        epoch = Some(open_epoch(EpochKind::Idle, None));
                         log::info!("sync host: test armed with nothing playing, idle epoch");
                     }
                     if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
@@ -1497,14 +1518,14 @@ impl Epoch {
 struct EpochEnv<'a> {
     config: &'a HostConfig,
     controls: &'a Controls,
-    /// The file the run writes, when the output is one.
-    file: Option<&'a FileOut>,
 }
 
 /// What playing a block may need: the run's environment, and the settings
 /// and latency in force now (an output is opened when a block says for what).
 struct PlayCtx<'a> {
     env: &'a EpochEnv<'a>,
+    /// The file the run writes, while its output is one.
+    file: Option<&'a FileOut>,
     /// The source playing: its clock decides how the device is run.
     source: &'a Source,
     settings: &'a OutputSettings,
@@ -1513,10 +1534,11 @@ struct PlayCtx<'a> {
     target_ms: f64,
 }
 
-/// A new epoch. Its output is opened by its first block.
-fn open_epoch(kind: EpochKind, env: &EpochEnv<'_>) -> Epoch {
+/// A new epoch. Its output is opened by its first block: the device, or
+/// `file` for a stream when the run writes one.
+fn open_epoch(kind: EpochKind, file: Option<&FileOut>) -> Epoch {
     // The idle feed plays on the device, whatever the run writes.
-    let file = env.file.filter(|_| kind == EpochKind::Stream);
+    let file = file.filter(|_| kind == EpochKind::Stream);
     Epoch::new(kind, file.map(Rc::clone))
 }
 
@@ -2156,10 +2178,25 @@ fn push_blocks(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, blocks: V
                 .borrow_mut()
                 .write(format, &block.samples, || engine.output_speaker_positions());
             match written {
-                Ok(()) => ep.pushed_frames += frames,
-                Err(e) => {
+                Ok(()) => {
+                    if ep.pushed_frames == 0 {
+                        ctx.env.controls.writing(format.rate);
+                    }
+                    ep.pushed_frames += frames;
+                }
+                // An offline render has nothing else to do: it ends on it.
+                Err(e) if ctx.env.config.offline => {
                     ep.dropped_frames += frames;
                     ep.fatal.get_or_insert(e);
+                }
+                // A live run goes on, and says why nothing is written.
+                Err(e) => {
+                    ep.dropped_frames += frames;
+                    if !ep.write_error_logged {
+                        ep.write_error_logged = true;
+                        log::error!("sync host: {e:#}");
+                        ctx.env.controls.failed(format!("{e:#}"));
+                    }
                 }
             }
             ep.stream_rate = Some(format.rate);
@@ -2364,6 +2401,7 @@ mod tests {
             },
             input_path: None,
             drain_pipe: true,
+            output_file: None,
             source,
             target_latency_ms,
             loop_bandwidth_hz: None,

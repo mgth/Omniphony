@@ -1230,8 +1230,8 @@ Each is one pull request, stacked in this order.
 - **6g — accounting (4d).** DONE, see §25: gaps in the source played as
   silence of their length, the decoder audit, discontinuity events, the
   render's own delay inside the latency, and the listener's position.
-- **6h — runtime switches.** Device and latency: done in §20. The idle
-  feed: done in §21. The rate: done in §23. Left: hot switch of the backend.
+- **6h — runtime switches.** DONE. Device and latency: §20. The idle
+  feed: §21. The rate: §23. The backend (device or file): §26.
 - **6i — Windows and macOS.** The cpal adapter wired in (with the timestamp
   patch, §9), the QPC reference clock, the named-pipe reader (§12). Built
   and cross-checked from the Linux workflow as far as it goes; not run on
@@ -1434,7 +1434,7 @@ its engine's (`HostEngine::rows`):
 | `output_device`, `latency_target` | yes | yes |
 | `loop_bandwidth_hz`, `realign_threshold_ms` (group `sync`) | no | yes |
 | `output_sample_rate` | yes | yes, since §23 |
-| `output_backend`, `output_file`, `output_file_format` | yes | not yet: a flag of the run (§22), no hot switch (6h) |
+| `output_backend`, `output_file`, `output_file_format` | yes | yes, since §26 |
 | `enable_adaptive_resampling`, `adaptive_resampling_*` | yes | no |
 | `input_mode`, `live_input_node`, `live_input_description` | yes | yes, since §24 |
 | the other `live_input_*` | yes | no (§24: legacy-only, or read by no host) |
@@ -2005,3 +2005,58 @@ pauses does so burst after burst).
   is the same code, their spacing is learned as AC-3's is.
 - The Studio does nothing new with `/playout/heard` here: it follows the
   sound when asked to, as it did with the legacy host's.
+
+## 26. Phase 6h — the output backend, switched live (2026-10-11)
+
+Where the rendered audio goes was fixed for a run (§22). It is now one of
+the output settings, read at every turn of the loop like the device and the
+latency: `output_backend`, `output_file` and `output_file_format` are this
+host's rows, and a change closes the stream's epoch, which its next chunk
+opens again on the new output.
+
+The rule is the legacy host's:
+
+- A backend named replaces the run's: `file`, or `device` (and `pipewire`)
+  for this platform's device. An unknown one changes nothing.
+- A file and a format named apply while the output is a file, and wait for
+  the backend otherwise.
+- Nothing named keeps what the run was launched on. The values a flag gave
+  the run are not written back by Save: only what a client asked for is.
+
+Two differences, both on a live run only:
+
+- **A file output with no file named writes nowhere**, and says so
+  (`/state/audio.error`), until one is named. The legacy host falls back on
+  standard output: a renderer the Studio launched would pour raw samples
+  into its log the moment "File" is picked, before a path can be typed.
+  Standard output is still `-`, and has to be asked for.
+- **A file that cannot be opened or written does not end a live run**: the
+  error is published and the run goes on, to be given another file or the
+  device back. An offline render (a file out, once) still ends on it, as
+  §23 has it.
+
+The file state is the run's while its output is one (a capture holds every
+stream), and is flushed and replaced when the output changes. The idle feed
+plays on the device only.
+
+### Verified
+
+- Unit test: the resolution of the output from the launch and from what is
+  asked for, and through the controls.
+- Live, isolated, a timed pipe at 180 ms, the sink's monitor recorded:
+
+| Step | Result |
+|---|---|
+| `output_backend file`, no file named | The device goes silent; the error says no file is named |
+| `output_file …/out-live.f32` | 6.94 s of 12-channel raw samples for the 7 s it was the output; the error clears |
+| `output_file_format caf` + another file | A CAF file: 12 channels, 48 kHz, 5.95 s for 6 s |
+| A file in a directory that does not exist | The error names it; the run goes on |
+| `output_backend device` | The tone is back at the sink after 19.1 s of silence; 180.00 ±0.002 ms, no realign |
+
+### Not done
+
+- The Studio's backend and file rows on the sync engine were not captured
+  or clicked (they appear from the schema, as the rate row does).
+- The backend the run was launched on is not in the audio state: a run
+  started with `--output-backend file` shows "device" in a client until one
+  is asked for, as on the legacy host.

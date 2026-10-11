@@ -120,6 +120,9 @@ fn on_sync_engine(spec: &HostOptionSpec<HostIo>) -> bool {
         || matches!(
             spec.key,
             "output_device"
+                | "output_backend"
+                | "output_file"
+                | "output_file_format"
                 | "latency_target"
                 | "output_sample_rate"
                 | "input_mode"

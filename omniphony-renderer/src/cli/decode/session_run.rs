@@ -1377,6 +1377,7 @@ fn sync_host_config(
         input_request,
         input_path: args.input.clone(),
         drain_pipe,
+        output_file: render_cfg.output_file.clone(),
         target_latency_ms: resolve_target_latency_ms(None, args.latency_target_ms),
         loop_bandwidth_hz: render_cfg.loop_bandwidth_hz.map(f64::from),
         realign_threshold_ms: resolve_realign_threshold_ms(render_cfg.realign_threshold_ms),
