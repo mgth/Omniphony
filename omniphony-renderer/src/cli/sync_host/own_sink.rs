@@ -29,14 +29,15 @@ use audio_input::pipewire_pods::{
     IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_DTS_CHANNELS, IEC958_DTS_RATE_HZ,
     IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ, build_pipewire_bridge_codec_format_pod,
     build_pipewire_bridge_format_pod, build_pipewire_bridge_iec958_quantum_buffers_pod,
-    build_pipewire_bridge_latency_pod, build_pipewire_bridge_stream_properties,
+    build_pipewire_bridge_latency_pod, build_pipewire_bridge_raw_format_pod_at,
+    build_pipewire_bridge_stream_properties,
 };
 use audio_rt::{Consumer, Producer, frame_ring};
 use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::Pod;
 
-use super::reader::{Capture, END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
+use super::reader::{Capture, CarrierFormat, END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
 
 /// `SPA_IO_CLOCK_FLAG_XRUN_RECOVER | SPA_IO_CLOCK_FLAG_DISCONT`
 /// (`spa/node/io.h`): the driver's clock restarted. Spelled out because the
@@ -52,12 +53,18 @@ struct CycleStamp {
     t_ns: u64,
     /// Bytes captured in this epoch up to the end of this cycle.
     bytes_end: u64,
-    /// Negotiated carrier: frames per second and channels (2-byte samples).
+    /// Negotiated carrier: frames per second, channels and sample format.
     rate: u32,
     channels: u32,
+    format: CarrierFormat,
     /// Bumped on every format change and discontinuity.
     epoch: u32,
 }
+
+/// The linear PCM the sink takes beside the IEC 958 formats: the renderer's
+/// rate, on the fixed 7.1 input map (L R C LFE Ls Rs Lb Rb).
+pub const PCM_RATE_HZ: u32 = 48_000;
+pub const PCM_CHANNELS: u32 = 8;
 
 /// Byte ring capacity: 4 s of the widest carrier (8 ch × 2 B × 192 kHz).
 const BYTE_RING: usize = 4 * 8 * 2 * 192_000;
@@ -68,6 +75,8 @@ const STAMP_RING: usize = 4096;
 struct Shared {
     rate: AtomicU32,
     channels: AtomicU32,
+    /// The negotiated format is linear PCM, not IEC 958.
+    pcm: AtomicBool,
     epoch: AtomicU32,
     position: AtomicPtr<spa::sys::spa_io_position>,
     overflows: AtomicU64,
@@ -210,6 +219,7 @@ fn run_sink(
                 return;
             }
             let iec958 = subtype == spa::param::format::MediaSubtype::Iec958;
+            let format_changed = param_shared.pcm.swap(!iec958, Ordering::Relaxed) == iec958;
             // Setting `node.force-rate` renegotiates, which lands here again
             // with the same format: only a real change is a new epoch, and
             // the property is only written when its value changes.
@@ -219,7 +229,7 @@ fn run_sink(
                 .channels
                 .swap(info.channels(), Ordering::Relaxed)
                 != info.channels();
-            if !rate_changed && !channels_changed {
+            if !rate_changed && !channels_changed && !format_changed {
                 return;
             }
             log::info!(
@@ -229,10 +239,10 @@ fn run_sink(
                 info.channels()
             );
             param_shared.epoch.fetch_add(1, Ordering::Release);
-            // Every IEC 958 carrier, the 48 kHz ones included: the sink asks
-            // for 192 kHz by default, and a group left at that rate runs a
-            // 48 kHz carrier (AC-3, DTS core) four times too fast.
-            let force = if iec958 { info.rate() } else { 0 };
+            // Every carrier, the 48 kHz ones included: the sink asks for
+            // 192 kHz by default, and a group left at that rate runs a 48 kHz
+            // carrier (AC-3, DTS core, linear PCM) four times too fast.
+            let force = info.rate();
             if forced_for_param.get() != Some(force) {
                 forced_for_param.set(Some(force));
                 pending_for_param.set(Some(force));
@@ -303,13 +313,22 @@ fn run_sink(
                 bytes_end: bytes_total,
                 rate: process_shared.rate.load(Ordering::Relaxed),
                 channels: process_shared.channels.load(Ordering::Relaxed),
+                format: if process_shared.pcm.load(Ordering::Relaxed) {
+                    CarrierFormat::PcmF32
+                } else {
+                    CarrierFormat::Iec958
+                },
                 epoch,
             }]);
         })
         .register()
         .map_err(|e| anyhow!("own sink listener: {e:?}"))?;
 
-    // 3. Formats (IEC 958 only for now), full-quantum buffers, connect.
+    // 3. Formats, full-quantum buffers, connect. Linear PCM comes last: a
+    // player that can pass its stream through finds an encoded format first.
+    // It is offered at the renderer's own rate only (the sink does not
+    // resample; a player at another rate converts on its side), on the fixed
+    // 7.1 map.
     let enum_fmt = spa::param::ParamType::EnumFormat;
     let pods: Vec<Vec<u8>> = vec![
         build_pipewire_bridge_iec958_quantum_buffers_pod()?,
@@ -333,6 +352,7 @@ fn run_sink(
             IEC958_DTS_CHANNELS,
             enum_fmt,
         )?,
+        build_pipewire_bridge_raw_format_pod_at(PCM_RATE_HZ, PCM_CHANNELS as u16, enum_fmt)?,
     ];
     let mut params: Vec<&Pod> = pods
         .iter()
@@ -468,7 +488,8 @@ fn pump(
         last_bytes_end = s.bytes_end;
         last_data_at = std::time::Instant::now();
         stats.bytes_read.fetch_add(got as u64, Ordering::Relaxed);
-        let frames = n as f64 / (2.0 * s.channels.max(1) as f64);
+        let frame_bytes = s.format.sample_bytes() * s.channels.max(1);
+        let frames = n as f64 / frame_bytes as f64;
         let t_end = s.t_ns as f64 * 1e-9 + frames / s.rate.max(1) as f64;
         let msg = ReaderMsg::Chunk {
             t: t_end,
@@ -476,6 +497,7 @@ fn pump(
             transport: Some(Transport {
                 rate: s.rate,
                 channels: s.channels,
+                format: s.format,
                 bytes_end: s.bytes_end - stream_base,
             }),
         };
@@ -498,6 +520,7 @@ mod tests {
             bytes_end,
             rate: RATE,
             channels: 2,
+            format: CarrierFormat::Iec958,
             epoch,
         }
     }

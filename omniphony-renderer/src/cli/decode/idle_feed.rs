@@ -80,6 +80,11 @@ impl IdleFeeder {
         self.stop_feeding();
     }
 
+    /// Whether the feed is running: armed, with no real input.
+    pub fn is_feeding(&self) -> bool {
+        self.feeding
+    }
+
     fn stop_feeding(&mut self) {
         if self.feeding {
             log::info!("Speaker-test idle feed: stopping (real input or disarm)");

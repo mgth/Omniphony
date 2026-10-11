@@ -1223,12 +1223,13 @@ Each is one pull request, stacked in this order.
   rendering; the `source_clock` option (`own` / `follow` / `none`).
 - **6e — formats.** Stream rates other than 48 kHz, `output_sample_rate`,
   width changes, `output_channel_mapping`.
-- **6f — the live sink.** PCM on the `own` sink, the `live_input.*` options
-  and their hot apply.
+- **6f — the live sink.** PCM on the `own` sink: DONE ahead of its turn,
+  see §21. Left: the `live_input.*` options (node, description, LFE mode) and
+  their hot apply.
 - **6g — accounting (4d).** The time-conserving deframer, the per-burst
   decoder audit, discontinuity events, and the listener's position.
-- **6h — runtime switches.** Hot switch of device, backend, rate and
-  latency; device listing; the idle feed.
+- **6h — runtime switches.** Device and latency: done in §20. The idle
+  feed: done in §21. Left: hot switch of the backend and the rate.
 - **6i — Windows and macOS.** The cpal adapter wired in (with the timestamp
   patch, §9), the QPC reference clock, the named-pipe reader (§12). Built
   and cross-checked from the Linux workflow as far as it goes; not run on
@@ -1510,3 +1511,82 @@ Eight catalogues carry the new strings.
   this workflow (their commands are covered by the core's tests).
 - The pipe has nobody to tell a raised latency to: with the timed writer
   the launcher gave the player the configured value (§15).
+
+## 21. Test tones with nothing playing, and PCM on the sink (2026-10-11)
+
+Done ahead of 6d: both stood in the way of listening to the new engine. A
+speaker or object test started from the Studio was silent unless a film was
+playing, and the sink took passthrough only, so nothing of the desktop
+reached it.
+
+### Test tones: the idle feed
+
+The render injects a test into what it renders, and the sync host opened its
+output only while a stream played. With no stream there was nothing to
+inject into.
+
+- While a client's test pane is armed (or a test runs) and no stream plays,
+  the host opens an **idle epoch**: its ring and output, fed with silence the
+  engine renders (`Engine::render_silence`), paced on the host's own clock.
+  That clock is the epoch's source, read exactly, so the servo holds the
+  latency on it as on any `own` source.
+- The pacing and the arm's keepalive are the legacy host's `IdleFeeder`,
+  reused as it is.
+- A stream that starts takes the output over; when it ends and the pane is
+  still armed, the idle epoch comes back. Disarmed, it plays out and closes.
+
+### PCM on the `own` sink
+
+- The sink offers **linear PCM beside the IEC 958 formats**: 32-bit float,
+  8 channels on the fixed 7.1 map (L R C LFE Ls Rs Lb Rb), at 48 kHz only.
+  The sink does not resample; a player at another rate converts on its side.
+- The capture marks each cycle's format. A PCM chunk becomes a frame the
+  engine renders by its labels, with no bridge (`Engine::render_host_pcm`);
+  the stream is declared as PCM. Its count on the transport is the bytes
+  themselves, so the latency is exact from the first cycle.
+- `node.force-rate` is set for every format now: the group runs at the rate
+  of what it carries.
+- **The sink idles on PCM.** With nothing linked to it, PipeWire settles the
+  sink on the PCM format and hands it a cycle of silence every cycle: the
+  host sees one long silent stream, and its output stays open. Desktop sounds
+  and tests then start without the wait for an output to open. After a
+  passthrough session the sink stays on the IEC 958 format with nothing
+  flowing, and the idle feed is what carries a test.
+
+### Verified
+
+Engine tests: rendered silence is silent and carries a speaker test on the
+speaker under test only; host PCM is rendered by its labels without the
+bridge being asked.
+
+Live, isolated, with what leaves the renderer **recorded from the output
+sink's monitor** and measured per channel:
+
+| Run | Heard at the output |
+|---|---|
+| Sink input, nothing playing: speaker test on speaker 2 at peak 0.05 for 4 s | Pink noise on FC only, -39 dBFS RMS, for those 4 s; every other channel digital silence |
+| Then an 8-channel WAV into the sink: -40 dBFS tones on FL and RL | FL and RL at -43.0 dBFS RMS (a sine's RMS), the six others silent; 150.000 ms held, 0 realigns |
+| Pipe input, no writer: armed, same speaker test | Idle epoch opens; FC only; 180.00 ms held |
+| ... an AC-3 stream starts on the pipe, still armed | The stream takes over; after it ends the idle epoch returns; disarmed, it closes |
+| Sink idling on PCM, then mpv AC-3 passthrough into it | Format switches to IEC 958, new epoch, 150.00 ms held |
+
+### Found on the way: a resumed standby could come back deaf
+
+A test of mine ran on the OSC port of a renderer the user's Studio had
+launched. That renderer stood by, as it should, and resumed deaf. The host
+that takes the port tells the standby to resume before letting go of it; the
+standby's re-bind then took the same-process fast path and raised the stop
+flag of "the local listener", which was its own, left registered from before
+the standby; the listener it then started ended at once. Fixed in
+`OscSender::start_listener` (a sender takes its own flag out of the registry
+before it binds), with a test that fails on the old code. The legacy host's
+standby goes through the same code.
+
+### Not done
+
+- `live_input.lfe_mode` and the other live-input options are not applied to
+  the sink's PCM: LFE goes to the LFE speaker.
+- A PCM stream on another channel count than 8 is dropped with a warning
+  (the format offered is 8 channels; a player maps to it).
+- The cost of the idle PCM stream (a render of silence around the clock)
+  was not measured on the target box.

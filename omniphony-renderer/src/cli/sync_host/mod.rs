@@ -30,6 +30,7 @@
 
 mod controls;
 mod own_sink;
+mod pcm;
 mod reader;
 mod telemetry;
 
@@ -49,8 +50,10 @@ use orender_engine::engine::{Engine, RenderedAudio};
 use orender_engine::{OscOverrides, OscSettings};
 use spdif::SpdifParser;
 
+use crate::cli::decode::idle_feed::{IdleFeedInputs, IdleFeeder};
+use audio_output::sync_output::reference_now_s;
 use controls::{Controls, OutputSettings};
-use reader::{ReaderMsg, Transport, spawn_reader};
+use reader::{CarrierFormat, ReaderMsg, Transport, spawn_reader};
 use telemetry::HostTelemetry;
 
 /// `orender sync-play` arguments.
@@ -191,8 +194,19 @@ enum OutputReport {
 /// it is not (a device that is not there leaves the stream waiting for it).
 const OUTPUT_WAIT: Duration = Duration::from_secs(2);
 
+/// What an epoch plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EpochKind {
+    /// A stream of the capture.
+    Stream,
+    /// Nothing: silence the host feeds on its own clock while a speaker or
+    /// object test is armed, for the render to inject the test into.
+    Idle,
+}
+
 /// One stream's playback: ring, clock tap and output stream.
 struct Epoch {
+    kind: EpochKind,
     producer: Producer,
     tap: Arc<SourceTap>,
     telemetry: Arc<SyncTelemetry>,
@@ -225,6 +239,9 @@ struct Epoch {
     /// played. The engine thread never waits for it.
     ending_at: Option<Instant>,
     channel_mismatch_logged: bool,
+    /// A PCM chunk on another channel count than the fixed input map's was
+    /// refused, and said so.
+    pcm_shape_logged: bool,
     /// `ORENDER_SYNC_TRACE`: one stderr line per chunk (arrival time, bytes
     /// so far, frames pushed so far), for studying a source's delivery.
     trace: bool,
@@ -481,6 +498,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     // An output that failed to open is not retried on every chunk: only
     // when a stream starts or the settings change.
     let mut output_failed = false;
+    let mut idle_feeder = IdleFeeder::default();
 
     let capture = session.capture(config)?;
     sys::notify_ready();
@@ -537,7 +555,11 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         {
             telemetry.close_epoch(&ep.telemetry.snapshot());
             log::info!(
-                "sync host: stream ended after {:.1} s; {}",
+                "sync host: {} after {:.1} s; {}",
+                match ep.kind {
+                    EpochKind::Stream => "stream ended",
+                    EpochKind::Idle => "idle epoch closed",
+                },
                 ep.started.elapsed().as_secs_f64(),
                 describe(&ep, &capture.stats)
             );
@@ -555,6 +577,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 }
                 engine.reset();
                 epoch = open_epoch(
+                    EpochKind::Stream,
                     config,
                     &settings,
                     telemetry.held_target_ms(),
@@ -573,9 +596,14 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 // No epoch for it: the stream was already running when this
                 // run took the capture over (a restart from the config, the
                 // end of a standby). It is picked up where it is.
-                if epoch.is_none() && !output_failed {
+                // (Or the idle feed was playing: the stream takes over.)
+                if epoch.as_ref().is_none_or(|ep| ep.kind == EpochKind::Idle) && !output_failed {
+                    if let Some(idle) = epoch.take() {
+                        telemetry.close_epoch(&idle.telemetry.snapshot());
+                    }
                     engine.reset();
                     epoch = open_epoch(
+                        EpochKind::Stream,
                         config,
                         &settings,
                         telemetry.held_target_ms(),
@@ -586,6 +614,7 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                     output_failed = epoch.is_none();
                     log::info!("sync host: stream already running, new epoch");
                 }
+                idle_feeder.note_real_frame(Instant::now());
                 if let Some(ep) = epoch.as_mut() {
                     ep.last_transport =
                         transport_in_epoch(&mut ep.transport_origin, transport, bytes.len());
@@ -593,7 +622,8 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 }
             }
             Some(ReaderMsg::End) => {
-                if let Some(ep) = epoch.take() {
+                // (An idle epoch is not the stream's to end.)
+                if let Some(ep) = epoch.take_if(|ep| ep.kind == EpochKind::Stream) {
                     // Let what is queued play out, then close the stream.
                     std::thread::sleep(Duration::from_secs_f64(
                         telemetry.held_target_ms() / 1e3 + 0.05,
@@ -607,6 +637,46 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 }
             }
             None => {}
+        }
+        // With no stream playing, a speaker or object test is only heard if
+        // something is rendered for it to be injected into: silence, paced on
+        // the host's clock, through an epoch of its own.
+        let stream_playing = epoch
+            .as_ref()
+            .is_some_and(|ep| ep.kind == EpochKind::Stream);
+        if !stream_playing {
+            let t = reference_now_s();
+            match idle_feeder.poll(Instant::now(), &idle_feed_inputs(&engine)) {
+                Some(chunk) => {
+                    if epoch.is_none() && !output_failed {
+                        engine.reset();
+                        epoch = open_epoch(
+                            EpochKind::Idle,
+                            config,
+                            &settings,
+                            telemetry.held_target_ms(),
+                            channels,
+                            &positions,
+                            &controls,
+                        );
+                        output_failed = epoch.is_none();
+                        log::info!("sync host: test armed with nothing playing, idle epoch");
+                    }
+                    if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
+                        feed_silence(&mut engine, ep, t, chunk.sample_count);
+                    }
+                }
+                None if !idle_feeder.is_feeding() => {
+                    // Disarmed: let what is queued play out, then close.
+                    if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
+                        ep.ending_at = Some(
+                            Instant::now()
+                                + Duration::from_secs_f64(telemetry.held_target_ms() / 1e3 + 0.05),
+                        );
+                    }
+                }
+                None => {}
+            }
         }
         if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
             ep.report_output(&controls, &settings);
@@ -703,6 +773,7 @@ impl Epoch {
 /// gone) leaves the host running without one, for the client to pick
 /// another, instead of ending the renderer.
 fn open_epoch(
+    kind: EpochKind,
     config: &HostConfig,
     settings: &OutputSettings,
     target_ms: f64,
@@ -710,7 +781,7 @@ fn open_epoch(
     positions: &[String],
     controls: &Controls,
 ) -> Option<Epoch> {
-    match start_epoch(config, settings, target_ms, channels, positions) {
+    match start_epoch(kind, config, settings, target_ms, channels, positions) {
         // What plays is published once it does ([`Epoch::report_output`]).
         Ok(epoch) => Some(epoch),
         Err(e) => {
@@ -724,6 +795,7 @@ fn open_epoch(
 /// Open a stream's playback. `target_ms` is the latency it starts at: the
 /// configured target, or what an earlier stream showed the pipeline needs.
 fn start_epoch(
+    kind: EpochKind,
     config: &HostConfig,
     settings: &OutputSettings,
     target_ms: f64,
@@ -735,7 +807,8 @@ fn start_epoch(
     let tap = Arc::new(SourceTap::new());
     let telemetry = Arc::new(SyncTelemetry::new());
     let mut core_config = OutputCoreConfig::new(channels, RENDER_RATE, RENDER_RATE, 8192);
-    if config.source.follows_the_writer() {
+    // The idle feed is the host's own clock, read exactly: nothing to follow.
+    if kind == EpochKind::Stream && config.source.follows_the_writer() {
         let follow = audio_sync::ServoConfig::follow();
         core_config.servo = audio_sync::ServoConfig {
             source_rate_hz: core_config.servo.source_rate_hz,
@@ -767,6 +840,7 @@ fn start_epoch(
         core,
     )?;
     Ok(Epoch {
+        kind,
         producer,
         tap,
         telemetry,
@@ -787,6 +861,7 @@ fn start_epoch(
         output_report: OutputReport::Pending,
         ending_at: None,
         channel_mismatch_logged: false,
+        pcm_shape_logged: false,
         trace: std::env::var_os("ORENDER_SYNC_TRACE").is_some(),
         bytes_in: 0,
     })
@@ -809,8 +884,64 @@ fn transport_in_epoch(
     })
 }
 
+/// What the engine reads to decide the idle feed: the arm a client's test
+/// pane keeps alive, and whether a test is running.
+fn idle_feed_inputs(engine: &Engine) -> IdleFeedInputs {
+    let control = engine.renderer_control();
+    let live = control.live.read();
+    IdleFeedInputs {
+        arm_gen: live.speaker_test_idle_feed_gen,
+        test_active: live.speaker_test.is_some() || live.object_test.is_some(),
+        sample_rate: RENDER_RATE,
+    }
+}
+
+/// Render `frames` of silence into the idle epoch and publish the host's own
+/// clock as its source: `t` is when the feeder counted them.
+fn feed_silence(engine: &mut Engine, ep: &mut Epoch, t: f64, frames: u32) {
+    match engine.render_silence(frames) {
+        Ok(Some(block)) => push_blocks(engine, ep, vec![block]),
+        Ok(None) => {}
+        Err(e) => log::debug!("sync host: idle render error: {e:#}"),
+    }
+    if ep.pushed_frames > 0 {
+        ep.tap.publish(t, ep.pushed_frames);
+    }
+}
+
+/// Render one chunk of the sink's linear PCM and push the audio. The clock
+/// is published by the caller, from the transport, as for a bitstream.
+fn feed_pcm(engine: &mut Engine, ep: &mut Epoch, tr: Transport, bytes: &[u8]) {
+    if tr.channels as usize != pcm::INPUT_MAP.len() {
+        if !ep.pcm_shape_logged {
+            ep.pcm_shape_logged = true;
+            log::warn!(
+                "sync host: linear PCM on {} channels dropped: the input map has {}",
+                tr.channels,
+                pcm::INPUT_MAP.len()
+            );
+        }
+        return;
+    }
+    // The count starts with the stream: there is no burst to find first.
+    ep.transport_base.get_or_insert((0, 0.0));
+    match engine.render_host_pcm(&pcm::frame(bytes, tr.rate)) {
+        Ok(Some(block)) => push_blocks(engine, ep, vec![block]),
+        Ok(None) => {}
+        Err(e) => log::debug!("sync host: PCM render error: {e:#}"),
+    }
+}
+
 /// Deframe, decode and render one chunk, push the audio, publish the clock.
 fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
+    let pcm_transport = ep
+        .last_transport
+        .filter(|tr| tr.format == CarrierFormat::PcmF32);
+    if let Some(tr) = pcm_transport {
+        feed_pcm(engine, ep, tr, bytes);
+        publish_clock(ep, t, bytes.len());
+        return;
+    }
     let has_sync = spdif::contains_sync(bytes);
     if ep.is_spdif.is_none() && bytes.len() >= 4 {
         ep.is_spdif = Some(has_sync);
@@ -856,6 +987,11 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
             Err(e) => log::debug!("sync host: decode error: {e:#}"),
         }
     }
+    publish_clock(ep, t, bytes.len());
+}
+
+/// Publish where the source stood when the chunk that ends at `t` arrived.
+fn publish_clock(ep: &mut Epoch, t: f64, chunk_bytes: usize) {
     match (transport(ep), ep.transport_base) {
         // The exact transport position, counted from the first burst: from
         // the `own` sink, or from the bytes of a pipe whose carrier is known
@@ -879,7 +1015,7 @@ fn feed_chunk(engine: &mut Engine, ep: &mut Epoch, t: f64, bytes: &[u8]) {
             }
         }
     }
-    ep.bytes_in += bytes.len() as u64;
+    ep.bytes_in += chunk_bytes as u64;
     if ep.trace {
         eprintln!("SYNC_TRACE {t:.6} {} {}", ep.bytes_in, ep.pushed_frames);
     }
@@ -911,16 +1047,19 @@ fn transport(ep: &Epoch) -> Option<Transport> {
         ep.pipe_carrier.map(|(rate, channels)| Transport {
             rate,
             channels,
+            format: CarrierFormat::Iec958,
             bytes_end: ep.parser_bytes,
         })
     })
 }
 
-/// Source PCM frames (at the render rate) a byte offset on an IEC 958
-/// carrier stands for: carriers run at the content rate times a fixed factor
-/// (1 for AC-3/DTS at 48 kHz, 4 for E-AC-3/TrueHD/DTS-HD at 192 kHz).
+/// Source PCM frames (at the render rate) a byte offset on a carrier stands
+/// for. IEC 958 carriers run at the content rate times a fixed factor (1 for
+/// AC-3/DTS at 48 kHz, 4 for E-AC-3/TrueHD/DTS-HD at 192 kHz); linear PCM is
+/// its own carrier.
 fn transport_frames(bytes: u64, tr: Transport) -> f64 {
-    let carrier_frames = bytes as f64 / (2.0 * tr.channels.max(1) as f64);
+    let frame_bytes = tr.format.sample_bytes() * tr.channels.max(1);
+    let carrier_frames = bytes as f64 / frame_bytes as f64;
     carrier_frames * RENDER_RATE as f64 / tr.rate.max(1) as f64
 }
 
@@ -1042,6 +1181,7 @@ mod tests {
             Some(Transport {
                 rate: 192_000,
                 channels: 2,
+                format: CarrierFormat::Iec958,
                 bytes_end,
             })
         };
@@ -1068,6 +1208,7 @@ mod tests {
             let tr = Transport {
                 rate,
                 channels,
+                format: CarrierFormat::Iec958,
                 bytes_end: 0,
             };
             let second = rate as u64 * channels as u64 * 2;
@@ -1079,5 +1220,13 @@ mod tests {
         }
         // DTS-HD rides 2 or 8 channels: not guessed.
         assert_eq!(pipe_carrier(17), None);
+        // The sink's linear PCM: 8 channels of 4-byte floats at 48 kHz.
+        let pcm = Transport {
+            rate: own_sink::PCM_RATE_HZ,
+            channels: own_sink::PCM_CHANNELS,
+            format: CarrierFormat::PcmF32,
+            bytes_end: 0,
+        };
+        assert_eq!(transport_frames(48_000 * 8 * 4, pcm), RENDER_RATE as f64);
     }
 }

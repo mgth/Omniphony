@@ -27,6 +27,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
+/// What the host's own PCM is called, having no bridge to name it
+/// (`StreamDeclaration::label`).
+const HOST_PCM_LABEL: &str = "PCM";
+
 /// Monitoring cadences this host falls back to when the config declares none.
 ///
 /// Lower than the CLI's: embedded in a player, the only consumer is the
@@ -172,6 +176,9 @@ pub struct Engine {
     osc: Option<OscSender>,
     /// VU meter, created with the OSC server; feeds outgoing meter bundles.
     audio_meter: Option<AudioMeter>,
+    /// The stream in hand is the host's own PCM
+    /// ([`render_host_pcm`](Self::render_host_pcm)), declared as such.
+    host_pcm_declared: bool,
     /// The output stage's figures, from a host that plays the rendered audio
     /// itself ([`set_output_timings`](Self::set_output_timings)); empty for a
     /// host that hands the audio to a player.
@@ -325,6 +332,7 @@ impl Engine {
             last_output_input_pts: None,
             osc: None,
             audio_meter: None,
+            host_pcm_declared: false,
             output_timings: crate::osc::MeterTimings::default(),
             diag_cadence: None,
             perf: std::env::var_os("ORENDER_PERF_LOG")
@@ -907,6 +915,7 @@ impl Engine {
         }
         self.carried_declaration = None;
         self.pipeline.stream.declaration = Default::default();
+        self.host_pcm_declared = false;
         self.renderer.reset_runtime_state();
         self.reset_segment_state();
         // Object frames are delta-encoded; after a seek the (static) virtual-bed
@@ -1027,6 +1036,47 @@ impl Engine {
     /// `None` when it handed back nothing, or the host gave no timestamp.
     pub fn last_output_input_pts(&self) -> Option<i64> {
         self.last_output_input_pts
+    }
+
+    /// Render a frame of linear PCM the host captured itself: no bridge
+    /// decoded it (the standalone renderer's sink carrying plain PCM, desktop
+    /// audio). The frame carries its own channel labels; the stream is
+    /// declared as PCM, which no bridge would do for it, having never seen
+    /// it. One stream is either the host's PCM or the bridge's frames:
+    /// [`reset`](Self::reset) between the two.
+    pub fn render_host_pcm(&mut self, frame: &RDecodedFrame) -> Result<Option<RenderedAudio>> {
+        if !self.host_pcm_declared {
+            self.host_pcm_declared = true;
+            self.pipeline
+                .stream
+                .set_declaration(crate::stream_state::StreamDeclaration {
+                    family: renderer::placement::SourceFamily::PCM,
+                    label: HOST_PCM_LABEL.to_owned(),
+                    ..Default::default()
+                });
+        }
+        self.render_frame(frame, 0.0, None)
+    }
+
+    /// Render `sample_count` frames of silence, as a stereo frame: what a
+    /// host that plays the audio itself feeds while nothing plays, so that a
+    /// speaker or object test is heard. The render injects the test, and with
+    /// nothing rendered there is nothing to inject it into.
+    pub fn render_silence(&mut self, sample_count: u32) -> Result<Option<RenderedAudio>> {
+        const CHANNELS: u32 = 2;
+        let frame = RDecodedFrame {
+            sampling_frequency: self.sample_rate,
+            sample_count,
+            channel_count: CHANNELS,
+            pcm: vec![0i32; (sample_count * CHANNELS) as usize].into(),
+            channel_labels: vec![RChannelLabel::L, RChannelLabel::R].into(),
+            metadata: abi_stable::std_types::RVec::new(),
+            drc_gain: 1.0,
+            drc_ramp_duration: 0,
+            dialogue_level: abi_stable::std_types::ROption::RNone,
+            is_new_segment: false,
+        };
+        self.render_frame(&frame, 0.0, None)
     }
 
     /// Render one packet's worth of decoded frames: the second half of

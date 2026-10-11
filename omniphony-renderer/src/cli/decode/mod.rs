@@ -2,7 +2,7 @@ mod bootstrap;
 mod config_resolution;
 pub mod decoder_thread;
 pub mod handler;
-mod idle_feed;
+pub(crate) mod idle_feed;
 #[cfg(target_os = "linux")]
 mod live_bridge;
 mod live_input;

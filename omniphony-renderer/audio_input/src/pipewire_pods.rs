@@ -127,7 +127,9 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
 /// be *one* param with ranges: a fixed-stride param per format lets PipeWire
 /// pair a format with another format's stride and size, and the player is
 /// then asked for half a quantum per cycle (measured: mpv queued 2048 of a
-/// 4096-frame cycle, i.e. half real time). Ranges as in spike S1.
+/// 4096-frame cycle, i.e. half real time). Ranges as in spike S1, widened
+/// to the sink's linear-PCM alternative: eight `f32` channels are 32 bytes a
+/// frame, twice the widest IEC 958 carrier.
 pub fn build_pipewire_bridge_iec958_quantum_buffers_pod() -> Result<Vec<u8>> {
     let range = |default: i32, min: i32, max: i32| {
         pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
@@ -135,14 +137,14 @@ pub fn build_pipewire_bridge_iec958_quantum_buffers_pod() -> Result<Vec<u8>> {
             pw::spa::utils::ChoiceEnum::Range { default, min, max },
         )))
     };
-    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * 16;
+    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * 32;
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamBuffers,
         spa::param::ParamType::Buffers,
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_buffers), range(4, 2, 16)),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_blocks), Int, 1i32),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_size), range(max_size, 4096, max_size)),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, 16)),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, 32)),
     };
     let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
@@ -265,6 +267,26 @@ pub fn build_pipewire_bridge_raw_format_pod(
     channels: u16,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
+    build_raw_format_pod(sample_rate_hz, &RAW_RATES_HZ, channels, param_type)
+}
+
+/// [`build_pipewire_bridge_raw_format_pod`] at one rate only: for a sink
+/// whose renderer runs at that rate and neither resamples nor follows the
+/// stream's. A player at another rate converts on its side.
+pub fn build_pipewire_bridge_raw_format_pod_at(
+    sample_rate_hz: u32,
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    build_raw_format_pod(sample_rate_hz, &[sample_rate_hz], channels, param_type)
+}
+
+fn build_raw_format_pod(
+    sample_rate_hz: u32,
+    rates_hz: &[u32],
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
     let positions = raw_audio_positions(channels);
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamFormat,
@@ -285,7 +307,7 @@ pub fn build_pipewire_bridge_raw_format_pod(
                 pw::spa::utils::ChoiceFlags::empty(),
                 pw::spa::utils::ChoiceEnum::Enum {
                     default: sample_rate_hz as i32,
-                    alternatives: RAW_RATES_HZ.iter().map(|rate| *rate as i32).collect(),
+                    alternatives: rates_hz.iter().map(|rate| *rate as i32).collect(),
                 }
             )))
         ),

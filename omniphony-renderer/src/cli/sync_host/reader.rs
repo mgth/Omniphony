@@ -42,15 +42,39 @@ pub enum ReaderMsg {
     End,
 }
 
-/// Where a chunk ends on an IEC 958 carrier's timeline.
-#[derive(Debug, Clone, Copy)]
+/// Where a chunk ends on its carrier's timeline: an IEC 958 carrier, or the
+/// `own` sink's linear PCM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Transport {
-    /// Carrier frames per second and channels (2-byte samples).
+    /// Carrier frames per second and channels.
     pub rate: u32,
     pub channels: u32,
+    /// What the bytes are: an IEC 61937 stream in 2-byte samples, or
+    /// linear PCM in 4-byte floats.
+    pub format: CarrierFormat,
     /// Bytes captured in this epoch up to the end of the chunk, which ends
     /// at the chunk's `t`.
     pub bytes_end: u64,
+}
+
+/// What a carrier's samples are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CarrierFormat {
+    /// An IEC 61937 stream on an IEC 958 carrier: 16-bit samples.
+    #[default]
+    Iec958,
+    /// Linear PCM, 32-bit float, interleaved.
+    PcmF32,
+}
+
+impl CarrierFormat {
+    /// Bytes one sample of one channel takes.
+    pub fn sample_bytes(self) -> u32 {
+        match self {
+            CarrierFormat::Iec958 => 2,
+            CarrierFormat::PcmF32 => 4,
+        }
+    }
 }
 
 /// Chunks the hand-off queue holds: at 64 KiB each, well over a second of
