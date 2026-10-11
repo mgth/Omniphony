@@ -147,6 +147,18 @@ mod imp {
     use crate::sync_output::core::OutputCore;
     use crate::sync_output::cpal_adapter::CpalSyncOutput;
 
+    /// One thread at a time opens a host and walks its devices: the engine
+    /// thread opens outputs while the control thread lists the devices for a
+    /// client, and the ASIO and COM layers under cpal are not to be entered
+    /// from two threads at once.
+    static HOST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn host_lock() -> std::sync::MutexGuard<'static, ()> {
+        HOST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The cpal host outputs are opened on.
     struct OutputHost {
         host: cpal::Host,
@@ -242,6 +254,7 @@ mod imp {
         }
 
         pub fn start(self, core: OutputCore) -> Result<Output> {
+            let _one_at_a_time = host_lock();
             let failed = Arc::new(AtomicBool::new(false));
             let stream = CpalSyncOutput::start_watched(
                 &self.device,
@@ -311,6 +324,7 @@ mod imp {
     }
 
     pub fn negotiate(config: &SyncOutputConfig) -> Result<Negotiated> {
+        let _one_at_a_time = host_lock();
         let OutputHost {
             host,
             name,
@@ -376,6 +390,7 @@ mod imp {
     }
 
     pub fn list_output_devices() -> Vec<(String, String)> {
+        let _one_at_a_time = host_lock();
         output_host(None)
             .and_then(|opened| Ok(opened.host.output_devices()?.collect::<Vec<_>>()))
             .map_err(|e| log::debug!("listing the output devices: {e:#}"))

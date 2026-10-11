@@ -92,7 +92,12 @@ pub struct Controls {
     named_file: Option<String>,
 }
 
+/// The devices an output can be asked for. (A unit test never asks the
+/// machine's audio system: it gets none.)
 fn output_devices() -> Vec<OutputDeviceOption> {
+    if cfg!(test) {
+        return Vec::new();
+    }
     audio_output::sync_output::list_output_devices()
         .into_iter()
         .map(|(value, label)| OutputDeviceOption { value, label })

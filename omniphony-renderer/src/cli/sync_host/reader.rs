@@ -231,7 +231,7 @@ enum ReadOutcome {
 /// Windows a named pipe, served here.
 pub fn spawn_reader(path: PathBuf, drain_on_open: bool) -> std::io::Result<Capture> {
     let source = platform::open_pipe(&path, drain_on_open)?;
-    spawn_read_loop(source, ReadKind::Fifo, "sync-pipe-reader", true)
+    spawn_read_loop(source, ReadKind::Fifo, "sync-pipe-reader", true, false)
 }
 
 /// Spawn the reader on the regular file at `path`, or on standard input for
@@ -239,25 +239,29 @@ pub fn spawn_reader(path: PathBuf, drain_on_open: bool) -> std::io::Result<Captu
 /// clock.
 pub fn spawn_file_reader(path: &Path) -> std::io::Result<Capture> {
     let (source, stoppable) = platform::open_file(path)?;
-    let capture = spawn_read_loop(source, ReadKind::ToEnd, "sync-file-reader", stoppable)?;
-    capture.set_paced(true);
-    Ok(capture)
+    spawn_read_loop(source, ReadKind::ToEnd, "sync-file-reader", stoppable, true)
 }
 
 /// `join`: whether the capture waits for the thread when it is dropped. A
 /// read that cannot be woken (standard input, where it cannot be polled)
 /// would hold the drop until the next byte: that thread is left to end on
 /// its own.
+///
+/// `paced`: whether the host paces the source from its first byte. Said
+/// before the thread starts: set after, the reader has already read ahead by
+/// as much as it could in the meantime (megabytes of a file).
 fn spawn_read_loop(
     source: Box<dyn ByteSource>,
     kind: ReadKind,
     name: &str,
     join: bool,
+    paced: bool,
 ) -> std::io::Result<Capture> {
     let (tx, rx) = sync_channel(QUEUE_CHUNKS);
     let stats = Arc::new(ReaderStats::default());
     let stop = Arc::new(AtomicBool::new(false));
     let mut capture = Capture::new(rx, Arc::clone(&stats), Arc::clone(&stop));
+    capture.set_paced(paced);
     let (paced, queued) = (Arc::clone(&capture.paced), Arc::clone(&capture.queued));
     let thread = thread::Builder::new().name(name.into()).spawn(move || {
         read_loop(
