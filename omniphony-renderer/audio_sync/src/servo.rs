@@ -61,6 +61,9 @@ pub struct ServoConfig {
     pub loop_narrowing_half_life_s: f64,
     /// Latency error beyond which the servo realigns instead of steering (s).
     pub realign_threshold_s: f64,
+    /// Headroom kept above the latency floor when the target is raised to it
+    /// (see [`Telemetry::target_s`]) (s).
+    pub floor_margin_s: f64,
     /// Phase-loop damping ratio.
     pub damping: f64,
     /// Clamp on the phase correction `u` (fraction, ±).
@@ -142,6 +145,7 @@ impl Default for ServoConfig {
             loop_start_bandwidth_hz: 0.0,
             loop_narrowing_half_life_s: 15.0,
             realign_threshold_s: 0.020,
+            floor_margin_s: 0.005,
             damping: 1.0,
             max_correction: 500e-6,
             max_feedforward_deviation: 1000e-6,
@@ -257,17 +261,39 @@ pub struct Telemetry {
     /// The feed-forward hit `max_feedforward_deviation`: the nominal rates are
     /// wrong or a clock is broken.
     pub clock_mismatch: bool,
-    /// Lowest latency the pipeline can currently sustain (s): what the ring
-    /// lags the capture point by, plus one callback's consumption and the
-    /// resampler look-ahead, plus the device delay. Peak-held, relaxing
-    /// toward the current value with time constant [`FLOOR_HOLD_S`]. A target
-    /// below it underruns: the decoder holds or batches more than the target
-    /// leaves room for.
+    /// Lowest latency the pipeline was seen to need (s): what the ring lags
+    /// the capture point by, plus one callback's consumption and the
+    /// resampler look-ahead, plus the device delay.
+    ///
+    /// It is read once per burst cycle, when audio reaches the ring: the
+    /// highest value at a callback since the previous delivery is what that
+    /// wait needed. A wait that ends in a stall or a break instead (a pause,
+    /// the end of the stream, a track change) says nothing about the
+    /// pipeline and is not counted. Peak-held, relaxing toward the latest
+    /// cycle with time constant [`FLOOR_HOLD_S`]. A target below it
+    /// underruns: the decoder holds or batches more than the target leaves
+    /// room for.
     pub latency_floor_s: f64,
+    /// The latency the servo holds (s): the configured target, or more when
+    /// the pipeline cannot sustain it (see [`Servo::track_floor`]). Raised
+    /// within an epoch, never lowered.
+    pub target_s: f64,
 }
 
 /// Time constant with which [`Telemetry::latency_floor_s`] forgets a peak (s).
 pub const FLOOR_HOLD_S: f64 = 5.0;
+/// How far behind its line the reading after an underrun may be for an
+/// exact (`own`) source to count as having lost nothing (s).
+pub const SOURCE_LOSS_TOLERANCE_S: f64 = 0.002;
+/// Burst cycles above the target that raise it, and the time they must fall
+/// within (s). One cycle above it is a hiccup; a target the pipeline cannot
+/// sustain is exceeded again and again.
+pub const FLOOR_CYCLES: usize = 3;
+pub const FLOOR_WINDOW_S: f64 = 10.0;
+/// After a raise, how long the cycles that follow may still lift the level
+/// it was set from (s): long enough to see the decoder's whole delivery
+/// pattern, which the cycles that triggered the raise were only a part of.
+pub const FLOOR_SETTLE_S: f64 = 2.0;
 
 /// See the [module docs](self).
 #[derive(Debug, Clone)]
@@ -283,6 +309,10 @@ pub struct Servo {
     /// The next fresh reading starts a new source phase (after a break the
     /// capture side reported, or a `follow` underrun).
     restart_next: bool,
+    /// That restart was asked for by an underrun, not by a reported break:
+    /// an exact source whose reading is still on its line lost nothing, and
+    /// keeps its phase.
+    restart_after_underrun: bool,
     /// Source phase restarts the servo made.
     restarts: u64,
     phase: Phase,
@@ -292,7 +322,31 @@ pub struct Servo {
     /// When playback first started in this epoch, for the loop's narrowing.
     running_since: Option<f64>,
     last_t: Option<f64>,
+    /// The target in force ([`Telemetry::target_s`]).
+    target_s: f64,
+    /// [`CallbackInput::available`] at the last callback: more at the next
+    /// one is a delivery, the end of a burst cycle.
+    last_available: f64,
+    /// Highest floor at a callback since the last delivery; `None` while
+    /// what is seen cannot be trusted (a stall, a break).
+    cycle: Option<FloorCycle>,
+    /// When the floor was last read (the end of the last cycle counted).
+    floor_read_at: Option<f64>,
+    /// The latest cycles whose floor was above the target in force, oldest
+    /// first: `(end time, floor)`.
+    over_target: [(f64, f64); FLOOR_CYCLES],
+    over_target_len: usize,
+    /// The level the target was last raised from, and until when the cycles
+    /// that follow may lift it ([`FLOOR_SETTLE_S`]).
+    raised_level: Option<(f64, f64)>,
     telemetry: Telemetry,
+}
+
+/// A burst cycle in progress: from one delivery into the ring to the next.
+#[derive(Debug, Clone, Copy)]
+struct FloorCycle {
+    /// Highest floor seen in it (s).
+    peak_s: f64,
 }
 
 impl Servo {
@@ -309,13 +363,22 @@ impl Servo {
             source_stalled: true,
             source_breaks: 0,
             restart_next: false,
+            restart_after_underrun: false,
             restarts: 0,
             phase: Phase::Starting,
             integral: 0.0,
             running_since: None,
             last_t: None,
+            target_s: config.target_latency_s,
+            last_available: 0.0,
+            cycle: None,
+            floor_read_at: None,
+            over_target: [(0.0, 0.0); FLOOR_CYCLES],
+            over_target_len: 0,
+            raised_level: None,
             telemetry: Telemetry {
                 ratio: config.source_rate_hz / config.output_rate_hz,
+                target_s: config.target_latency_s,
                 ..Telemetry::default()
             },
             config,
@@ -342,10 +405,16 @@ impl Servo {
         self.last_source_t = None;
         self.source_stalled = true;
         self.restart_next = false;
+        self.restart_after_underrun = false;
         self.phase = Phase::Starting;
         self.integral = 0.0;
         self.running_since = None;
         self.last_t = None;
+        self.target_s = self.config.target_latency_s;
+        self.telemetry.target_s = self.target_s;
+        self.last_available = 0.0;
+        self.forget_floor_cycles();
+        self.floor_read_at = None;
     }
 
     /// Decide this callback. See the [module docs](self).
@@ -362,8 +431,17 @@ impl Servo {
         if source_broke {
             self.source_breaks = input.source_breaks;
             self.restart_next = true;
+            self.restart_after_underrun = false;
         }
-        self.observe_source(input);
+        let restarted = self.observe_source(input);
+        if source_broke {
+            // Another stream: what its decoder batches is yet to be seen.
+            self.forget_floor_cycles();
+        } else if restarted {
+            // The source started a new phase: what the ring lagged it by
+            // until now was the break's, not the pipeline's.
+            self.cycle = None;
+        }
 
         let ratio_ff = self.feedforward_ratio();
         let rate_s = self.source.rate().unwrap_or(self.config.source_rate_hz);
@@ -379,6 +457,7 @@ impl Servo {
             Some(p) if !self.source_stalled => p + input.source_offset,
             _ => {
                 self.telemetry.latency_s = None;
+                self.cycle = None;
                 if self.phase == Phase::Running {
                     self.phase = Phase::Realigning;
                 }
@@ -392,10 +471,10 @@ impl Servo {
                 + ratio_ff * input.frames as f64
                 + self.config.resampler_lookahead_frames)
                 / rate_s;
-        let held = self.telemetry.latency_floor_s;
-        let relaxed = held - (held - floor) * (dt / FLOOR_HOLD_S).min(1.0);
-        self.telemetry.latency_floor_s = floor.max(relaxed);
-        let error = latency - self.config.target_latency_s;
+        // While a restart is pending, whether the source lost time is not
+        // known yet: a cycle that ends meanwhile is not read.
+        let raised = self.track_floor(input.t, dt, input.available, floor, self.restart_next);
+        let error = latency - self.target_s;
 
         match self.phase {
             // The source is between phases: the latency is set once the
@@ -407,10 +486,10 @@ impl Servo {
                 self.establish(input, error, rate_s, rate_d, ratio_ff)
             }
             Phase::Running => {
-                if source_broke || error.abs() > self.config.realign_threshold_s {
-                    // A new stream, or an error steering cannot recover
-                    // without an audible pitch excursion: fade out now, set
-                    // the latency next callback.
+                if source_broke || raised || error.abs() > self.config.realign_threshold_s {
+                    // A new stream, a target just raised, or an error
+                    // steering cannot recover without an audible pitch
+                    // excursion: fade out now, set the latency next callback.
                     self.phase = Phase::Realigning;
                     let mut plan = self.steer(input.t, error, ratio_ff, 0.0);
                     plan.fade_out = true;
@@ -422,23 +501,150 @@ impl Servo {
         }
     }
 
-    fn observe_source(&mut self, input: &CallbackInput) {
+    /// Follow the latency floor through the burst cycles, and raise the
+    /// target when they show it cannot be sustained. Returns whether the
+    /// target was raised.
+    ///
+    /// The ring lags the capture point along a sawtooth: it grows until the
+    /// decoder delivers, then drops. The latency needed is set by the
+    /// sawtooth's peaks, but the servo only sees it at its callbacks: the
+    /// last one before a delivery read `floor`, and the peak came within one
+    /// callback period `dt` after it. So a cycle's peak is somewhere in
+    /// `floor..floor + dt`, and where depends on how the deliveries fall
+    /// against the callbacks, which drifts.
+    ///
+    /// A cycle whose `floor` is above the target underruns there, or keeps
+    /// the servo from starting. [`FLOOR_CYCLES`] of them within
+    /// [`FLOOR_WINDOW_S`] raise the target to their level plus `dt` and
+    /// [`ServoConfig::floor_margin_s`]: above the peak of every cycle seen,
+    /// however the deliveries fall later, at the price of up to one callback
+    /// period more than the lowest latency that would do. The level is the
+    /// highest of them, or their median when the highest stands more than a
+    /// callback period above it: one long cycle (a hiccup that did not
+    /// underrun) does not set the latency.
+    ///
+    /// Those cycles are only a part of the decoder's delivery pattern. For
+    /// [`FLOOR_SETTLE_S`] after a raise, a cycle up to one callback period
+    /// above the level lifts it, and the target with it, without a realign:
+    /// the servo steers to the few ms of difference.
+    fn track_floor(
+        &mut self,
+        t: f64,
+        dt: f64,
+        available: f64,
+        floor: f64,
+        uncertain: bool,
+    ) -> bool {
+        let delivered = available > self.last_available;
+        self.last_available = available;
+        if !delivered {
+            let peak_s = self.cycle.map_or(floor, |c| c.peak_s.max(floor));
+            self.cycle = Some(FloorCycle { peak_s });
+            return false;
+        }
+        // Audio reached the ring: the wait before it was the pipeline's own.
+        // (Without a callback seen before the delivery there is no reading
+        // of that wait.)
+        let Some(cycle) = self.cycle.replace(FloorCycle { peak_s: floor }) else {
+            return false;
+        };
+        if uncertain {
+            return false;
+        }
+        let lower = cycle.peak_s;
+        let held = self.telemetry.latency_floor_s;
+        let since = self.floor_read_at.map_or(0.0, |at| (t - at).max(0.0));
+        self.floor_read_at = Some(t);
+        let relaxed = held - (held - lower) * (since / FLOOR_HOLD_S).min(1.0);
+        self.telemetry.latency_floor_s = lower.max(relaxed);
+
+        let margin = self.config.floor_margin_s;
+        if let Some((level, until)) = self.raised_level {
+            if t > until {
+                self.raised_level = None;
+            } else if lower > level && lower - level <= dt {
+                // Part of the pattern the raise had not seen yet: the level
+                // follows, and the servo steers to the difference.
+                self.raised_level = Some((lower, until));
+                self.target_s = self.target_s.max(lower + dt + margin);
+                self.telemetry.target_s = self.target_s;
+            }
+        }
+        if lower <= self.target_s {
+            return false;
+        }
+        // Keep the latest cycles above the target that are recent enough.
+        let mut kept = 0;
+        for i in 0..self.over_target_len {
+            if t - self.over_target[i].0 <= FLOOR_WINDOW_S {
+                self.over_target[kept] = self.over_target[i];
+                kept += 1;
+            }
+        }
+        if kept == FLOOR_CYCLES {
+            self.over_target.copy_within(1.., 0);
+            kept -= 1;
+        }
+        self.over_target[kept] = (t, lower);
+        self.over_target_len = kept + 1;
+        if self.over_target_len < FLOOR_CYCLES {
+            return false;
+        }
+        let mut floors = self.over_target.map(|c| c.1);
+        floors.sort_by(f64::total_cmp);
+        let (median, highest) = (floors[FLOOR_CYCLES / 2], floors[FLOOR_CYCLES - 1]);
+        let level = if highest - median <= dt {
+            highest
+        } else {
+            median
+        };
+        self.target_s = level + dt + margin;
+        self.telemetry.target_s = self.target_s;
+        self.over_target_len = 0;
+        self.raised_level = Some((level, t + FLOOR_SETTLE_S));
+        true
+    }
+
+    /// Forget what the burst cycles showed: another epoch or another stream.
+    fn forget_floor_cycles(&mut self) {
+        self.cycle = None;
+        self.over_target_len = 0;
+        self.raised_level = None;
+    }
+
+    /// Take in the capture point's reading. Returns whether it started a new
+    /// source phase.
+    fn observe_source(&mut self, input: &CallbackInput) -> bool {
         let Some(obs) = input.source else {
-            return;
+            return false;
         };
         let fresh = self.last_source_t.is_none_or(|last| obs.t > last);
         if fresh {
             let resumed = self
                 .last_source_t
                 .is_some_and(|last| obs.t - last > self.config.source_gap_s);
-            if std::mem::take(&mut self.restart_next) || (resumed && self.source.is_tracking()) {
-                // The source stopped and came back, or started another
-                // stream: same clock, new phase.
+            let asked = std::mem::take(&mut self.restart_next);
+            let after_underrun = std::mem::take(&mut self.restart_after_underrun);
+            // An exact source read on its line after an underrun lost
+            // nothing: the decoder held more than the target leaves room
+            // for, and the phase stands. (A `follow` source's readings are
+            // late by their jitter: nothing can be told from one of them.)
+            let lost_nothing = after_underrun
+                && !self.config.source_late_arrivals
+                && self.source.position_at(obs.t).is_some_and(|line| {
+                    (line - obs.received).abs()
+                        <= SOURCE_LOSS_TOLERANCE_S * self.config.source_rate_hz
+                });
+            if (asked && !lost_nothing) || (resumed && self.source.is_tracking()) {
+                // The source stopped and came back, lost time, or started
+                // another stream: same clock, new phase.
                 self.source.restart_phase(obs.t, obs.received);
                 self.restarts += 1;
-            } else {
-                self.source.observe(obs.t, obs.received);
+                self.last_source_t = Some(obs.t);
+                self.source_stalled = false;
+                return true;
             }
+            self.source.observe(obs.t, obs.received);
             self.last_source_t = Some(obs.t);
             self.source_stalled = false;
         } else if self
@@ -447,6 +653,7 @@ impl Servo {
         {
             self.source_stalled = true;
         }
+        false
     }
 
     fn feedforward_ratio(&mut self) -> f64 {
@@ -571,12 +778,12 @@ impl Servo {
             return plan;
         }
         self.telemetry.underruns += 1;
-        if self.config.source_late_arrivals {
-            // The estimated line is ahead of what has arrived: a `follow`
-            // source lost time (a pause, a stall shorter than the gap that
-            // marks one). An `own` source's readings are exact.
-            self.restart_next = true;
-        }
+        // The source's line may be ahead of what has arrived: it lost time
+        // (a pause, a stop shorter than the gap that marks a stall), and
+        // nothing else says so. The next reading starts a new phase, unless
+        // it shows an exact source still on its line (`observe_source`).
+        self.restart_next = true;
+        self.restart_after_underrun = true;
         self.phase = Phase::Realigning;
         self.silent(input.frames, plan.ratio)
     }

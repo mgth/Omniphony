@@ -479,7 +479,12 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                     telemetry.close_epoch(&ep.telemetry.snapshot());
                 }
                 engine.reset();
-                epoch = Some(start_epoch(config, channels, &positions)?);
+                epoch = Some(start_epoch(
+                    config,
+                    telemetry.held_target_ms(),
+                    channels,
+                    &positions,
+                )?);
                 log::info!("sync host: stream opened, new epoch");
             }
             Some(ReaderMsg::Chunk {
@@ -492,7 +497,12 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
                 // end of a standby). It is picked up where it is.
                 if epoch.is_none() {
                     engine.reset();
-                    epoch = Some(start_epoch(config, channels, &positions)?);
+                    epoch = Some(start_epoch(
+                        config,
+                        telemetry.held_target_ms(),
+                        channels,
+                        &positions,
+                    )?);
                     log::info!("sync host: stream already running, new epoch");
                 }
                 if let Some(ep) = epoch.as_mut() {
@@ -504,7 +514,9 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
             Some(ReaderMsg::End) => {
                 if let Some(ep) = epoch.take() {
                     // Let what is queued play out, then close the stream.
-                    std::thread::sleep(Duration::from_secs_f64(target_ms / 1e3 + 0.05));
+                    std::thread::sleep(Duration::from_secs_f64(
+                        telemetry.held_target_ms() / 1e3 + 0.05,
+                    ));
                     telemetry.close_epoch(&ep.telemetry.snapshot());
                     log::info!(
                         "sync host: stream ended after {:.1} s; {}",
@@ -570,7 +582,14 @@ fn stand_by(engine: &mut Engine, capture: &reader::Capture) {
     }
 }
 
-fn start_epoch(config: &HostConfig, channels: usize, positions: &[String]) -> Result<Epoch> {
+/// Open a stream's playback. `target_ms` is the latency it starts at: the
+/// configured target, or what an earlier stream showed the pipeline needs.
+fn start_epoch(
+    config: &HostConfig,
+    target_ms: f64,
+    channels: usize,
+    positions: &[String],
+) -> Result<Epoch> {
     let capacity = (RING_SECONDS * RENDER_RATE as f64) as usize;
     let (producer, consumer) = frame_ring(channels, capacity);
     let tap = Arc::new(SourceTap::new());
@@ -588,7 +607,7 @@ fn start_epoch(config: &HostConfig, channels: usize, positions: &[String]) -> Re
     if let Some(hz) = config.loop_bandwidth_hz {
         core_config.servo.loop_bandwidth_hz = hz;
     }
-    core_config.servo.target_latency_s = config.target_latency_ms / 1e3;
+    core_config.servo.target_latency_s = target_ms / 1e3;
     let core = OutputCore::new(
         core_config,
         consumer,

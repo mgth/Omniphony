@@ -1207,12 +1207,10 @@ Each is one pull request, stacked in this order.
   sync host behind a temporary switch. Process plumbing with it: shutdown,
   notify, restart from config, standby, no-bridge idle. From here the Studio
   can launch the new engine, and it can be listened to on the real setup.
-- **6b — an unreachable target.** The decision of §7 is not built: the
-  servo publishes its floor but keeps a target below it, and underruns in a
-  loop. Refuse the target at configuration time from the per-codec floors,
-  play at the measured floor at runtime, and report it. Needed before the
-  new engine meets real configs: `latency_target` meant the output buffer
-  for the legacy engine, and a value like 50 ms is below every floor here.
+- **6b — an unreachable target.** DONE, see §19. The decision of §7 was
+  not built: the servo published its floor but kept a target below it, and
+  underran in a loop. `latency_target` meant the output buffer for the
+  legacy engine, and a value like 50 ms is below every floor here.
 - **6c — control surface.** The host options on the new host:
   `latency_target`, and the new `source_clock` (`own` / `follow` / `none`),
   `loop_bandwidth_hz` and `realign_threshold_ms` rows (Save-only, per the
@@ -1233,20 +1231,23 @@ Each is one pull request, stacked in this order.
 - **6h — runtime switches.** Hot switch of device, backend, rate and
   latency; device listing; the idle feed.
 - **6i — Windows and macOS.** The cpal adapter wired in (with the timestamp
-  patch, §9), the QPC reference clock, the named-pipe reader (§12). Cannot be
-  run from the Linux workflow: needs the hardware.
+  patch, §9), the QPC reference clock, the named-pipe reader (§12). Built
+  and cross-checked from the Linux workflow as far as it goes; not run on
+  hardware before the flip (decided below).
 - **6j — the flip.** The new host becomes `render`. Studio: the auto-tune
   wizard and the PI controls go, the plot is the diag channels of §16. The
   legacy regulation, the trigger path, `PwClientNode` and their documents are
   deleted; `adaptive_resampling_*`, `clock_mode` and `use_output_pacing` are
   read, ignored with one warning, and kept on write.
 
-### Open: Windows and macOS at the flip
+### Decided 2026-10-11: one flip, every platform
 
-6j deletes the only regulation Windows and macOS have. Either 6i is validated
-on hardware first, or the flip is Linux-only and the legacy output stays
-compiled for the other two until it is. The second keeps two engines alive
-for a while; the first holds the Linux cutover back.
+The flip (6j) deletes the legacy regulation on Windows and macOS too; the
+legacy output is not kept compiled anywhere. Standalone `orender` on those
+platforms is rare (their users play through mpv, whose engine does not
+resample), and the few who run it are known and will be told at the release.
+So 6i does not wait for hardware: it ships with the flip, verified as far as
+the Linux workflow allows.
 
 ## 18. Phase 6a — `orender render` on the sync host, opt-in (2026-10-11)
 
@@ -1328,5 +1329,92 @@ the Studio launches it, with `ORENDER_SYNC_ENGINE=1`:
   `sync-play` in §13 and §15).
 - The real DAC as output, and the Studio as client: the runs above used a
   null sink and a script as OSC client.
-- A target below the floor (6b): with the legacy engine's usual
-  `latency_target: 50`, the new one underruns in a loop.
+- A target below the floor: with the legacy engine's usual
+  `latency_target: 50`, the new one underran in a loop. Fixed in §19.
+
+## 19. Phase 6b — a target the pipeline cannot sustain (2026-10-11)
+
+§7 decided: refuse an unreachable target at configuration time, and play at
+the floor at runtime. The runtime half is built here. The configuration
+half is not: the floor depends on the codec, the quantum and the device
+delay, which a host only knows once a stream plays, so there is nothing
+sound to refuse a number against beforehand.
+
+### Why the published floor could not be used as it was
+
+It was a peak-hold of a value read at every callback, and that value is
+wrong whenever the source stops: the source's line keeps running for up to
+`source_gap_s` (0.25 s) while nothing reaches the ring. A pause or the end
+of a stream showed as a 290 ms floor. Raising the target to it would have
+turned every pause into 250 ms of latency.
+
+### The floor, read per burst cycle
+
+The ring lags the capture point along a sawtooth: up until the decoder
+delivers, then down. The floor is now read **once per cycle, when audio
+reaches the ring**: the highest value since the previous delivery is what
+that wait needed. A wait that ends in a stall, a break or a new source phase
+is not counted.
+
+What a callback reads is only a lower bound of the cycle's peak: the peak
+came up to one callback period later, and where depends on how the
+deliveries fall against the callbacks. That offset drifts with the two
+clocks (a full turn takes about 20 min at 17 ppm), so the true floor of a
+stream only shows over tens of minutes.
+
+### The rule
+
+- A cycle whose floor is above the target underruns there, or keeps the
+  servo from starting. **Three of them within 10 s raise the target** to
+  their level, plus one callback period (the part of the peak the servo
+  cannot see), plus `floor_margin_s` (5 ms). The servo realigns there.
+- The level is the highest of the three, or their median when the highest
+  stands more than a callback period above it: one long cycle does not set
+  the latency.
+- For 2 s after a raise, a cycle up to one callback period above the level
+  lifts it, and the target with it, **without a realign** (the servo steers
+  to the few ms): the three cycles that triggered the raise were only part
+  of the decoder's delivery pattern.
+- The target is never lowered within an epoch. The sync host keeps it for
+  the streams that follow, so a pause does not cost the learning again.
+- The price is up to one callback period more than the lowest latency that
+  would do. A tighter figure needs the time of each delivery into the ring,
+  which the servo is not given (a possible refinement).
+
+### Fixed on the way: a source that loses time
+
+A source that stopped for less than `source_gap_s` left its line ahead of
+what had arrived, and an `own` source never recovered: one 150 ms stop cost
+46 realigns in simulation, on the code as it was. After an underrun the next
+reading now starts a new source phase for every source, unless it shows an
+exact (`own`) source still on its line (within 2 ms), which lost nothing:
+the decoder simply held more than the target leaves room for.
+
+### Simulation (one hour each unless noted; "before" is the code of §18)
+
+| Scenario | Before | Now |
+|---|---|---|
+| `own`, TrueHD, target 60 ms (true floor 94 ms) | 1102 realigns in 10 min | 99.0 ms held from 0.3 s; 1 realign in the hour; deviation p99 0.02 ms |
+| `own`, E-AC-3, target 100 ms (true floor 128.7 ms) | Underruns throughout | 133.7 ms; 3 realigns, all in the first 0.3 s |
+| `follow`, mpv pipe with the measured jitter, target 120 ms (15 min) | 3983 realigns | 156.5 ms; last underrun at 1.0 s; p99 0.45 ms |
+| `own`, E-AC-3 at 150 ms, source stops 150 ms twice in 3 s | 33 realigns | 2 realigns, target unchanged |
+| Every scenario with a reachable target | — | Target never raised (now asserted by the shared check) |
+
+### What the host does with it
+
+- `/state/latency_target` and the `latency_target_ms` channel carry the
+  latency held; `latency_target_configured_ms` keeps the configured one, so
+  the plot shows the raise.
+- One warning in the log per raise, with the floor and the value to set.
+- Live, the `own` sink with AC-3 and `latency_target: 30`: held 93.8 ms from
+  the first callback (floor read 67.4 ms), no realign, error 0.000 ms.
+
+### Not done
+
+- **The player is not told.** The `own` sink advertised the configured
+  latency once; with a raised target, audio is late on the picture by the
+  difference until the user sets a reachable target. Advertising the raised
+  value again belongs with the control surface (6c), which also puts the
+  warning in the Studio.
+- **The configuration-time refusal** (first half of the §7 decision), for
+  the reason above.

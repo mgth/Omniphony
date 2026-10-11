@@ -11,6 +11,7 @@ use audio_sync::{Phase, Telemetry};
 #[derive(Debug, Default)]
 pub struct SyncTelemetry {
     phase: AtomicU8,
+    target_ms: AtomicU64,
     latency_ms: AtomicU64,
     error_ms: AtomicU64,
     floor_ms: AtomicU64,
@@ -31,6 +32,9 @@ pub struct SyncTelemetry {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SyncSnapshot {
     pub phase: u8,
+    /// The latency the servo holds: the configured target, or more when the
+    /// pipeline cannot sustain it. `None` before the first callback.
+    pub target_ms: Option<f64>,
     pub latency_ms: Option<f64>,
     pub error_ms: f64,
     pub floor_ms: f64,
@@ -61,6 +65,7 @@ pub const PHASE_REALIGNING: u8 = 2;
 impl SyncTelemetry {
     pub fn new() -> Self {
         let t = Self::default();
+        put(&t.target_ms, f64::NAN);
         put(&t.latency_ms, f64::NAN);
         t
     }
@@ -72,6 +77,7 @@ impl SyncTelemetry {
             Phase::Realigning => PHASE_REALIGNING,
         };
         self.phase.store(code, Ordering::Relaxed);
+        put(&self.target_ms, t.target_s * 1e3);
         put(&self.latency_ms, t.latency_s.map_or(f64::NAN, |l| l * 1e3));
         put(&self.error_ms, t.error_s * 1e3);
         put(&self.floor_ms, t.latency_floor_s * 1e3);
@@ -93,8 +99,10 @@ impl SyncTelemetry {
 
     pub fn snapshot(&self) -> SyncSnapshot {
         let latency = get(&self.latency_ms);
+        let target = get(&self.target_ms);
         SyncSnapshot {
             phase: self.phase.load(Ordering::Relaxed),
+            target_ms: (!target.is_nan()).then_some(target),
             latency_ms: (!latency.is_nan()).then_some(latency),
             error_ms: get(&self.error_ms),
             floor_ms: get(&self.floor_ms),

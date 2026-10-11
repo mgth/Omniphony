@@ -14,6 +14,12 @@
 //! The latency target is the contract (`docs/resampling-rework-plan.md`
 //! Phase 5): it is the constant `L` the host holds and the player is told,
 //! never the instantaneous measurement, which is published beside it.
+//!
+//! A target the pipeline cannot sustain is raised by the servo (plan §19).
+//! What is published as the target is then the latency held, a setpoint
+//! still; the configured one stays on its own channel, the raise is logged
+//! once, and the host keeps it for the streams that follow instead of
+//! learning it again at each of them.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +30,10 @@ use orender_engine::engine::Engine;
 use orender_engine::osc::MeterTimings;
 
 /// The diag channels the diag plot shows in its "base" tab.
+/// A raise of the held target is logged when it moved by this much since
+/// the last line (ms): the servo refines it by fractions of a ms.
+const RAISE_LOG_STEP_MS: f64 = 1.0;
+
 const BASE_CHANNELS: [&str; 5] = [
     "latency_ms",
     "latency_target_ms",
@@ -35,7 +45,13 @@ const BASE_CHANNELS: [&str; 5] = [
 /// See the [module docs](self).
 pub struct HostTelemetry {
     registry: DiagRegistry,
-    target_ms: f64,
+    /// The target as configured, and the one held: the same, unless the
+    /// servo had to raise it.
+    configured_ms: f64,
+    held_ms: f64,
+    /// The held target when a raise was last logged.
+    logged_ms: f64,
+    target_ms: Arc<AtomicU64>,
     latency_ms: Arc<AtomicU64>,
     error_ms: Arc<AtomicU64>,
     floor_ms: Arc<AtomicU64>,
@@ -86,8 +102,18 @@ impl HostTelemetry {
         let channel = |name, label, group, unit| registry.register(name, label, group, unit);
         let target = channel("latency_target_ms", "Target latency", "latency", "ms");
         put(&target, target_ms);
+        let configured = channel(
+            "latency_target_configured_ms",
+            "Configured target",
+            "latency",
+            "ms",
+        );
+        put(&configured, target_ms);
         let telemetry = Self {
-            target_ms,
+            configured_ms: target_ms,
+            held_ms: target_ms,
+            logged_ms: target_ms,
+            target_ms: target,
             latency_ms: channel("latency_ms", "End-to-end latency", "latency", "ms"),
             error_ms: channel("latency_error_ms", "Latency error", "latency", "ms"),
             floor_ms: channel("latency_floor_ms", "Latency floor", "latency", "ms"),
@@ -109,17 +135,44 @@ impl HostTelemetry {
 
     /// Publish the state of the stream playing (`None` between streams, when
     /// the channels keep their last values and only the target is reported).
-    pub fn publish(&self, engine: &mut Engine, snapshot: Option<&SyncSnapshot>) {
-        engine.set_output_timings(output_timings(self.target_ms, snapshot));
+    pub fn publish(&mut self, engine: &mut Engine, snapshot: Option<&SyncSnapshot>) {
         if let Some(s) = snapshot {
             self.store(s);
         }
+        engine.set_output_timings(output_timings(self.held_ms, snapshot));
         engine.publish_diag(|| (self.registry.schema_json(), self.registry.values_json()));
+    }
+
+    /// The latency the next stream starts at: the configured target, or what
+    /// an earlier stream showed the pipeline needs.
+    pub fn held_target_ms(&self) -> f64 {
+        self.held_ms
+    }
+
+    /// Take in the target the servo holds, and say so when it raised it.
+    fn follow_held_target(&mut self, s: &SyncSnapshot) {
+        let Some(held) = s.target_ms.filter(|held| *held > self.held_ms) else {
+            return;
+        };
+        self.held_ms = held;
+        put(&self.target_ms, held);
+        if held - self.logged_ms >= RAISE_LOG_STEP_MS {
+            self.logged_ms = held;
+            log::warn!(
+                "sync host: a latency target of {:.0} ms is below what this stream needs \
+                 (floor {:.1} ms): holding {:.1} ms. Set render.latency_target to at least \
+                 that to play at the latency the player is told.",
+                self.configured_ms,
+                s.floor_ms,
+                held
+            );
+        }
     }
 
     /// Store a stream's state in the channels. A latency not measured yet
     /// leaves the last one in place instead of publishing a hole.
-    fn store(&self, s: &SyncSnapshot) {
+    fn store(&mut self, s: &SyncSnapshot) {
+        self.follow_held_target(s);
         if let Some(latency) = s.latency_ms {
             put(&self.latency_ms, latency);
         }
@@ -192,7 +245,7 @@ mod tests {
 
     #[test]
     fn an_unmeasured_latency_keeps_the_last_value() {
-        let t = HostTelemetry::new(150.0);
+        let mut t = HostTelemetry::new(150.0);
         t.store(&SyncSnapshot {
             latency_ms: Some(149.5),
             error_ms: -0.5,
@@ -206,6 +259,35 @@ mod tests {
         assert_eq!(value(&t, "latency_ms"), 149.5);
         assert_eq!(value(&t, "latency_error_ms"), 0.25);
         assert_eq!(value(&t, "latency_target_ms"), 150.0);
+    }
+
+    /// A target the servo raised is what the host publishes and starts the
+    /// next stream at; the configured one stays visible beside it. A new
+    /// stream's servo starting from the configured target again does not
+    /// bring it back down.
+    #[test]
+    fn a_raised_target_is_published_and_kept_for_the_next_stream() {
+        let mut t = HostTelemetry::new(50.0);
+        assert_eq!(t.held_target_ms(), 50.0);
+        t.store(&SyncSnapshot {
+            target_ms: Some(99.0),
+            floor_ms: 72.7,
+            ..SyncSnapshot::default()
+        });
+        assert_eq!(t.held_target_ms(), 99.0);
+        assert_eq!(value(&t, "latency_target_ms"), 99.0);
+        assert_eq!(value(&t, "latency_target_configured_ms"), 50.0);
+        assert_eq!(
+            output_timings(t.held_target_ms(), None).latency_target_ms,
+            Some(99.0)
+        );
+
+        t.store(&SyncSnapshot {
+            target_ms: Some(50.0),
+            ..SyncSnapshot::default()
+        });
+        t.store(&SyncSnapshot::default());
+        assert_eq!(t.held_target_ms(), 99.0);
     }
 
     /// The counts are the host's, not the stream's: a new stream's servo
