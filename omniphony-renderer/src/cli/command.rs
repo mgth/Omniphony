@@ -114,6 +114,10 @@ pub enum Commands {
     /// Generate VBAP gain table from speaker layout configuration
     GenerateVbap(GenerateVbapArgs),
 
+    /// Write an IAMF file as a private IEC 61937 burst stream (test tool).
+    #[command(name = "wrap-iec61937", hide = true)]
+    WrapIec61937(WrapIec61937Args),
+
     /// Play a pipe through the new sync output (resampling rework, experimental).
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
@@ -466,6 +470,35 @@ pub struct InputLiveArgs {
     /// OSC registration listener port.
     #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_rx_port())]
     pub osc_rx_port: u16,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct WrapIec61937Args {
+    /// A standalone IAMF stream (.iamf / .obu): one IA sequence
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Where the carrier's bytes go (16-bit little-endian words)
+    #[arg(long, short = 'o', value_name = "FILE")]
+    pub output: PathBuf,
+
+    /// Carrier channels: its byte rate is channels x rate x 2
+    #[arg(long, value_name = "N", default_value_t = 2)]
+    pub channels: u32,
+
+    /// Carrier frame rate
+    #[arg(long, value_name = "HZ", default_value_t = 48_000)]
+    pub carrier_rate: u32,
+
+    /// The stream's sample rate, for a codec config that does not state it
+    /// (AAC)
+    #[arg(long, value_name = "HZ")]
+    pub sample_rate: Option<u32>,
+
+    /// How often a redundant copy of the descriptors is carried, for a
+    /// receiver that joins late; 0 carries none
+    #[arg(long, value_name = "MS", default_value_t = 1000)]
+    pub copy_interval_ms: u32,
 }
 
 #[derive(Debug, Clone, Args)]
