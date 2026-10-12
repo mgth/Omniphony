@@ -1,7 +1,11 @@
 # IAMF beyond the in-process path: raw OBU transport and an IEC 61937 encapsulation
 
-Status: **proposal**, nothing built. Written 2026-10-07, clocking section
-added the same day.
+Status: **in progress**. Written 2026-10-07; implementation started
+2026-10-12. Built so far: the burst format (`spdif::burst`, `spdif::iamf`),
+the test framer (`orender wrap-iec61937`) and the bridge's decode of the
+burst type (harletty-bridge, `bridge-family-iamf::iec61937`). Not built: the
+PCM-carrier input, the sender in the mpv fork, anything on the audio machine.
+See "Order of work".
 
 ## Problem
 
@@ -148,10 +152,15 @@ Pa and Pb as IEC 61937-1 defines them. Pc:
 | 0-4 | data type | `IEC61937_IAMF_PRIVATE`, proposed `0x1D`; see the open question below |
 | 5-6 | subdata type | 0 = temporal unit burst. 1 reserved for a descriptors-only burst if inline copies prove too costly; the first version uses 0 only |
 | 7 | error flag | 0 |
-| 8-12 | data-type dependent | 0. The carrier is known to the receiver from the negotiated format (PipeWire) or the device (S/PDIF); it is not encoded in the burst |
+| 8-12 | data-type dependent | bits 16-20 of the payload length, whose low 16 bits are `Pd`: up to 2 MiB. A unit of FLAC or LPCM on many channels is longer than the 65 535 bytes `Pd` alone counts. The carrier is not encoded in the burst: the receiver knows it from the negotiated format (PipeWire) or the device (S/PDIF) |
 | 13-15 | bitstream number | 0 |
 
-Pd is the payload length in bytes, as E-AC-3 and MAT do. The payload is the
+The carrier is 16-bit little-endian words, and a payload byte keeps its
+place: byte `i` of the payload is byte `8 + i` of the burst, with no word
+swap. A payload of odd length is followed by a zero the length does not count.
+
+Pd is the payload length in bytes, as E-AC-3 and MAT do, continued in Pc
+past 16 bits. The payload is the
 OBUs of exactly one temporal unit, preceded by redundant descriptor copies
 (`obu_redundant_copy = 1`, OBU header bit 2) at a fixed interval, one second
 proposed, and right after a seek or a reconnect. A new sequence (track
@@ -161,6 +170,10 @@ the payload: a zero byte parses as a codec config OBU header. Zero padding
 sits after the payload up to the repetition period; the parser reads `Pd`
 bytes and resyncs on the next preamble, so the padding is dropped without a
 rule.
+
+A burst is a resync point for the receiver: what a truncated burst left
+unframed is dropped when the next burst arrives. Temporal delimiter OBUs are
+not carried; the burst is the unit.
 
 The repetition period is one temporal unit, in carrier frames. It is
 constant per stream because IAMF fixes the frame size per codec config. On a
@@ -267,18 +280,33 @@ reports from the receiver turned into the reported output delay.
 
 ## Order of work
 
-1. Bridge: IAMF arm on the `Iec61937` transport, mid-stream lock, forced
-   codec, tests. Bridge PR, no ABI change. Serves every transport.
-2. orender: PCM-carrier mode of the PipeWire input sink, stated carrier byte
-   rate in the sync host, data-type constant in `spdif`, `wrap-iec61937`
-   test framer, FIFO null tests.
-3. mpv fork: `forward` decoder with the IEC 61937 framer, `AF_FORMAT_S_IAMF`,
+1. **Done.** Bridge: the IAMF arm on the `Iec61937` transport, a burst as a
+   resync point, late join on a redundant copy, tests (harletty-bridge,
+   branch `feat/iec61937-iamf`). No ABI change. The mid-stream lock of the
+   raw transport needed nothing: the host's probing router already finds the
+   sequence header wherever it sits.
+2. **Done.** orender: the data-type constant, the burst writer and the
+   extended length in the parser (`spdif::burst`), the sequence cutter and
+   the carrier period (`spdif::iamf`), the `wrap-iec61937` test framer. The
+   null test lives in the bridge (`bridge/tests/iamf_carrier.rs`): every
+   libiamf conformance vector the framer can carry, 233 of them, decodes
+   through the parser and the burst type to the frames of its raw decode.
+3. orender: the PCM-carrier mode of the PipeWire input sink and the stated
+   carrier byte rate in the sync host. **Stacked on the resampling cutover
+   (#830)**, which removes the input sink and the live decode path this
+   would otherwise be written against; not started before it settles.
+4. mpv fork: `forward` decoder with the IEC 61937 framer, `AF_FORMAT_S_IAMF`,
    `ao_pipewire` PCM presentation option. Fork PR plus both patch sets.
-4. Audio machine: orender installed there with an `iamf` bridge, local config
+5. Audio machine: orender installed there with an `iamf` bridge, local config
    and layout; netjack2 channel plan (split or widen); link null test; fixed
    `--audio-delay`; listening.
-5. Transport A with timestamps and a return channel: only if a link without a
+6. Transport A with timestamps and a return channel: only if a link without a
    synchronous carrier becomes a target.
+
+Found on the way: on the IAMF v2.0 vector `test_000850` the burst path
+matches the reference rendering, while the raw path returns one frame of 24
+with the stream's temporal delimiters and, without them, places a mix-gain
+step by how the bytes were chunked. A raw-path defect, tracked apart.
 
 Branch names: `feat/iec61937-iamf` (bridge, orender), `feat/iamf-forward`
 (mpv fork). No brand names.

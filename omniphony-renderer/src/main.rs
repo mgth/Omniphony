@@ -26,6 +26,7 @@ where
         OsString::from("render"),
         OsString::from("input-live"),
         OsString::from("generate-vbap"),
+        OsString::from("wrap-iec61937"),
         #[cfg(target_os = "linux")]
         OsString::from("sync-play"),
         #[cfg(target_os = "windows")]
@@ -172,6 +173,7 @@ fn main() -> Result<()> {
             anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
         }
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
+        Commands::WrapIec61937(ref args) => cli::wrap_iec61937::cmd_wrap_iec61937(args),
         #[cfg(target_os = "linux")]
         Commands::SyncPlay(ref args) => cli::sync_host::cmd_sync_play(args, cli.config.clone()),
         #[cfg(target_os = "windows")]

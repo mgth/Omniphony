@@ -113,8 +113,10 @@ impl SpdifParser {
                     }
 
                     let data_type = self.buffer[4] & 0x1F; // bits 0-4 of Pc
+                    let pc_high = self.buffer[5]; // bits 8-15 of Pc
                     let pd_raw = u16::from_le_bytes([self.buffer[6], self.buffer[7]]);
-                    let (payload_size, payload_unit) = payload_size_from_pd(data_type, pd_raw);
+                    let (payload_size, payload_unit) =
+                        payload_size_from_header(data_type, pc_high, pd_raw);
                     log::debug!(
                         "IEC 61937 header: data_type=0x{:02X} pd_raw={} payload_size={} payload_unit={}",
                         data_type,
@@ -160,8 +162,12 @@ impl SpdifParser {
     }
 }
 
-fn payload_size_from_pd(data_type: u8, pd_raw: u16) -> (usize, &'static str) {
+fn payload_size_from_header(data_type: u8, pc_high: u8, pd_raw: u16) -> (usize, &'static str) {
     match data_type {
+        // IAMF, private: a byte count that goes on in Pc past 16 bits.
+        crate::burst::DATA_TYPE_IAMF_PRIVATE => {
+            (crate::burst::iamf_payload_bytes(pc_high, pd_raw), "bytes")
+        }
         // AC-3 (IEC 61937-3) and DTS type I/II/III (IEC 61937-5): the length
         // code (Pd) is a bit count. Reading AC-3 as bytes makes the parser wait
         // for eight times the burst it will ever receive, so the packet is
