@@ -401,8 +401,8 @@ pub fn build_renderer_state_json(
 /// actually do, so studio can label the connection and hide inapplicable panels.
 ///
 /// Capabilities are derived from the host's actual control surfaces:
-/// - `has_audio` (an [`AudioControl`] is attached) → output device + adaptive
-///   resampling + latency-target controls apply (the standalone CLI/service).
+/// - `has_audio` (an [`AudioControl`] is attached) → output device and
+///   latency-target controls apply (the standalone CLI/service).
 /// - `has_input` (an [`InputControl`] is attached) → input-source controls apply.
 ///
 /// The embedded host (`liborender` inside mpv) owns no audio output or input
@@ -527,10 +527,13 @@ fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String 
     let mut control_config = vec!["layout", "speakers"];
     if has_audio {
         domains.push("audio");
-        // The output device, adaptive resampler and latency-target servo all
-        // live in the audio-output stage.
+        // The output device and the latency target live in the audio-output
+        // stage, with what regulates it. `sync` is the engine that holds an
+        // end-to-end latency (`docs/resampling-rework-plan.md`); a renderer
+        // from before it said `adaptive_resampling` here, with the tuning
+        // controls a client then showed.
         control_config.push("audio");
-        control_config.push("adaptive_resampling");
+        control_config.push("sync");
     }
     if has_input {
         domains.push("input");
@@ -582,7 +585,8 @@ mod capability_tests {
         assert!(domains.iter().any(|d| d == "input"));
         let cc = v["controlConfig"].as_array().unwrap();
         assert!(cc.iter().any(|c| c == "audio"));
-        assert!(cc.iter().any(|c| c == "adaptive_resampling"));
+        assert!(cc.iter().any(|c| c == "sync"));
+        assert!(!cc.iter().any(|c| c == "adaptive_resampling"));
         assert!(cc.iter().any(|c| c == "input"));
     }
 
@@ -600,7 +604,7 @@ mod capability_tests {
         assert!(domains.iter().any(|d| d == "speakers"));
         let cc = v["controlConfig"].as_array().unwrap();
         assert!(!cc.iter().any(|c| c == "audio"));
-        assert!(!cc.iter().any(|c| c == "adaptive_resampling"));
+        assert!(!cc.iter().any(|c| c == "sync"));
         assert!(!cc.iter().any(|c| c == "input"));
         assert!(cc.iter().any(|c| c == "speakers"));
     }

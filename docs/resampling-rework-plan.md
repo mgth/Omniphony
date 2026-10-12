@@ -203,14 +203,14 @@ that deletes the old code. `main` stays buildable throughout.
 - Explicit config; a warning when a `follow` source behaves clockless
   (sustained faster than real time).
 
-### Phase 5 — Latency contract
+### Phase 5 — Latency contract — DONE 2026-10-11, see §16
 
 - The sink advertises the constant `L` (plus the device delay as reported),
   never the instantaneous value.
 - Pipe: publish `L` over OSC and document the matching mpv `--audio-delay`.
 - Drop `$TMPDIR/omniphony_delay`.
 
-### Phase 6 — Surface and cutover
+### Phase 6 — Surface and cutover — sliced in §17
 
 - **Options.** Keep `latency_target_ms`, `source_clock` (`own` / `follow` /
   `none`), and advanced `loop_bandwidth_hz` and `realign_threshold_ms`.
@@ -229,7 +229,7 @@ that deletes the old code. `main` stays buildable throughout.
   - the old `latency-regulation*.md` (rewritten for the new design).
 - One cutover PR into `main`.
 
-### Phase 7 — Hardware validation
+### Phase 7 — Hardware validation — in progress, see §29
 
 - TrueHD, E-AC-3 and PCM through the sink (`own`) and the pipe (`follow`).
 - Two hours of mpv with video: measure A/V offset drift (start vs end), the
@@ -1112,3 +1112,1301 @@ The pause/seek script gives the same results after this change.
 Test: `a_reported_break_restarts_the_phase_and_realigns` (servo). Without the
 break handling, a 7.2 ms error persists.
 
+
+## 16. Phase 5 — latency contract (2026-10-11)
+
+Work continues in workflow `resampling-cutover` on `feat/resampling-cutover`.
+
+### The contract
+
+The latency the host tells the outside world is the **target `L`**, a
+setpoint: it does not move with the measurement.
+
+| Source | How the player learns `L` |
+|---|---|
+| `own` sink | `SPA_PARAM_Latency`, advertised once (in place since 4c, §13) |
+| Pipe, timed writer | The launcher passes the same value to both sides: `--ao-pcm-timed=yes --ao-pcm-latency=<L in s>` (§15) |
+| Pipe, untimed writer (`--ao=pcm`) | `--audio-delay=-<L in s>`: mpv believes the audio is heard as it is written |
+
+`L` is the flag `--target-latency-ms`, else the config's
+`render.latency_target`, else 150 ms.
+
+### What is built
+
+- **The sync host runs the OSC server.** `--osc` / `--no-osc`, `--osc-host`,
+  `--osc-port`, `--osc-rx-port`, resolved like every host
+  (`OscSettings::resolve`: flag, then `render.osc*`, then the workflow port).
+- **`L` and the measurement over OSC**, on addresses that exist already:
+  - the meter bundle carries `/state/latency_target` (the constant `L`),
+    `/state/latency_instant` (the latency measured) and
+    `/state/resample_ratio` (feed-forward × phase correction). The engine
+    takes them from its host: `Engine::set_output_timings`;
+  - the diag channels carry the servo's quantities, which the Studio's diag
+    plot discovers from the schema: `latency_ms`, `latency_target_ms`,
+    `latency_error_ms`, `feedforward_ppm`, `correction_ppm` (base tab), and
+    `latency_floor_ms`, `source_ppm`, `device_ppm`, `realigns`, `underruns`,
+    `source_rephases`. The counts run for the life of the host, across
+    streams. `Engine::publish_diag` sends them at the diag cadence, and only
+    to a client that asked.
+
+  This is the plot Phase 6 asks for (`e`, `r_ff`, `u`, realigns, underruns),
+  with no new address and no new panel.
+- **`$TMPDIR/omniphony_delay` is gone.** The legacy host wrote the
+  instantaneous delay there every 20 ms of change. Nothing reads it: not the
+  mpv fork, its launchers, nor mpv-omniphony.
+
+### Live (reference bridge on a paced 12-channel WAV → FIFO, private null sink, OSC on the workflow port, 55 s)
+
+| Measure | Result |
+|---|---|
+| `/state/latency_target` | 180.0 throughout (`render.latency_target: 180`), 503 bundles |
+| `/state/latency_instant` | 179.97–180.02 ms |
+| Diag `latency_error_ms` | within ±0.03 ms |
+| Diag `correction_ppm` / `feedforward_ppm` | ≤ 5 ppm / ≤ 2.3 ppm, settling to 0 |
+| Realigns / underruns / rephases | 0 / 0 / 0 while the stream runs |
+
+### Not changed here
+
+- The legacy live sink still republishes its Latency param from the
+  instantaneous value at 1 Hz. It goes with the legacy host at the cutover.
+- The Studio's latency section stays hidden on this host: it is gated on the
+  audio-output capability, which arrives with the host options (§17, 6a).
+- `set_heard_us` (the listener's position, so a client shows each block when
+  it is heard) is not reported yet: it needs the played position, which
+  comes with the accounting slice (§17, 6g).
+
+## 17. Phase 6 — what the cutover needs (2026-10-11)
+
+Phase 4 delivered 4a (pipe `follow`) and 4c (`own` sink) with tracks 1 and 2.
+Slices 4b (`none`) and 4d (accounting) were not built, and the sync host is
+still a test command: it shares nothing of `orender render`'s surface. An
+inventory of the legacy host against it gives the list below. The cutover is
+therefore a series of pull requests, each leaving `main` playable, and the
+deletion comes last.
+
+### What `orender render` does that the sync host does not
+
+| Area | Missing |
+|---|---|
+| Control | Host options (`latency_target`, output device/backend/rate, input mode) and their OSC handlers; the audio-output and input capabilities; `--save-config`; restart from config; `--osc-yield` standby; no-bridge idle runtime |
+| Process | Shutdown handler, systemd/SCM notify, Windows service mode, SIGHUP reload |
+| Inputs | Regular file, stdin, exit at end of file; `--continuous` and `render.input_pipe`; the Windows named pipe |
+| Outputs | The `file` backend (raw / CAF, stdout, FIFO) and offline rendering; ASIO, WASAPI, CoreAudio; device listing; hot switch of device, backend, rate and latency |
+| Formats | Rates other than 48 kHz, `output_sample_rate`, a rate change mid-stream; output width changes (binaural, passthrough, bed-conform); `output_channel_mapping` |
+| Live sink | PCM (desktop audio); `live_input.*` (node, description, channels, map, LFE mode) and their hot apply; refusal to play into its own sink |
+| Tests | The idle feed for speaker and object tests (an output only exists during a stream) |
+| Telemetry | The listener's position (`send_heard`) |
+| Flags | Every `render` flag and generated option flag |
+
+### Slices
+
+Each is one pull request, stacked in this order.
+
+- **6a — `orender render` on the new host, opt-in.** DONE, see §18.
+  `render` takes its arguments and config as today and hands the run to the
+  sync host behind a temporary switch. Process plumbing with it: shutdown,
+  notify, restart from config, standby, no-bridge idle. From here the Studio
+  can launch the new engine, and it can be listened to on the real setup.
+- **6b — an unreachable target.** DONE, see §19. The decision of §7 was
+  not built: the servo published its floor but kept a target below it, and
+  underran in a loop. `latency_target` meant the output buffer for the
+  legacy engine, and a value like 50 ms is below every floor here.
+- **6c — control surface.** DONE, see §20: the latency target, the output
+  device and the loop's two settings as host options on the new host, with
+  capabilities that name the sync engine, the Studio's latency section for
+  it, and the flags of `render` reaching the engine. The `source_clock` row
+  waits for the mode that gives it a second value (`none`, 6d); the rows of
+  the backend, the file sink and the rate, and those of the live input, join
+  with the slices that make the engine act on them (6d to 6f).
+- **6d — `none` and files (4b).** DONE, see §22: files, standard input
+  and writers faster than real time, held back by the ring; the `file`
+  output backend and offline rendering; the `source_clock` option.
+- **6e — formats.** DONE, see §23: the output opened for what is rendered
+  (stream rate, width) and reopened when that changes, `output_sample_rate`,
+  `output_channel_mapping`.
+- **6f — the live sink.** DONE. PCM on the `own` sink: §21. The input
+  chosen and reconfigured live (mode, the sink's node and description):
+  §24.
+- **6g — accounting (4d).** DONE, see §25: gaps in the source played as
+  silence of their length, the decoder audit, discontinuity events, the
+  render's own delay inside the latency, and the listener's position.
+- **6h — runtime switches.** DONE. Device and latency: §20. The idle
+  feed: §21. The rate: §23. The backend (device or file): §26.
+- **6i — Windows and macOS.** DONE as far as it goes without the hardware,
+  see §27: the host builds on the three platforms, the output goes through
+  one facade (PipeWire, or cpal), the pipe is a served named pipe on
+  Windows. Type-checked for Windows and its unit tests run under Wine; the
+  cpal output run for real on Linux through ALSA; macOS compiled nowhere
+  yet. Not run on Windows or macOS hardware before the flip (decided below).
+- **6j — the flip.** DONE, see §28: the new host is `render`, on every
+  platform. Studio: the auto-tune wizard and the PI controls are gone, the
+  plot is the diag channels of §16. The regulation it replaced, the trigger
+  path, `PwClientNode` and their documents are deleted;
+  `adaptive_resampling_*`, `clock_mode` and `use_output_pacing` are read,
+  ignored with one warning, and kept on write.
+
+### Decided 2026-10-11: one flip, every platform
+
+The flip (6j) deletes the legacy regulation on Windows and macOS too; the
+legacy output is not kept compiled anywhere. Standalone `orender` on those
+platforms is rare (their users play through mpv, whose engine does not
+resample), and the few who run it are known and will be told at the release.
+So 6i does not wait for hardware: it ships with the flip, verified as far as
+the Linux workflow allows.
+
+## 18. Phase 6a — `orender render` on the sync host, opt-in (2026-10-11)
+
+`orender render --sync-engine` (hidden), or `ORENDER_SYNC_ENGINE=1` in the
+environment (what reaches a renderer the Studio launches), plays the run
+through the sync host instead of the legacy one. Linux, PipeWire output.
+
+### What the run is given
+
+`render` resolves its arguments and config as it always did; the sync host
+gets from that:
+
+| | From |
+|---|---|
+| Source | `render.input_mode`: `pipewire` is the `own` sink, under `live_input.node` / `description` (default `omniphony`); otherwise the input pipe (`render.input_pipe` in continuous mode, else INPUT), followed on its writer's clock |
+| Latency target | `render.latency_target`, else 150 ms |
+| Output | `render.output_device`; `--pw-quantum` |
+| OSC | As resolved for `render`: `--osc`, host and ports, `--osc-yield` |
+| Bridges | `--bridge-path`, else the config's |
+
+The engine reads the config file itself: layout, presentation and live
+options given as **flags** do not reach it yet (6c). A backend other than
+PipeWire is refused with a message.
+
+### Process plumbing
+
+- **Stop.** The shutdown handler is installed; SIGTERM ends the run and the
+  process exits cleanly.
+- **Restart from the config** (`/control/reload_config`). The run ends, and
+  `render`'s loop builds the next one.
+- **Standby** (`--osc-yield`). The OSC port and the audio output are
+  released, what the capture delivers is discarded, and the host resumes
+  when the port is handed back. A resume that cannot take the port stands by
+  again, as the legacy host does.
+- **No bridge.** A bridge that cannot be loaded, with OSC on, falls to the
+  idle runtime `render` already has, with the error published.
+- **Ready / stopping** notifications are sent.
+
+### The capture outlives a run
+
+A restart from the config used to close the pipe and open it again. In
+between the pipe had no reader, and its writer got `EPIPE` (seen live). The
+capture now belongs to a `HostSession` that `render` keeps across runs: it is
+reopened only when the config asks for another one (another pipe, another
+sink name, or, for the sink, another advertised latency or quantum).
+Dropping a capture stops and joins its threads, so the sink is gone from the
+graph before a successor could publish the same name.
+
+A run that takes over a capture, or that comes back from a standby, finds
+its stream already running: no `Start` will come for it. The first chunk
+opens the epoch, and the transport count starts from that chunk.
+
+### Fixed on the way: a 48 kHz carrier on the `own` sink
+
+AC-3 through the sink played four times too fast (source read at
++3 000 000 ppm, 157 realigns in 10 s). The sink asks for 192 kHz by default
+and `node.force-rate` was only set for the other carrier rates, so the
+group stayed at 192 kHz under a 48 kHz carrier. It is now set to the
+negotiated rate for every IEC 958 format. (§13 listed "AC-3/DTS at 48 kHz"
+as offered, not exercised.)
+
+### Live (isolated: private sinks, private config, the workflow's OSC port)
+
+`orender render <pipe> --continuous --enable-vbap --osc … --osc-yield`, as
+the Studio launches it, with `ORENDER_SYNC_ENGINE=1`:
+
+| Run | Result |
+|---|---|
+| Pipe, AC-3 (IEC 61937, 10 ms writes), integration's bridge, target 180 ms | 180.00 ms, error within ±0.05 ms, 0 realigns, 0 underruns |
+| … `reload_config` mid-stream | Capture kept, the writer undisturbed (3600 writes, no `EPIPE`); new epoch on the running stream, 180.03 ms at once |
+| … a second instance takes the OSC port for 6 s | Standby, then resume; new epoch on the running stream, 180.006 ms |
+| … SIGTERM | Exit code 0 |
+| `own` sink, mpv `--audio-spdif=ac3 --ao=pipewire` into it, target 150 ms, 22 s | 150.000 ms ± 0.005, source 0.00 ppm, 0 realigns |
+| … `reload_config` | The sink stays in the graph (one node before and after); gone after exit |
+
+### Not covered
+
+- TrueHD, E-AC-3 and DTS through `render` (E-AC-3 was run through
+  `sync-play` in §13 and §15).
+- The real DAC as output, and the Studio as client: the runs above used a
+  null sink and a script as OSC client.
+- A target below the floor: with the legacy engine's usual
+  `latency_target: 50`, the new one underran in a loop. Fixed in §19.
+
+## 19. Phase 6b — a target the pipeline cannot sustain (2026-10-11)
+
+§7 decided: refuse an unreachable target at configuration time, and play at
+the floor at runtime. The runtime half is built here. The configuration
+half is not: the floor depends on the codec, the quantum and the device
+delay, which a host only knows once a stream plays, so there is nothing
+sound to refuse a number against beforehand.
+
+### Why the published floor could not be used as it was
+
+It was a peak-hold of a value read at every callback, and that value is
+wrong whenever the source stops: the source's line keeps running for up to
+`source_gap_s` (0.25 s) while nothing reaches the ring. A pause or the end
+of a stream showed as a 290 ms floor. Raising the target to it would have
+turned every pause into 250 ms of latency.
+
+### The floor, read per burst cycle
+
+The ring lags the capture point along a sawtooth: up until the decoder
+delivers, then down. The floor is now read **once per cycle, when audio
+reaches the ring**: the highest value since the previous delivery is what
+that wait needed. A wait that ends in a stall, a break or a new source phase
+is not counted.
+
+What a callback reads is only a lower bound of the cycle's peak: the peak
+came up to one callback period later, and where depends on how the
+deliveries fall against the callbacks. That offset drifts with the two
+clocks (a full turn takes about 20 min at 17 ppm), so the true floor of a
+stream only shows over tens of minutes.
+
+### The rule
+
+- A cycle whose floor is above the target underruns there, or keeps the
+  servo from starting. **Three of them within 10 s raise the target** to
+  their level, plus one callback period (the part of the peak the servo
+  cannot see), plus `floor_margin_s` (5 ms). The servo realigns there.
+- The level is the highest of the three, or their median when the highest
+  stands more than a callback period above it: one long cycle does not set
+  the latency.
+- For 2 s after a raise, a cycle up to one callback period above the level
+  lifts it, and the target with it, **without a realign** (the servo steers
+  to the few ms): the three cycles that triggered the raise were only part
+  of the decoder's delivery pattern.
+- The target is never lowered within an epoch. The sync host keeps it for
+  the streams that follow, so a pause does not cost the learning again.
+- The price is up to one callback period more than the lowest latency that
+  would do. A tighter figure needs the time of each delivery into the ring,
+  which the servo is not given (a possible refinement).
+
+### Fixed on the way: a source that loses time
+
+A source that stopped for less than `source_gap_s` left its line ahead of
+what had arrived, and an `own` source never recovered: one 150 ms stop cost
+46 realigns in simulation, on the code as it was. After an underrun the next
+reading now starts a new source phase for every source, unless it shows an
+exact (`own`) source still on its line (within 2 ms), which lost nothing:
+the decoder simply held more than the target leaves room for.
+
+### Simulation (one hour each unless noted; "before" is the code of §18)
+
+| Scenario | Before | Now |
+|---|---|---|
+| `own`, TrueHD, target 60 ms (true floor 94 ms) | 1102 realigns in 10 min | 99.0 ms held from 0.3 s; 1 realign in the hour; deviation p99 0.02 ms |
+| `own`, E-AC-3, target 100 ms (true floor 128.7 ms) | Underruns throughout | 133.7 ms; 3 realigns, all in the first 0.3 s |
+| `follow`, mpv pipe with the measured jitter, target 120 ms (15 min) | 3983 realigns | 156.5 ms; last underrun at 1.0 s; p99 0.45 ms |
+| `own`, E-AC-3 at 150 ms, source stops 150 ms twice in 3 s | 33 realigns | 2 realigns, target unchanged |
+| Every scenario with a reachable target | — | Target never raised (now asserted by the shared check) |
+
+### What the host does with it
+
+- `/state/latency_target` and the `latency_target_ms` channel carry the
+  latency held; `latency_target_configured_ms` keeps the configured one, so
+  the plot shows the raise.
+- One warning in the log per raise, with the floor and the value to set.
+- Live, the `own` sink with AC-3 and `latency_target: 30`: held 93.8 ms from
+  the first callback (floor read 67.4 ms), no realign, error 0.000 ms.
+
+### Not done
+
+- **The player is not told.** The `own` sink advertised the configured
+  latency once; with a raised target, audio was late on the picture by the
+  difference. Done in §20: the sink advertises the latency held, and the
+  Studio shows the raise.
+- **The configuration-time refusal** (first half of the §7 decision), for
+  the reason above.
+
+## 20. Phase 6c — the control surface (2026-10-11)
+
+### The host options
+
+The sync host registers the same control handler as the legacy host
+(`host_audio::HostAudio`) with the OSC server, on its own rows. Until the
+flip the option table holds the rows of both engines, and a host declares
+its engine's (`HostEngine::rows`):
+
+| Row | Legacy host | Sync host |
+|---|---|---|
+| `output_device`, `latency_target` | yes | yes |
+| `loop_bandwidth_hz`, `realign_threshold_ms` (group `sync`) | no | yes |
+| `output_sample_rate` | yes | yes, since §23 |
+| `output_backend`, `output_file`, `output_file_format` | yes | yes, since §26 |
+| `enable_adaptive_resampling`, `adaptive_resampling_*` | yes | no |
+| `input_mode`, `live_input_node`, `live_input_description` | yes | yes, since §24 |
+| the other `live_input_*` | yes | no (§24: legacy-only, or read by no host) |
+
+A row the host does not declare is not in its schema, is refused when
+written, and is left as the file has it on Save. So nothing is offered that
+the running output would ignore, and a Save from the sync host keeps the
+legacy tuning and the live input of a config untouched.
+
+- **`loop_bandwidth_hz`** (0 to 1, default 0): bandwidth of the latency
+  loop; 0 is the source's own default (0.02 Hz `own`, 0.005 Hz `follow`).
+- **`realign_threshold_ms`** (1 to 1000, default 20).
+- Both are config keys of the same name, command-line flags of `render`
+  (generated from the rows), and reach `config.yaml` through Save only.
+
+### Capabilities
+
+`HostControlHandler::capabilities` says what the handshake advertises. The
+sync host: the `audio` domain, `controlConfig: [.., "audio", "sync"]`, no
+`adaptive_resampling`, and no `input` domain until it can reconfigure one.
+
+### Taking a write
+
+The host reads the requested settings on every turn of its loop. When they
+differ from what plays, the stream's epoch is closed, and its next chunk
+opens one with the new settings (the mechanism of a restart from the
+config, §18): a new target or device costs one realign.
+
+- **The latency the player is told follows.** The `own` sink advertises
+  the latency held again whenever it moves: a new target, or one the servo
+  had to raise (§19). The sink is no longer reopened for it.
+- **An output that does not play is said.** A device that is not there
+  leaves the stream waiting; after 2 s the audio state carries the error
+  (`<device> is not playing: is the device there?`), and clears when it
+  plays. An output that cannot be opened at all no longer ends the renderer.
+- **A raised target is in the audio state**: `latencyTargetHeldMs` beside
+  `latencyTargetMs` in `/state/audio`, null while the target holds.
+
+### The flags of `render`
+
+The engine is built on the config as the run resolved it
+(`Engine::from_config`), not on a second reading of the file: the registered
+options given as flags, the renderer flags, `--presentation`,
+`--speaker-layout` and `--channel-render-mode` now reach it as they reach the
+legacy host. Left out: `--vbap-table` and `--log-object-positions`.
+
+### Studio
+
+With these capabilities the Studio already hid the adaptive controller. On
+top of that, on a renderer that says `sync`:
+
+- the latency section shows the meter against the latency held, the target,
+  and in the advanced view the two loop settings; the adaptive resampler's
+  readouts, band indicator and long explanation are left out;
+- a warning under the target when the renderer holds more than it
+  (`Holding 96 ms instead of 40 ms`), with the value to set;
+- the audio output section leaves out the backend and the rate, which the
+  renderer does not declare;
+- the input summary says `renderer's clock` instead of a clock mode.
+
+Eight catalogues carry the new strings.
+
+### Live (isolated as before; mpv AC-3 into the `own` sink)
+
+| Step | Result |
+|---|---|
+| Capabilities | `variant=standalone`, `domains` with `audio`, `controlConfig` with `sync` |
+| `/control/latency_target 120` while playing | Sink: `now advertising 120.0 ms`; 120.00 ms held, error within ±0.01 ms |
+| `/control/option realign_threshold_ms 35` | Output reopened on the running stream |
+| Output device set to a sink that does not exist | After 2 s: the error in `/state/audio`, no effective device |
+| ... and back | Error cleared, playing again |
+| Launched at `latency_target: 40` | `holding 96.9 ms`, sink `now advertising 96.9 ms` |
+| The Studio on that renderer (window capture) | Latency 95 ms against the held target, the warning, the two loop rows, no adaptive controller |
+
+### Not done
+
+- The Studio was captured, not operated: its rows were not clicked from
+  this workflow (their commands are covered by the core's tests).
+- The pipe has nobody to tell a raised latency to: with the timed writer
+  the launcher gave the player the configured value (§15).
+
+## 21. Test tones with nothing playing, and PCM on the sink (2026-10-11)
+
+Done ahead of 6d: both stood in the way of listening to the new engine. A
+speaker or object test started from the Studio was silent unless a film was
+playing, and the sink took passthrough only, so nothing of the desktop
+reached it.
+
+### Test tones: the idle feed
+
+The render injects a test into what it renders, and the sync host opened its
+output only while a stream played. With no stream there was nothing to
+inject into.
+
+- While a client's test pane is armed (or a test runs) and no stream plays,
+  the host opens an **idle epoch**: its ring and output, fed with silence the
+  engine renders (`Engine::render_silence`), paced on the host's own clock.
+  That clock is the epoch's source, read exactly, so the servo holds the
+  latency on it as on any `own` source.
+- The pacing and the arm's keepalive are the legacy host's `IdleFeeder`,
+  reused as it is.
+- A stream that starts takes the output over; when it ends and the pane is
+  still armed, the idle epoch comes back. Disarmed, it plays out and closes.
+
+### PCM on the `own` sink
+
+- The sink offers **linear PCM beside the IEC 958 formats**: 32-bit float,
+  8 channels on the fixed 7.1 map (L R C LFE Ls Rs Lb Rb), at 48 kHz only.
+  The sink does not resample; a player at another rate converts on its side.
+- The capture marks each cycle's format. A PCM chunk becomes a frame the
+  engine renders by its labels, with no bridge (`Engine::render_host_pcm`);
+  the stream is declared as PCM. Its count on the transport is the bytes
+  themselves, so the latency is exact from the first cycle.
+- `node.force-rate` is set for every format now: the group runs at the rate
+  of what it carries.
+- **The sink idles on PCM.** With nothing linked to it, PipeWire settles the
+  sink on the PCM format and hands it a cycle of silence every cycle: the
+  host sees one long silent stream, and its output stays open. Desktop sounds
+  and tests then start without the wait for an output to open. After a
+  passthrough session the sink stays on the IEC 958 format with nothing
+  flowing, and the idle feed is what carries a test.
+
+### Verified
+
+Engine tests: rendered silence is silent and carries a speaker test on the
+speaker under test only; host PCM is rendered by its labels without the
+bridge being asked.
+
+Live, isolated, with what leaves the renderer **recorded from the output
+sink's monitor** and measured per channel:
+
+| Run | Heard at the output |
+|---|---|
+| Sink input, nothing playing: speaker test on speaker 2 at peak 0.05 for 4 s | Pink noise on FC only, -39 dBFS RMS, for those 4 s; every other channel digital silence |
+| Then an 8-channel WAV into the sink: -40 dBFS tones on FL and RL | FL and RL at -43.0 dBFS RMS (a sine's RMS), the six others silent; 150.000 ms held, 0 realigns |
+| Pipe input, no writer: armed, same speaker test | Idle epoch opens; FC only; 180.00 ms held |
+| ... an AC-3 stream starts on the pipe, still armed | The stream takes over; after it ends the idle epoch returns; disarmed, it closes |
+| Sink idling on PCM, then mpv AC-3 passthrough into it | Format switches to IEC 958, new epoch, 150.00 ms held |
+
+### Found on the way: a resumed standby could come back deaf
+
+A test of mine ran on the OSC port of a renderer the user's Studio had
+launched. That renderer stood by, as it should, and resumed deaf. The host
+that takes the port tells the standby to resume before letting go of it; the
+standby's re-bind then took the same-process fast path and raised the stop
+flag of "the local listener", which was its own, left registered from before
+the standby; the listener it then started ended at once. Fixed in
+`OscSender::start_listener` (a sender takes its own flag out of the registry
+before it binds), with a test that fails on the old code. The legacy host's
+standby goes through the same code.
+
+### Not done
+
+- `live_input.lfe_mode` and the other live-input options are not applied to
+  the sink's PCM: LFE goes to the LFE speaker.
+- A PCM stream on another channel count than 8 is dropped with a warning
+  (the format offered is 8 channels; a player maps to it).
+- The cost of the idle PCM stream (a render of silence around the clock)
+  was not measured on the target box.
+
+## 22. Phase 6d — sources with no clock, and files (2026-10-11)
+
+### `none`: the device is the master
+
+A file, standard input or a writer faster than real time has no clock to
+measure a latency against. The servo gets a second pacing
+(`audio_sync::Pacing::Device`): playback runs at the nominal ratio, takes
+what the ring holds, and a dry ring is a silent callback and a counted
+underrun, with a fade-in when it resumes. Nothing is read from the source
+and nothing is steered. What is published as the latency is the audio
+buffered ahead plus the device delay.
+
+The source is held back, not dropped:
+
+- Rendered blocks wait in a queue and go into the ring only while it holds
+  less than the latency target, here a buffer level. While blocks wait, the
+  host takes nothing more from the capture.
+- A paced reader reads no further than two chunks ahead of what the host
+  took, so the writer of a pipe is held back by the pipe itself.
+- The host's loop never blocks on this: it sleeps 2 ms and comes back, so
+  telemetry, the controls and a shutdown are served as usual. (Not the
+  condition variable §3 had in mind; the producer thread is not the realtime
+  one.)
+
+### Inputs
+
+| INPUT | Source | Clock |
+|---|---|---|
+| A regular file, or `-` (standard input) | Read to its end in the 64 KiB chunks the legacy host reads, one stream | `none`, always |
+| A pipe (created when missing) | As before | `follow`, or `none` when `source_clock` says so |
+| The PipeWire sink (`input_mode: pipewire`) | As before | `own` |
+
+- **`source_clock`** (`auto` / `own` / `follow` / `none`): a host option, a
+  config key and a `render` flag, in the Studio's latency section (advanced
+  view). The input decides what is possible, and a clock it cannot have is
+  its own instead; in practice the option chooses between `follow` and
+  `none` for a pipe.
+- **End of stream.** The decoder is drained, and for a device a cycle of
+  silence follows, so the last frames are not left in the ring for want of a
+  whole cycle. The host no longer sleeps the stream out: the epoch closes
+  when what it queued has played.
+- **End of run.** Without `--continuous` the run ends with its first stream,
+  played out. With it the host stays up, for the pipe's next writer or the
+  sink's next player; a regular file is played once.
+
+### The `file` output backend
+
+`--output-backend file`: the samples are written as they are rendered (raw
+`f32` or CAF, to a file, a FIFO or standard output), with no ring and no
+clock. One writer for the run, so a capture holds every stream of it. A CAF
+capture of a speaker-array render carries where its speakers are. A file
+out without `--continuous` is an offline render: it reads INPUT whatever the
+config's input mode says, and the binaural stages build on the render path,
+so two renders of a file are the same.
+
+### Verified
+
+- **Offline renders are the legacy host's, bit for bit**
+  (`tests/host_parity.rs`): the demo on speakers, with the object synthesis
+  stages, and in binaural, rendered by `orender render` with and without
+  `--sync-engine`.
+- Unit tests: the device-paced servo; the paced push (to the limit, in order,
+  by parts, nothing lost); the file reader (one stream, the legacy chunks, an
+  empty file is no stream, a paced reader waits for the host).
+- Live, isolated, output recorded at the sink's monitor:
+
+| Run | Result |
+|---|---|
+| An 8 s AC-3 file to the device | The run lasts 8.4 s and exits 0; 8 s of audio at the output, no gap |
+| A pipe written at once by `cat`, `--source-clock none` | Played at the device's pace: 8 s of audio, nothing dropped; exits with its stream |
+| Standard input to a file | 0.55 s; 382 464 frames |
+| The runs of §18, §20 and §21 again | Unchanged |
+
+### Not done
+
+- **The last access unit of a stream stays in the decoder** (AC-3: 249 of
+  250 frames written): the bridge has no flush, as the audit noted (§6.5).
+  The legacy host loses the same frame.
+- The CAF speaker description was not compared with the legacy host's.
+- The output's width is fixed for a run: a change of output mode while a
+  file is being written (speakers to binaural) drops the blocks of the other
+  width instead of starting another capture (done in §23).
+
+## 23. Phase 6e — formats (2026-10-11)
+
+The engine already rendered at the stream's rate; the host assumed 48 kHz
+and the layout's width everywhere, and tagged its channels by position
+whatever `output_channel_mapping` said.
+
+### The output is opened by what is rendered
+
+An epoch no longer opens its device when the stream starts. The first
+rendered block says what to open it for (`BlockFormat`: the block's rate and
+width, which `RenderedAudio` now carries), and a block in another format
+opens it again:
+
+- **Another width**: the output switched between speakers and headphones
+  while a stream plays. The device is reopened on 2 or N channels.
+- **Another rate** with no new stream announced (rare: a new stream is a new
+  epoch anyway).
+- **Another channel mapping** (`output_channel_mapping` is a live option,
+  read at every turn of the loop).
+
+A reopening keeps the epoch: the parser, the decoder and the capture go on.
+The new device starts with an empty ring, a new servo and a new clock tap,
+and the source's count is moved by what went to the old ring, so the frame
+the new ring starts on is the stream's frame that follows, and the decoder's
+hold stays inside the measured latency. The servo's counts on the closed
+device are added to the host's totals. Measured gap at the output: 84 to
+96 ms per reopening.
+
+The quantum is asked for as a duration (1024 frames at 48 kHz: 940 at
+44.1 kHz, 2048 at 96 kHz). The idle feed renders at the rate the engine was
+last run at.
+
+### Rates
+
+- **The device is opened at the stream's rate**; PipeWire converts when the
+  device runs at another. `output_sample_rate` (now one of this host's rows)
+  opens it at a rate of its own instead, the output core's resampler doing
+  both the conversion and the drift correction. A change of it reopens the
+  output like any other output setting. It does not apply to a file, which
+  is written at the stream's rate.
+- **The transport is counted in the stream's frames** by what the IEC 61937
+  framing fixes, not by the rate the player declares for the carrier (mpv
+  declares 192 kHz for every E-AC-3 and TrueHD stream): one carrier frame
+  per sample for AC-3 and the DTS core, four per sample for E-AC-3, a MAT
+  frame for 1/200 s of the top rate of the content's family; DTS-HD and
+  linear PCM by their duration. TrueHD and DTS-HD need the stream's rate,
+  so their clock is published from the first rendered block.
+- **The `own` sink takes AC-3 and DTS carriers at 44.1 and 32 kHz.** It
+  stated 48 kHz only, as the legacy sink does, and a player passing a
+  44.1 kHz stream through found "no target node available".
+
+### Channel mapping
+
+`by_index` (the default) names the channels `AUX0…`, `by_name` by the
+layout's speakers, as the legacy host does.
+
+**Observed, both engines, PipeWire 1.6.9:** neither names the ports. The
+stream states its positions as the `audio.position` property and not in its
+format, and its ports come out as `output_1…N` either way (`FL`/`FR` for two
+channels), linked to the sink in order. `by_name` is therefore `by_index` on
+PipeWire today. Stating the positions in the format would make it real, and
+would also make PipeWire remix a stream whose layout is not the sink's: a
+change of behaviour to decide, not made here.
+
+### The `file` output
+
+The writer is opened by the first block too, at its rate and width. A block
+in another format starts the file over, with a warning, as the legacy host
+does (the samples are written as they come: they cannot sit under a header
+that describes others). A file that cannot be opened or written now ends
+the run with the error; it was logged and the run went on.
+
+### Fixed on the way: the device's clock was read in the graph's frames
+
+`pw_time.ticks` counts in the graph's rate. The adapter read it as the
+device's position in the stream's frames, which holds only when the two
+rates are the same, so every run so far (48 kHz streams on a 48 kHz graph)
+was right and any other was not: a 44.1 kHz stream saw a device 8.8 % fast,
+a 48 kHz stream on a 96 kHz device rate one twice too slow, the feed-forward
+and the correction both hit their limits and the latency drifted by 1.5 ms
+per second until it was realigned. The position is now scaled to the
+stream's frames (and is exactly the ticks when the rates are equal).
+
+### Verified
+
+- Unit tests: the carrier count per data type and rate; a reopened output
+  keeps the stream's count; a file starts over on another format; the
+  device position in the stream's frames; the codec format pod at one rate
+  or several.
+- Offline, a 44.1 kHz AC-3 file to CAF: the same bytes as the legacy host
+  (12 channels, 44.1 kHz in the header).
+- Live, isolated (private sinks, private config, OSC on a free port), the
+  output recorded at the sink's monitor, a 1 kHz tone at 44.1 kHz:
+
+| Run | Result |
+|---|---|
+| The file to the device (`none`) | 8.5 s for 8 s of audio; 1000 Hz at the output |
+| A timed pipe (`follow`), target 180 ms | 180.00 ±0.05 ms from 8 s on (the first opening starts 0.8 ms short and converges), no realign, no underrun |
+| …output switched to binaural and back | Reopened on 2 then 12 channels, 88 and 96 ms of silence, latency within ±0.05 ms at the next reading (one every 2 s) |
+| …`output_channel_mapping by_name` | Reopened, 84 ms |
+| …`output_sample_rate 96000` | Device at 96 kHz; 180.00 ±0.03 ms |
+| mpv AC-3 passthrough into the `own` sink, 44.1 kHz then 48 kHz | Group forced to 44.1 kHz then 48 kHz, output at each rate; 150.0 ±0.2 ms from 6 s on (0.75 ms short at first), then 150.000 ms |
+
+### Not done
+
+- E-AC-3, TrueHD and DTS-HD at other rates than 48 kHz were not played: no
+  such material here. Their count is unit-tested only.
+- A 44.1 kHz-family E-AC-3 or TrueHD stream from mpv is written on a carrier
+  declared at 192 kHz, so the player paces it 8.8 % fast: nothing the
+  renderer can hold a latency against. Not tried.
+- The rate the device was opened at is not in the audio state: the Studio
+  shows the rate asked for, as it does on the legacy engine.
+- A 32 kHz stream was not played.
+
+## 24. Phase 6f — the input, chosen live (2026-10-11)
+
+### What the legacy host does with the `live_input` options
+
+Read before deciding which of them the sync host takes:
+
+| Option | Legacy host |
+|---|---|
+| `input_mode` | pipe or PipeWire sink |
+| `live_input.node`, `.description` | the sink's name and description |
+| `live_input.channels` | 2 or 8: the sink's IEC 958 mode |
+| `live_input.clock_mode` | `dac` / `pipewire` / `upstream`: who drives the sink |
+| `live_input.backend` | one value (`pipewire`) |
+| `live_input.sample_rate`, `.layout` (and the imported layout), `.map`, `.lfe_mode` | **stored, published and saved; read by nothing** |
+
+The sync host declares the first two lines: `input_mode`,
+`live_input_node`, `live_input_description`, and says so in its capabilities
+(the `input` domain). The others have nothing to act on here: the sink
+states every format at once, and it runs on the renderer's clock
+(`source_clock`). They are not in its schema, are refused when written, and
+are left in the file as they were read on Save. The four that no host reads
+are for the flip (6j) to drop.
+
+### Apply, in place
+
+The input is staged, as on the legacy host: writes change what is asked
+for, and `/control/input/apply` (or the group apply) applies them. The host
+then names the source asked for (`InputRequest::source`: the sink under its
+name, or what the input path is) and, if it is not the one running, opens
+its capture in place of it. The engine, the output settings and the OSC
+server stay; the stream playing ends with its capture.
+
+- A pipe or a file is opened before the capture running is closed, so one
+  that cannot be opened leaves the stream playing untouched.
+- A sink is opened once the one running is closed (it must leave the graph
+  before one of the same name joins it). If it cannot be, the old capture
+  is opened again.
+- Either way the client is told what runs (`/state/input`: active mode,
+  applied node and description) and why what it asked for does not
+  (`applied.error`, which names the pipe or the sink).
+- The path a switch to `pipe_bridge` reads is the renderer's input path:
+  the INPUT the run was given, or what `/control/render/input_pipe` set
+  since.
+
+The controls start from the input as the config states it, not from what
+the run resolved it to (an offline render reads its file whatever the
+config's mode), so a Save writes back what was read. A restart
+(`/control/restart`, `reload_config`) carries a staged input over through
+the live handoff, as it does on the legacy host.
+
+### Studio
+
+On the sync engine the input section shows the mode, the node and the
+description; the clock mode row is hidden. Apply sends the input document
+and its apply, whatever changed: no pipeline restart (the legacy engine
+needs one to open a pipe or to start the sink).
+
+### Verified
+
+- Unit tests: an input request names its source; the staged input is taken
+  on apply, once, and what runs is published with the error beside it; Save
+  writes the three rows and keeps the rest of `live_input`; the Studio's
+  apply on the sync engine sends the document and its apply only.
+- Live, isolated (private sinks, private config, OSC on a free port), a run
+  launched on a pipe:
+
+| Step | Result |
+|---|---|
+| Stage `pipewire` + a node + a description | Nothing changes; the state shows the request beside what runs |
+| Apply | The sink appears under that name; mpv AC-3 passthrough into it holds 180.00 ±0.03 ms |
+| Rename the node, apply | The old node is gone, the new one is there; plays as before |
+| `pipe_bridge` with a pipe in a directory that does not exist, apply | Refused: the error names the pipe, the sink and its stream are untouched |
+| The pipe's path back, apply | The sink leaves the graph, the pipe is read; 180.00 ±0.03 ms |
+| Stage `pipewire`, then `/control/restart` | The next run starts on the sink |
+
+### Not done
+
+- The Studio rows on the sync engine were not captured or clicked.
+- The negotiated format of the sink is not in `/state/input` (`applied`
+  carries the mode, the node and the description).
+- A switch away from a pipe closes it under its writer, which gets `EPIPE`,
+  as with any reader that goes away.
+
+## 25. Phase 6g — accounting, and where the listener is (2026-10-11)
+
+The latency the servo holds is `(N_in − N_play)/fs + D`. It is a frame's
+real latency only while the frame the ring holds at index `n` is the
+source's frame `n`. Whatever breaks that (a gap in the source with nothing
+put in its place, a burst a decoder skips, frames a full ring refuses) moves
+every later frame by as much, for good, without the servo seeing it: a
+restart after an underrun re-anchors on the same wrong count. This slice
+keeps the two counts in step, and says each time it had to.
+
+### Gaps and overlaps: the deframer conserves time
+
+The host follows how far the stream is covered on its transport
+(`Coverage`): each audio burst covers from its start to the next one's
+nominal start, the spacing being the step several bursts in a row agree on.
+
+- **A gap** (the next burst starts later: pause bursts, stuffing, bursts
+  that never reached the deframer) is played as silence of exactly its
+  length, pushed into the ring as the gap is found, so a long pause is
+  silence as it goes and not an underrun. A gap longer than 1 s, or one
+  with nothing rendered yet to fill it in, is a new phase instead: the
+  count starts at the burst that follows.
+- **An overlap** (the next burst starts before the last one was through): a
+  player that resumes or seeks starts a new burst at once and cuts the
+  stuffing of the one it was in. The decoder delivers all of the cut burst
+  all the same, more than the time it was given; that many frames are
+  dropped from what it delivers next. Only when the cut burst's payload was
+  whole: what a decoder makes of a truncated one is left to the audit.
+- **Pause and null bursts** (IEC 61937 data types 3 and 0) are not fed to
+  the decoder, and are no longer taken for a change of track (each one
+  restarted the phase). The parser read their length as bytes; it is bits.
+- **Bytes that never reached the deframer** (a pipe's reader that could not
+  hand a chunk over now says how many bytes it skipped; the sink's count
+  shows it by itself) keep their place on the transport: the deframer
+  starts again after them, and the time they spanned is a gap like another.
+
+### The audit: what a decoder loses or makes up
+
+What is in flight between the capture point and the ring (frames received
+up to the start of a burst, less frames delivered) is the decoder's hold
+plus what it batches: its low points are one constant. `InFlightAudit`
+takes the low point over 0.2 s windows; a step of more than 8 frames that
+a second window confirms is frames lost (or made up), accounted to the
+source's count through the clock tap (`N_in + inserted − dropped`, which
+the servo has read since phase 3 and nothing fed). The servo then sees the
+latency error it really has: it corrects it by rate under the realign
+threshold, and realigns once above.
+
+Frames a full ring refuses are accounted the same way, at once.
+
+What the pipeline holds when the audit starts is taken as its hold: frames
+a decoder discards while it finds its first sync point are not seen (the
+count cannot tell a hold from a loss; the decoder would have to say).
+
+### The render's own delay
+
+A linear-phase crossover delays the content inside the blocks by
+`Engine::output_latency_samples`. The source's count allows for it (as
+frames inserted at the renderer), so the latency held is the content's and
+not the blocks'. It was outside the measurement.
+
+### Where the listener is
+
+The output core publishes, each cycle, the ring frame being heard (one
+number: the frame heard at time 0 of the reference clock, so a reader never
+pairs one cycle's time with another's position). The host keeps one ring
+frame and the engine's sample that sits there, and tells the engine where
+the listener is on its timeline (`Engine::set_heard_at`, sent as
+`/playout/heard` at the rate the OSC layer already limits it to), less the
+render's own delay. Never past the last sample rendered: silence that fills
+a gap is not on the timeline.
+
+### Telemetry
+
+Two diag channels, for the life of the host: `frames_lost` and
+`frames_filled`. Each loss is a warning in the log, with its stage and its
+place in the stream; gap fills and overlaps are debug lines (a source that
+pauses does so burst after burst).
+
+### Fixed on the way
+
+- On the `own` sink, an epoch whose first chunk held no burst (it starts in
+  a burst's stuffing: about one AC-3 stream in three at a 1024 quantum)
+  counted the transport from the wrong origin: the bytes before the first
+  burst were in the capture's count and not in the deframer's. The latency
+  held was short by their duration (up to a quantum). Found by reading; the
+  servo's own figure cannot show it.
+- The first attempt took the smallest step between bursts for the spacing:
+  one burst cut short by a seek then made a gap of every burst after it,
+  and the audit and the gap filler fought (15 realigns in 8 s). The spacing
+  is now the step three bursts in a row agree on.
+
+### Verified
+
+- Unit tests: the audit (a steady hold, a loss reported once, a passing
+  rise, a reset); the coverage (even bursts, pause bursts of any spacing
+  adding up to the pause, a missing burst, a few bytes late, a burst cut
+  short, another stream's spacing); what moves the count and what does not;
+  a reopened output keeps what was lost; the listener's place; the parser's
+  pause burst; the telemetry counts.
+- Live, isolated (private sinks, private config, OSC on a free port), the
+  output recorded at the sink's monitor; a 440 Hz tone, on a timed pipe
+  unless said:
+
+| Stream | Result |
+|---|---|
+| AC-3 with 0.8 s of pause bursts | 799.8 ms of silence where the pause is; 38 400 frames filled (25 bursts); latency within ±0.05 ms, no realign |
+| …one burst gone, zeros in its place | 31.7 ms of silence; 1 536 frames filled; no realign |
+| …one corrupt burst | The decoder conceals it (34.5 ms of silence, its 1 536 frames delivered): nothing to account |
+| …the whole 40 s | 39.952 s from the tone's first cycle to its last: time is conserved |
+| DTS with three corrupt bursts in a row | The decoder drops them: 1 536 frames said lost at the decoder 0.3 to 0.6 s later (in one step or two); one realign |
+| …then one corrupt burst | 512 frames lost (10.7 ms, under the threshold): corrected by rate, no realign |
+| …the whole 40 s | 39.945 s from the tone's first cycle to its last, and 9.987 to 9.993 s between the two losses for 9.995 s in the stream: the frames after a loss keep their time |
+| mpv into the `own` sink, paused 0.4 s, paused 3 s, sought | At the seek, 1 024 frames of the cut burst dropped, no realign, 150.000 ms; before, the audio played 21 ms late from there on |
+| The listener's position | Advances at the stream's rate, about 6 000 frames (125 ms) behind the block being rendered at a 180 ms target |
+| The runs of §21, §23 and §24 again | No loss reported, latencies as before |
+
+### Not done
+
+- Frames a decoder discards before its first sync point (see the audit).
+- A decoder audit per burst against its nominal length (S4's wording): the
+  bridge does not say what a burst holds, so the audit works on the count,
+  0.4 s late. A loss that empties the ring before that is an underrun
+  first.
+- The render's own delay was not exercised live (no linear-phase crossover
+  in the test config).
+- E-AC-3, TrueHD and DTS-HD streams with gaps were not played: the coverage
+  is the same code, their spacing is learned as AC-3's is.
+- The Studio does nothing new with `/playout/heard` here: it follows the
+  sound when asked to, as it did with the legacy host's.
+
+## 26. Phase 6h — the output backend, switched live (2026-10-11)
+
+Where the rendered audio goes was fixed for a run (§22). It is now one of
+the output settings, read at every turn of the loop like the device and the
+latency: `output_backend`, `output_file` and `output_file_format` are this
+host's rows, and a change closes the stream's epoch, which its next chunk
+opens again on the new output.
+
+The rule is the legacy host's:
+
+- A backend named replaces the run's: `file`, or `device` (and `pipewire`)
+  for this platform's device. An unknown one changes nothing.
+- A file and a format named apply while the output is a file, and wait for
+  the backend otherwise.
+- Nothing named keeps what the run was launched on. The values a flag gave
+  the run are not written back by Save: only what a client asked for is.
+
+Two differences, both on a live run only:
+
+- **A file output with no file named writes nowhere**, and says so
+  (`/state/audio.error`), until one is named. The legacy host falls back on
+  standard output: a renderer the Studio launched would pour raw samples
+  into its log the moment "File" is picked, before a path can be typed.
+  Standard output is still `-`, and has to be asked for.
+- **A file that cannot be opened or written does not end a live run**: the
+  error is published and the run goes on, to be given another file or the
+  device back. An offline render (a file out, once) still ends on it, as
+  §23 has it.
+
+The file state is the run's while its output is one (a capture holds every
+stream), and is flushed and replaced when the output changes. The idle feed
+plays on the device only.
+
+### Verified
+
+- Unit test: the resolution of the output from the launch and from what is
+  asked for, and through the controls.
+- Live, isolated, a timed pipe at 180 ms, the sink's monitor recorded:
+
+| Step | Result |
+|---|---|
+| `output_backend file`, no file named | The device goes silent; the error says no file is named |
+| `output_file …/out-live.f32` | 6.94 s of 12-channel raw samples for the 7 s it was the output; the error clears |
+| `output_file_format caf` + another file | A CAF file: 12 channels, 48 kHz, 5.95 s for 6 s |
+| A file in a directory that does not exist | The error names it; the run goes on |
+| `output_backend device` | The tone is back at the sink after 19.1 s of silence; 180.00 ±0.002 ms, no realign |
+
+### Not done
+
+- The Studio's backend and file rows on the sync engine were not captured
+  or clicked (they appear from the schema, as the rate row does).
+- The backend the run was launched on is not in the audio state: a run
+  started with `--output-backend file` shows "device" in a client until one
+  is asked for, as on the legacy host.
+
+## 27. Phase 6i — Windows and macOS (2026-10-11)
+
+The sync host was Linux only: its output was PipeWire's, its reader a FIFO's
+descriptor, its flag hidden behind `cfg(linux)`. It now builds everywhere
+the renderer does, and `--sync-engine` / `ORENDER_SYNC_ENGINE` select it on
+the three platforms.
+
+### One output device, whatever the platform
+
+`audio_output::sync_output::device` is what the host opens: PipeWire on
+Linux, cpal on Windows (ASIO, or WASAPI in shared mode by the legacy
+output's rule) and macOS (CoreAudio). It opens in two steps, because the two
+worlds differ on who converts a rate the device does not run at:
+
+- `negotiate` finds the device and says the rate it will run at. PipeWire
+  takes any rate (the graph converts). A cpal device plays the rates it
+  lists: the one asked for when it has it, else its own, else the nearest
+  it has, on the narrowest format wide enough, in `f32` when there is a
+  choice. A device with fewer channels than the output is refused, never
+  played with channels dropped.
+- The host builds its output core for that rate, and `start` plays. The
+  core's drift resampler does the conversion, as it does for
+  `output_sample_rate`.
+
+So a 44.1 kHz stream plays on the Windows mixer at 48 kHz, where the legacy
+output refused it ("does not support … at 44100 Hz") unless a rate was
+forced by hand. The host's label (`ASIO`, `WASAPI (fallback: …)`,
+`CoreAudio`) is published as before (`/state/audio.outputHost`), and a
+stream error (a device that went away) is the output not playing.
+
+The cpal adapter itself is phase 3's: the callback's time is the reference
+clock read at its entry, its position the frames handed over, the delay to
+the ear what cpal reports. The patch that would forward the driver's own
+position and latencies (§9) is still not made: the device DLL filters the
+callback's jitter instead.
+
+### The reference clock
+
+`reference_now_s` is `CLOCK_MONOTONIC` on Unix and `Instant` elsewhere,
+which is `QueryPerformanceCounter` on Windows: one clock for the reader's
+stamps and the callback's, which is all the servo needs.
+
+### The pipe
+
+The read loop reads from a byte source with a wait that ends:
+
+- Unix (Linux, macOS): the FIFO's descriptor, polled, as before.
+- Windows: a named pipe (`\\.\pipe\…`) the reader serves
+  (`sys::input::NamedPipeSource`): one instance for one writer after
+  another, one overlapped operation pending at a time (the connect, or a
+  read), waited for with a timeout so the reader stays stoppable. The
+  legacy reader blocks until a writer connects.
+- A file or standard input: polled on Unix; a blocking read on Windows,
+  whose thread is not waited for when the capture is dropped (a read of
+  standard input cannot be woken).
+
+The PipeWire sink is Linux's: asked for elsewhere, the input says so and
+what runs stays.
+
+### Fixed on the way: a long device cycle could underrun for ever
+
+Found by running the cpal output (below): a device with a long cycle (the
+ALSA plugin's 43 ms; a 2048-frame ASIO buffer is the same) under a `follow`
+source, with a target a little short of what the pipeline needs. A burst
+cycle's wait is read at the callbacks, up to one period before its peak:
+with a long period the reading stands below the target while the peak
+underruns. And after an underrun a `follow` source restarts its phase (one
+late reading cannot say whether it stopped), which discarded the cycle. So
+nothing ever raised the target: 851 underruns in two simulated minutes at
+190 ms for a pipeline that needs 195 to 240.
+
+An underrun whose next reading is within 20 ms of the source's line (the
+estimator's own measure of a phase break) is now a cycle above the target
+like another. Three of them raise it. A source that really stops (the
+150 ms stops of §19) is far off its line and still raises nothing.
+
+### How it was checked, without the hardware
+
+| What | How | Result |
+|---|---|---|
+| The whole workspace for Windows | `cargo check --workspace --all-targets --target x86_64-pc-windows-gnu` (asio-sys's generated layout assertions, written for MSVC, deleted from the scratch build: nothing is linked or run there) | Clean. It found one Linux-only flag the host read |
+| The named-pipe source | Its tests, built for Windows and run under Wine: reads time out with no writer, two writers in turn are read in order, a pending operation is cancelled on drop | Pass |
+| The host's unit tests on Windows | The renderer's test binary built for Windows and run under Wine (31 tests: readers, controls with cpal's device list, coverage, accounting) | Pass |
+| The cpal output, for real | A renderer built with `--features cpal-check` plays through cpal's ALSA host, which PipeWire's ALSA plugin carries to the test sink | Below |
+| The simulator | The long-cycle scenario above, and the 48 others | Pass |
+| The Linux scenarios of §21 to §26 | Again | As before; no target raised that was not |
+
+The cpal run (a timed pipe, 180 ms asked for, a 43 ms device cycle):
+
+| Stream | Result |
+|---|---|
+| AC-3 at 48 kHz, 12 channels | 180.0 ms, within 0.2 ms at first and 0.01 ms from 10 s on; no realign, no underrun; 26.95 s of tone unbroken |
+| AC-3 at 44.1 kHz, output switched to binaural | The 2-channel device needs more than 180 ms: three underruns in 0.7 s, the target raised to 235 ms and held, none after |
+| …back to speakers, then `output_sample_rate 96000` | Reopened each time (187 and 269 ms of silence: the ALSA plugin's reopening), the raised target kept, the device at 96 kHz |
+
+### Not done
+
+- **Nothing ran on Windows or macOS hardware**, and no ASIO or CoreAudio
+  device was opened: the host selection on Windows is the legacy output's
+  code, copied; the rest of the cpal path is what ran on ALSA.
+- **macOS was compiled nowhere**: its target needs Apple's SDK for
+  CoreAudio's bindings. Its own lines are the host selection (the default
+  host) and nothing else: the reader is the Unix one, the rest is shared
+  with Windows. CI compiles it.
+- The whole renderer was not run under Wine: there is no Windows build of a
+  decoder bridge here.
+- The cpal patch for the driver's position and latencies (§9).
+- cpal's buffer size is the device's default.
+
+## 28. Phase 6j — the flip (2026-10-11)
+
+`orender render` is the host of §18–§27, on Linux, Windows and macOS. There
+is no switch back: the regulation it replaced is not compiled anywhere.
+
+### What went
+
+- **The host.** `--sync-engine`, `ORENDER_SYNC_ENGINE` and the `sync-play`
+  command (the host is `render`); the eleven modules of the old CLI host
+  (its bootstrap, decoder thread, handler, live bridge and input, output and
+  its runtime sync, writer lifecycle); `input-live`, a command that was
+  declared and never implemented.
+- **The output and input stages.** In `audio_output`: the adaptive runtime
+  (the PI servo and its recovery states), the shared callback core, the
+  PipeWire and cpal writers, the pacer, the resampler FIFO, the ring, the
+  IIR of the servo's input. In `audio_input`: the PipeWire bridge capture
+  and its client-node backend (`PwClientNode`), the pacer drain. What is
+  left of the two crates is the sync output, the file sink, the device
+  listing, the controls' state and the format pods of the sink.
+- **The options.** One set of host options, twelve rows: the output's
+  (`output_device`, `output_backend`, `output_file`, `output_file_format`,
+  `output_sample_rate`, `latency_target`), the loop's (`loop_bandwidth_hz`,
+  `source_clock`, `realign_threshold_ms`) and the input's (`input_mode`,
+  `live_input_node`, `live_input_description`). The rows of the adaptive
+  resampler (22 keys) and of the live input's shape (`backend`, `layout`, `clock_mode`,
+  `channels`, `sample_rate`, `map`, `lfe_mode`) are gone, with the flags
+  `render` generated from them.
+- **The contract** (`CONTRACT_REVISION` 6 → 7). Every address under
+  `/control/adaptive_resampling`, the live input's shape under
+  `/control/input/live/`, and the states only the old regulation published:
+  `latency_control`, `latency_smoothed`, `latency_downstream`,
+  `latency_avail_input`, `latency_output_fifo`, `latency_resampler_pending`,
+  `adaptive_resampling/{state,band}`. `/state/audio` has no
+  `adaptiveResampling` block. `/state/latency` is the measured latency (it
+  was the old controller's control latency when there was one).
+- **Studio.** The auto-tune wizard (its state machine, detectors, runner and
+  modal, with the quit guard that waited for a run), the adaptive
+  controller's form and its commands, the band indicator, the deviation
+  meter, the `ctrl`/`smoothed`/`path` readouts and markers, the input's
+  clock mode, and 142 strings in each of the eight catalogues. The Latency
+  section is the meter, the trace, the target, and in the advanced view the
+  source clock, the loop bandwidth and the realign threshold. The policy
+  that told a sync renderer from an older one (`sync_engine`,
+  `adaptive_resampling`) is gone: a standalone renderer has this output.
+  The plot's latency trace is the measured latency (it was fed by the
+  smoothed one, which the new host never published, so it stayed empty).
+- **The documents.** `PI_TUNING_PROCEDURE.md`; `docs/latency-regulation.md`
+  is rewritten for this design.
+
+### What stays readable
+
+A config written for the old regulation loads. Its keys
+(`enable_adaptive_resampling`, `adaptive_resampling_*`, and `backend`,
+`layout`, `current_layout`, `clock_mode`, `channels`, `sample_rate`, `map`,
+`lfe_mode` under `live_input`) still parse into `RenderConfig`, do nothing,
+and are written back as they were by a Save. A run names the ones it found,
+once (`RenderConfig::retired_keys`):
+
+```
+config: 5 key(s) are no longer used and are ignored (the output now holds an
+end-to-end latency, `latency_target`, instead of tuning a resampler): …
+```
+
+`latency_target` keeps its key and changes meaning, as §16 says: it was the
+level of the output buffer, it is the end-to-end latency. A value sized for
+the buffer is raised when the stream needs more (§19) and the Studio says so.
+
+A command line that still passes one of the removed flags is refused by the
+argument parser, as any unknown flag is.
+
+### Fixed on the way
+
+- **The device callbacks were not all free of log lines.** The tripwire
+  that scans them for locks and logging (`audio_output/tests/
+  realtime_callbacks.rs`) watched the old stage; pointed at the new one
+  (the PipeWire and cpal callbacks, the output core, the servo and its
+  estimators, the ring, the resampler), it found a `log::warn!` in the cpal
+  callback, for a cycle larger than the scratch buffer. It is a flag now,
+  which the owner reads as "not playing".
+- **A paced reader could read before it was told it was paced** (arm64 CI):
+  the pacing is given to the thread before it starts.
+- **Two cpal hosts enumerated at once crashed on Windows** (CI, access
+  violation in the test binary): host access goes through one lock.
+
+### Verified
+
+- The gates: `fmt`, the clippy ratchet (234 → 204 warnings, baseline
+  lowered), the renderer's suite (1439 tests) and the Studio's (531), the
+  doc tables, the options schema against the Studio's strings (12 host
+  options, 76 core), the catalogues' parity, the Studio's architecture
+  ratchet (unchanged), the contract's fingerprint.
+- Windows: the workspace type-checks for `x86_64-pc-windows-gnu`, and the
+  named-pipe tests pass under Wine.
+- Live, isolated (private sinks, private config, a free OSC port), on the
+  flipped binary: mpv AC-3 at 44.1 kHz into the sink, 150 ms held within
+  0.8 ms over 20 readings with no realign and nothing lost; the file and
+  pipe scenarios of §22; a config carrying five retired keys plays and says
+  so once.
+- The Studio against that renderer: the window was captured (not driven):
+  the Latency section and the input's summary are as described above.
+- Nothing outside this repository names what was removed: the mpv fork,
+  its packaging (`mpv-omniphony`), the bridge and the workspace's scripts
+  were searched for the flags, the addresses and the config keys.
+
+### Not done
+
+- Nothing on Windows or macOS hardware (§27), by decision (§17).
+- The Studio was not operated by hand after the removal: its tests pass and
+  one capture was read.
+- `output_channel_mapping: by_name` is still not positional on PipeWire
+  (it was not before either).
+
+## 29. Phase 7 — validation (2026-10-12)
+
+What could be validated without the hardware that is not here, what a real
+session on real hardware showed, and what is left for ears and for other
+machines. Everything below is measured; nothing was judged by ear.
+
+### A real session, read and observed
+
+The renderer of the workflow was in use that morning (Firefox, linear PCM
+into the sink; output to a Bluetooth headset, binaural). Its log was read,
+and a passive client was put on its OSC port for two hours: it registers,
+asks for the diagnostic metrics for itself (a per-client flag) and sets
+nothing (`phase7/observe.py` in the test kit).
+
+- 250 ms held for the two hours: latency error p99 0.002 ms, no realign, no
+  underrun after the first.
+- One excursion, −1.7 ms: a switch of binaural mode changed the render's
+  own delay by 127 frames, and the loop steered it back in 20 s at up to
+  450 ppm, with no realign. As §25 intends.
+- The headset's sink reads +0.02 ppm against the renderer's clock: PipeWire
+  drives a Bluetooth sink from the system clock and matches the radio's rate
+  inside it. Nothing here exercised a foreign DAC clock.
+
+### Found, and fixed
+
+- **An output that is not there.** The configured device was not connected
+  when the renderer started. PipeWire refused the stream ("defined target
+  not found") and never linked it later; the ring filled, and every block
+  after that was refused with a warning: 6551 lines in 2.5 minutes and 6.7
+  million frames counted as lost for the rest of the run, until another
+  device was picked by hand. Now an output that is not playing takes
+  nothing (no event, no loss counted), its device is looked for every 3 s
+  and the output is opened again when it is back after having been seen
+  missing, and a discontinuity that repeats is written once per 5 s with a
+  count. Live: started on a sink that does not exist, the sink created,
+  destroyed under the stream, created again: said once each time, reopened
+  by itself, 180 ms held within 0.03 ms, nothing lost.
+- **A source clock the input cannot have** closed and reopened the stream
+  for nothing (on the sink the clock is the renderer's whatever is asked).
+  It is taken without a reopen, and the Studio shows the sink's clock
+  instead of offering a choice.
+- **A cycle the player misses** (soak, below). The graph skips a cycle the
+  player was not there for, and what the player sends next comes one cycle
+  later. The sink's capture counted bytes, so the carrier seemed to lose
+  that time: the latency fell by a cycle (21.3 ms), was steered back over
+  tens of seconds, and past the realign threshold ended in a realign. The
+  capture counts the carrier's time now: the gap is part of the position,
+  and it plays as silence of its length. Live, mpv stopped for 8 ms on
+  TrueHD passthrough: before, −7 and −20 ms and a realign; after, within
+  0.001 ms, 1024 frames filled, no realign.
+- **The review of the cutover** (four findings, each reproduced first): a
+  piped standard input never ended (a hangup was taken for nothing to
+  read); a capture opened for a run lost what it had already queued (a file
+  opened in place of a pipe: 100 bytes in, 0 out); a device-paced source
+  with a target shorter than one device callback never played, and held the
+  host on it; `output_sample_rate` from the config never reached the host,
+  and the first Save erased it from the file.
+
+### Formats, with a real player and real streams
+
+Isolated (private null sinks, private config, a free port), 28 s each, the
+error read from 8 s on (`run_matrix.sh`):
+
+| Path | Stream | Latency error | Realigns |
+|---|---|---|---|
+| sink (`own`), mpv `--ao=pipewire` | TrueHD passthrough | ≤ 0.001 ms | 0 |
+| sink | E-AC-3 passthrough | ≤ 0.001 ms | 0 |
+| sink | linear PCM 7.1 | ≤ 0.001 ms | 0 |
+| pipe (`follow`), the fork's mpv, timed writer | TrueHD | ≤ 0.022 ms | 0 |
+| pipe, the fork's mpv, timed writer | E-AC-3 | ≤ 0.020 ms | 0 |
+
+The pipe needs the fork's mpv (`--ao-pcm-timed`): the source then reads
+−7.5 ppm, mpv's `CLOCK_MONOTONIC_RAW` against the renderer's
+`CLOCK_MONOTONIC`. An upstream mpv writes untimed, and shows the start-up
+transient of §15: 2 to 3 realigns in the first 2 s and the correction at
+its 500 ppm clamp for up to 30 s.
+
+### Two hours
+
+TrueHD with a video track, a 31-minute file looped, through the sink and
+through the pipe at once (`phase7/run_soak.sh`), release build:
+
+| | sink (`own`) | pipe (`follow`) |
+|---|---|---|
+| Latency error, p99 / max | 0.38 ms / 6.6 ms | 0.58 ms / 0.99 ms |
+| Realigns | 3 (the three loops) | 3 (the three loops) |
+| mpv's own A/V sync | 0.000 s throughout, no frame dropped | 0.0001 s, no frame dropped |
+| CPU (12 channels) | 2.2 % of a core | 2.4 % of a core |
+| Memory | 66 → 67 MB | 54 → 54 MB |
+
+- The file's end and restart is a stream that stops and starts: an underrun
+  and a realign on either path, by design (§15, "what a pipe cannot avoid").
+- The sink's 6.6 ms is the missed cycle above, from before its fix (the
+  soak ran on the build of the flip). The real session, on the same code at
+  the same moment, did not move: its player was not the one starved.
+- **Not fixed: the audit flaps on TrueHD through a pipe.** After the third
+  loop the in-flight count sat on the edge between two values one access
+  unit apart (40 frames), and the audit took each move for a loss or a
+  gain: 30 pairs of "40 frames made up" / "40 frames lost" in 27 minutes,
+  each a 0.83 ms step of the count, steered out by the loop. Nothing was
+  lost; the log and the two counters say otherwise. The audit's tolerance
+  (8 frames) is below what a batching decoder's hold moves by. To settle
+  before the pipe is used in a product: a tolerance of one access unit, or
+  a longer confirmation.
+
+### CPU on a wide layout
+
+Release, Ryzen 9 9950X, TrueHD with objects through the pipe, 24 speakers
+over five rings with the FIR crossover (`phase7/run_cpu.sh`): 3.6 % of one
+core in all, of which the render thread 2.8 % and the device callback
+(resampler included) 0.5 %. This is the development machine, not a target
+box.
+
+### Left
+
+- **A foreign DAC clock over hours**: a USB or S/PDIF DAC, two hours of
+  film. `observe.py` on the port of the renderer in use records it, and
+  `report.py` gives the error, the two clocks, the counts and when they
+  moved.
+- **ASIO and CoreAudio**: nothing has been opened on Windows or macOS
+  hardware. The code builds and its tests pass on the three CI platforms.
+- **The target box at 24 channels.**
+- **Listening.** The real session was listened to by its user as it ran;
+  no verdict is recorded here.
+- The audit on TrueHD through a pipe (above).

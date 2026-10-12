@@ -183,7 +183,7 @@ fn live_state_messages(
     host: Option<&Arc<dyn HostControlHandler>>,
 ) -> Vec<OscPacket> {
     let has_audio = host.is_some();
-    let has_input = host.is_some();
+    let has_input = host.is_some_and(|h| h.capabilities().input);
     let mut messages = runtime_control::snapshot::build_live_state_bundle_with_host(
         control,
         has_audio,

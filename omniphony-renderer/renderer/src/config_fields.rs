@@ -302,13 +302,6 @@ render_field! {
     eq = bool::eq
 }
 
-render_field! {
-    /// Enable adaptive resampling PI controller (`render.enable_adaptive_resampling`).
-    pub enable_adaptive_resampling: bool = false,
-    field = enable_adaptive_resampling,
-    eq = bool::eq
-}
-
 // ── Lot 5c: special-cased options (custom descriptors) ──
 
 /// Presentation / substream selector (`render.presentation`). Special-cased:

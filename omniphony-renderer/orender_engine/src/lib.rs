@@ -4,7 +4,7 @@
 //! decoder bridge plugin, push raw packets through it, turn the decoded
 //! PCM + spatial metadata into VBAP-rendered multichannel PCM, and (optionally)
 //! expose OSC live control. It performs **no audio I/O** — no stdin input, no
-//! PipeWire/ASIO output, no adaptive resampling. Those stay in the host:
+//! PipeWire/ASIO output, no latency regulation. Those stay in the host:
 //!
 //! - the `orender` CLI binary wraps this with stdin input + PipeWire/ASIO output,
 //! - `orender_ffi` (liborender.so) wraps it for the mpv integration, where mpv
@@ -16,6 +16,7 @@ pub mod channel_layout;
 pub mod channel_objects;
 pub mod decode_step;
 pub mod degraded;
+pub mod diag_cadence;
 pub mod engine;
 pub mod events;
 pub mod frame_pipeline;
@@ -35,6 +36,7 @@ pub mod virtual_bed;
 
 pub use channel_layout::label_for_speaker_name;
 pub use degraded::{NoBridgeRuntime, NoBridgeSetup};
+pub use diag_cadence::DiagPublishCadence;
 pub use engine::{DecodeThreadMode, Engine, OscOptions, RenderedAudio};
 pub use osc::{ObjectMeta, OscSender};
 pub use osc_settings::{OscOverrides, OscSettings};

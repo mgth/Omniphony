@@ -122,7 +122,7 @@ What it demands:
 ### Option 2: a timestamped raw stream with a return channel
 
 Transport A, with a clock bolted on. Each unit gets a header: magic, length,
-media time in samples, sender monotonic time. The receiver's sync-play
+media time in samples, sender monotonic time. The receiver's
 resampler disciplines the DAC-domain output to the sender's rate, as it does
 for a pipe fed by a timed writer. The receiver reports the DAC position back
 (OSC telemetry or the same socket), and mpv's sender reports it as the audio

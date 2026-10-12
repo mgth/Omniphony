@@ -61,10 +61,12 @@ fn work_dir(name: &str, config: &str) -> PathBuf {
 
 /// The demo rendered by the CLI to a raw `f32` file, as samples.
 fn render_with_cli(work: &Path) -> Vec<f32> {
-    let output = work.join("cli.f32");
-    let log = work.join("cli-stderr.log");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_orender"))
-        .arg("render")
+    let name = "cli";
+    let output = work.join(format!("{name}.f32"));
+    let log = work.join(format!("{name}-stderr.log"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orender"));
+    command.arg("render");
+    let mut child = command
         .arg(demo_input())
         .arg("--bridge-path")
         .arg(reference_bridge_path())

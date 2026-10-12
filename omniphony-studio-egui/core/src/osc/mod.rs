@@ -1503,7 +1503,7 @@ mod connection_tests {
         {
             let mut live = state.inner.lock().unwrap();
             for value in [10.0, 20.0, 30.0] {
-                apply_event(&mut live, parser::OscEvent::StateLatencySmoothed { value });
+                apply_event(&mut live, parser::OscEvent::StateLatencyInstant { value });
             }
             apply_event(
                 &mut live,
@@ -1516,7 +1516,7 @@ mod connection_tests {
             reset_connection_model(&mut live);
             apply_event(
                 &mut live,
-                parser::OscEvent::StateLatencySmoothed { value: 40.0 },
+                parser::OscEvent::StateLatencyInstant { value: 40.0 },
             );
             live.resampling.copy_to(&mut trace);
             assert_eq!(trace.series["latency"].len(), 1);
@@ -1732,9 +1732,14 @@ mod stream_link_tests {
         /// A UDP socket and, with `stream`, a TCP listener on its port number
         /// (another port is taken when that number is busy over UDP).
         ///
-        /// TCP picks the port: Windows reserves ranges of ports for TCP alone
-        /// (Hyper-V, WinNAT), and a UDP ephemeral port falls in them often
-        /// enough that binding TCP to it failed 16 times in a row on CI.
+        /// A port free over both protocols is looked for three ways in turn,
+        /// because Windows reserves ranges of ports per protocol (Hyper-V,
+        /// WinNAT) inside the range it hands out, and a run of ephemeral
+        /// ports of one protocol can sit entirely in a range reserved for
+        /// the other: a UDP port refused over TCP 16 times in a row on CI,
+        /// then a TCP port refused over UDP 64 times in a row. So: the port
+        /// TCP picks, the port UDP picks, and one drawn below the range the
+        /// system hands out, where nothing is reserved.
         fn new(stream: bool) -> Self {
             let timed = |udp: UdpSocket| {
                 udp.set_read_timeout(Some(Duration::from_millis(100)))
@@ -1747,18 +1752,40 @@ mod stream_link_tests {
                     tcp: None,
                 };
             }
+            let seed = std::process::id()
+                ^ std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.subsec_nanos());
             let mut last_error = None;
-            for _ in 0..64 {
-                let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
-                let port = tcp.local_addr().unwrap().port();
-                match UdpSocket::bind(("127.0.0.1", port)) {
-                    Ok(udp) => {
+            for attempt in 0..96u32 {
+                let (tcp, udp) = match attempt % 3 {
+                    0 => {
+                        let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+                        let port = tcp.local_addr().unwrap().port();
+                        (Ok(tcp), UdpSocket::bind(("127.0.0.1", port)))
+                    }
+                    1 => {
+                        let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+                        let port = udp.local_addr().unwrap().port();
+                        (TcpListener::bind(("127.0.0.1", port)), Ok(udp))
+                    }
+                    _ => {
+                        let drawn = seed.wrapping_add(attempt.wrapping_mul(7919)) % 25_000;
+                        let port = 20_000 + drawn as u16;
+                        (
+                            TcpListener::bind(("127.0.0.1", port)),
+                            UdpSocket::bind(("127.0.0.1", port)),
+                        )
+                    }
+                };
+                match (tcp, udp) {
+                    (Ok(tcp), Ok(udp)) => {
                         return Self {
                             udp: timed(udp),
                             tcp: Some(tcp),
                         };
                     }
-                    Err(e) => last_error = Some((port, e)),
+                    (Err(e), _) | (_, Err(e)) => last_error = Some(e),
                 }
             }
             panic!("no port free over both TCP and UDP; last refusal: {last_error:?}");

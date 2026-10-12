@@ -66,10 +66,11 @@ impl StudioSpike {
                     line.push_str(" • ");
                     line.push_str(&tf("status.outputHost", &[("host", host)]));
                 }
-                if let Some(error) = &audio.audio_error {
-                    line.push_str(&format!(" • Error: {error}"));
-                }
                 widgets::note(ui, &line);
+                // Nothing is heard while this is up: said where it is seen.
+                if let Some(error) = &audio.audio_error {
+                    widgets::banner(ui, widgets::Severity::Error, error, None);
+                }
                 // The Essentials view keeps the destination: the device, or
                 // the file rows while a file is what is being written, with
                 // the backend select that leads back to a device.
@@ -300,6 +301,7 @@ impl StudioSpike {
     /// The rate is a text field with a menu of presets beside it, not a plain
     /// select: a device may run at a rate nobody thought to list, and the
     /// renderer accepts any of them. The presets are a shortcut, not the set.
+    /// The rate the output is opened at; unset follows each stream.
     fn sample_rate_row(&mut self, ui: &mut Ui, current: u32) {
         let mut apply: Option<u32> = None;
         widgets::label_row_help(ui, t("audio.sampleRate"), "help.audio.sampleRate", |ui| {

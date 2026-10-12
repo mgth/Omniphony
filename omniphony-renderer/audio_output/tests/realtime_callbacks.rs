@@ -2,23 +2,18 @@
 //!
 //! The output callbacks are the engine's only hard-realtime code. A `log::`
 //! macro there takes the process logger's mutex and allocates its record; a
-//! `Mutex::lock` waits on whichever thread holds it. Both used to sit in the
-//! callbacks — the cpal one cloned its config under a lock twice per call, and
-//! the PipeWire one logged on its underrun and recovery paths, the moment it
-//! was already late. The callbacks now report through
-//! `audio_output::callback_log` and read their config with `try_lock`.
+//! `Mutex::lock` waits on whichever thread holds it. Both sat in the callbacks
+//! of the output stage before this one. The callbacks of the sync output
+//! (`sync_output`) say what they have to say through atomics another thread
+//! reads (`SyncTelemetry`), and share their state through a ring, a seqlock
+//! and atomics.
 //!
 //! The compiler cannot hold that, so this scans the sources: the bodies of the
 //! backends' callbacks, and what they call into — whole modules where the
-//! module is realtime code throughout (the shared callback core among them),
-//! single functions where it is not. A failure names the line. Move the work out of the callback (a `callback_event!` for a log
-//! line, a `try_lock` with a kept copy for shared state) rather than narrowing
+//! module is realtime code throughout (the output core, the servo, the ring
+//! and the resampler among them), single functions where it is not. A failure
+//! names the line. Move the work out of the callback rather than narrowing
 //! what is scanned here.
-//!
-//! The samples themselves reach the callbacks through a ring whose two ends
-//! never wait for each other (`audio_output::ring_buffer_io`, on `rtrb`). A
-//! general-purpose queue in its place brings the wait back without a single
-//! `.lock()` to give it away, so the crate is held to not having one at all.
 
 use std::path::{Path, PathBuf};
 
@@ -41,87 +36,47 @@ const FORBIDDEN: &[&str] = &[
 /// The `log` macros, banned qualified (`log::warn!`) or imported (`warn!(`).
 const LOG_MACROS: &[&str] = &["trace", "debug", "info", "warn", "error", "log"];
 
-/// The callback closures: file, and the text that opens each one. The body
-/// is everything up to the brace that closes the one this text ends with.
+/// The callbacks: file, and the text that opens each one. The body is
+/// everything up to the brace that closes the one this text ends with.
 const CALLBACKS: &[(&str, &str)] = &[
-    ("src/pipewire.rs", ".process(move |stream, _| {"),
     (
-        "src/cpal_output.rs",
-        "let render = move |data: &mut [f32]| {",
+        "src/sync_output/pipewire.rs",
+        "fn process(stream: &pw::stream::Stream, data: &mut CallbackData) {",
     ),
     (
-        "src/cpal_output.rs",
-        "move |data: &mut [T], _: &cpal::OutputCallbackInfo| {",
+        "src/sync_output/cpal_adapter.rs",
+        "fn cycle(&mut self, buf: &mut [f32], info: &cpal::OutputCallbackInfo) {",
+    ),
+    (
+        "src/sync_output/cpal_adapter.rs",
+        "fn silence_oversize(&mut self, frames: usize) {",
+    ),
+    (
+        "src/sync_output/cpal_adapter.rs",
+        "move |data: &mut [T], info: &cpal::OutputCallbackInfo| {",
     ),
 ];
 
 /// Functions the callbacks call that share their module with code for normal
-/// threads (the PipeWire setup, the drain side of the callback log), named the
-/// same way as the callbacks. The pacer drain is here too: it is not called by
-/// a device callback but by the capture stream's, which is just as realtime,
-/// and it holds the writing end of the ring the device callback reads.
-const CALLEE_FUNCTIONS: &[(&str, &str)] = &[
-    (
-        "src/pacer.rs",
-        "pub fn drain(&self, drain_samples: usize) -> bool {",
-    ),
-    (
-        "src/pacer.rs",
-        "pub fn drain_if(&self, drain_samples: usize, still_mine: impl FnOnce() -> bool) -> bool {",
-    ),
-    ("src/pacer.rs", "pub fn drain_available_if("),
-    (
-        "src/pacer.rs",
-        "fn flush_and_prime(&self, fifo: &mut RingReader) -> bool {",
-    ),
-    (
-        "src/pacer.rs",
-        "fn transfer(fifo: &mut RingReader, ring: &mut RingWriter, count: usize) -> bool {",
-    ),
-    (
-        "src/pacer.rs",
-        "fn add_to(counter: &AtomicU64, count: usize) {",
-    ),
-    (
-        "src/pipewire.rs",
-        "fn schedule(&self, acc: &mut i64, output_frames: usize, output_rate: u32) {",
-    ),
-    (
-        "src/pipewire.rs",
-        "fn graph_delay_ms(stream: &pw::stream::Stream) -> Option<f32> {",
-    ),
-    (
-        "src/callback_log.rs",
-        "pub fn new(level: log::Level, message: &'static str) -> Self {",
-    ),
-    (
-        "src/callback_log.rs",
-        "pub fn with(mut self, name: &'static str, value: impl Into<f64>) -> Self {",
-    ),
-    (
-        "src/callback_log.rs",
-        "pub fn with_error(mut self, error: rubato::ResampleError) -> Self {",
-    ),
-    (
-        "src/callback_log.rs",
-        "pub fn enabled(&self, level: log::Level) -> bool {",
-    ),
-    (
-        "src/callback_log.rs",
-        "pub fn push(&mut self, event: CallbackEvent) {",
-    ),
-];
+/// threads (the stream's setup), named the same way as the callbacks.
+const CALLEE_FUNCTIONS: &[(&str, &str)] = &[(
+    "src/sync_output/pipewire.rs",
+    "fn device_timing(time: &pw::sys::pw_time, frames: usize, stream_rate: f64) -> Option<DeviceTiming> {",
+)];
 
-/// Modules the callbacks call into, scanned whole (their tests excepted).
+/// Modules the callbacks call into, scanned whole (their tests excepted):
+/// the output core and what it reads and publishes, the servo and its
+/// estimators, the ring's reading end and the resampler.
 const CALLEE_MODULES: &[&str] = &[
-    "src/lib.rs",
-    "src/adaptive_runtime.rs",
-    "src/callback_core.rs",
-    "src/callback_state.rs",
-    "src/iir.rs",
-    "src/output_telemetry.rs",
-    "src/resampler_fifo.rs",
-    "src/ring_buffer_io.rs",
+    "src/sync_output/core.rs",
+    "src/sync_output/source_tap.rs",
+    "src/sync_output/telemetry.rs",
+    "../audio_sync/src/servo.rs",
+    "../audio_sync/src/dll.rs",
+    "../audio_sync/src/source.rs",
+    "../audio_sync/src/envelope.rs",
+    "../audio_rt/src/ring.rs",
+    "../audio_rt/src/resampler.rs",
 ];
 
 fn source(relative: &str) -> String {

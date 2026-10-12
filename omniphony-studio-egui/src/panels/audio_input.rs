@@ -2,9 +2,8 @@
 //! renderer is fed — through the decoder bridge's pipe, or from a PipeWire
 //! node — and the Apply that makes a change take.
 //!
-//! The rows the web keeps as dead markup (backend, imported layout, channel
-//! count, sample rate, map, LFE mode) are not ported; they belong to the
-//! legacy PCM mode.
+//! The renderer's sink runs on the renderer's own clock and takes whatever
+//! the application sends: there is no clock, layout or format to choose.
 
 use egui::Ui;
 
@@ -30,17 +29,11 @@ const MODES: &[(&str, &str)] = &[
     ("pipewire", "input.mode.pipewire"),
 ];
 
-const CLOCK_MODES: &[(&str, &str)] = &[
-    ("dac", "input.clock.dac"),
-    ("pipewire", "input.clock.pipewire"),
-    ("upstream", "input.clock.upstream"),
-];
-
 impl StudioSpike {
     pub(crate) fn audio_input_section(&mut self, ui: &mut Ui) {
         let policy = crate::host::capabilities::ActionPolicy::of(&self.host);
         let bridges = bridges::Snapshot::read(&self.host);
-        let (mode, active, pipe, clock, error, node, description, pending) = {
+        let (mode, active, pipe, error, node, description, pending) = {
             let live = self.host.read();
             (
                 live.app
@@ -49,11 +42,6 @@ impl StudioSpike {
                     .unwrap_or_else(|| "pipe_bridge".to_owned()),
                 live.app.input_active_mode.clone(),
                 live.app.orender_input_pipe.clone().unwrap_or_default(),
-                live.app
-                    .live_input
-                    .clock_mode
-                    .clone()
-                    .unwrap_or_else(|| "dac".to_owned()),
                 live.app.input_error.clone(),
                 live.app.live_input.node.clone().unwrap_or_default(),
                 live.app.live_input.description.clone().unwrap_or_default(),
@@ -61,24 +49,17 @@ impl StudioSpike {
             )
         };
         let pipewire = mode == "pipewire";
-        let summary = if pipewire {
-            tf(
-                "input.summary.pipewire",
-                &[
-                    ("requested", mode_label(&mode)),
-                    ("active", mode_label(active.as_deref().unwrap_or(""))),
-                    ("clock", &clock),
-                ],
-            )
-        } else {
-            tf(
-                "input.summary.bridge",
-                &[
-                    ("requested", mode_label(&mode)),
-                    ("active", mode_label(active.as_deref().unwrap_or(""))),
-                ],
-            )
-        };
+        let summary = tf(
+            if pipewire {
+                "input.summary.rendererClock"
+            } else {
+                "input.summary.bridge"
+            },
+            &[
+                ("requested", mode_label(&mode)),
+                ("active", mode_label(active.as_deref().unwrap_or(""))),
+            ],
+        );
         Section::new("audioInputSection", "section.audioInput")
             .icon(&crate::ui::icons::SECTION_AUDIO_INPUT)
             .info("input")
@@ -182,39 +163,6 @@ impl StudioSpike {
                             ) {
                                 input::set_live_input_description(&self.host, description);
                             }
-                            let mut chosen_clock = clock.clone();
-                            widgets::label_row_info_keys(
-                                ui,
-                                t("input.clock"),
-                                "input.clockInfoTitle",
-                                "input.clockInfoBody",
-                                |ui| {
-                                    widgets::bounded_combo(ui, 150.0, |ui, w| {
-                                        egui::ComboBox::from_id_salt("input-clock")
-                                            .selected_text(t(CLOCK_MODES
-                                                .iter()
-                                                .find(|(id, _)| *id == clock)
-                                                .map(|(_, key)| *key)
-                                                .unwrap_or("input.clock.dac")))
-                                            .width(w)
-                                            .truncate()
-                                            .show_ui(ui, |ui| {
-                                                for (id, key) in CLOCK_MODES {
-                                                    ui.selectable_value(
-                                                        &mut chosen_clock,
-                                                        (*id).to_owned(),
-                                                        t(key),
-                                                    );
-                                                }
-                                            })
-                                    });
-                                },
-                            );
-                            if chosen_clock != clock {
-                                // Held until Apply: the clock cannot change under a
-                                // running bridge.
-                                input::set_live_input_clock_mode(&self.host, chosen_clock);
-                            }
                         });
                     } else {
                         Group::new(t("input.bridgeInput")).show(ui, |ui| {
@@ -238,7 +186,7 @@ impl StudioSpike {
                         t("input.apply")
                     };
                     if ui.button(label).clicked() {
-                        input::apply_input(&self.host, &mode, active.as_deref());
+                        input::apply_input(&self.host);
                     }
                 });
                 // Values staged some other way (another client, a script)

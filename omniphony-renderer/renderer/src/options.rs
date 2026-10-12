@@ -3505,6 +3505,16 @@ pub struct HostOptionSpec<H: 'static> {
     pub config_store: fn(&mut RenderConfig, &H),
 }
 
+// By hand: a derive would ask `H: Clone`, and `H` only appears in function
+// pointers.
+impl<H> Clone for HostOptionSpec<H> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<H> Copy for HostOptionSpec<H> {}
+
 /// What a host made of a batch of values ([`host_apply_batch`]).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HostBatchApplied {

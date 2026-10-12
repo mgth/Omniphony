@@ -161,6 +161,11 @@ pub struct Report {
     pub started_at_s: Option<f64>,
     /// Highest latency floor the servo reported after warm-up (s).
     pub latency_floor_max_s: f64,
+    /// The target the servo held at the end (s): the configured one unless
+    /// the pipeline could not sustain it.
+    pub target_final_s: f64,
+    /// When the servo last raised its target (s), if it did.
+    pub target_raised_at_s: Option<f64>,
 }
 
 /// Deterministic xorshift64* generator.
@@ -373,6 +378,7 @@ pub fn run_with(
     let mut latencies: Vec<f64> = Vec::new();
     let mut ratio_errors: Vec<(f64, f64)> = Vec::new();
     let mut floor_max = 0.0f64;
+    let mut target_raised_at = None;
 
     let perturbations: Vec<f64> = sc
         .pauses
@@ -406,7 +412,11 @@ pub fn run_with(
             source_offset: -reported_lost,
             source_breaks: 0,
         };
+        let target_before = servo.telemetry().target_s;
         let plan = servo.plan(&input);
+        if servo.telemetry().target_s != target_before {
+            target_raised_at = Some(t);
+        }
         let played = plan.played_frames(quantum);
 
         let mut true_latency = None;
@@ -475,6 +485,8 @@ pub fn run_with(
         underruns: servo.telemetry().underruns,
         started_at_s: started_at,
         latency_floor_max_s: floor_max,
+        target_final_s: servo.telemetry().target_s,
+        target_raised_at_s: target_raised_at,
     }
 }
 
@@ -526,6 +538,7 @@ fn windowed_peak_to_peak(samples: &[(f64, f64)], window_s: f64) -> f64 {
 mod tests {
     //! The Phase 1 acceptance thresholds (`docs/resampling-rework-plan.md`).
     use super::*;
+    use crate::servo::FLOOR_SETTLE_S;
 
     const P99_S: f64 = 0.5e-3;
     /// Frequency modulation the ratio may carry on steady clocks (any 10 s
@@ -580,6 +593,10 @@ mod tests {
             r.latency_floor_max_s < sc.servo.target_latency_s,
             "{name}: floor {:.1} ms above the target",
             r.latency_floor_max_s * 1e3
+        );
+        assert_eq!(
+            r.target_final_s, sc.servo.target_latency_s,
+            "{name}: a target the pipeline sustains was raised"
         );
         r
     }
@@ -716,20 +733,233 @@ mod tests {
         );
     }
 
-    /// A target below what the decoder holds cannot be met: the servo
-    /// underruns, and its latency floor says by how much.
+    /// A target below what the decoder holds cannot be met. The servo raises
+    /// it to what the burst cycles show the pipeline needs, a few ms above
+    /// the floor, within the first second, and holds that without another
+    /// underrun.
     #[test]
-    fn an_infeasible_target_shows_in_the_floor() {
-        let r = run(&Scenario {
-            duration_s: 120.0,
+    fn an_unreachable_target_is_raised_to_the_floor() {
+        let sc = Scenario {
+            duration_s: 3_600.0,
             decoder: Decoder::EAC3,
             ..Scenario::default()
-        });
-        assert!(r.underruns > 0);
+        };
+        let r = run_traced("unreachable_eac3", &sc);
+        eprintln!(
+            "unreachable: target {:.1} -> {:.1} ms at {:?} s, floor {:.1} ms, median {:.2} ms, p99 {:.3} ms, realigns {}, underruns {}",
+            sc.servo.target_latency_s * 1e3,
+            r.target_final_s * 1e3,
+            r.target_raised_at_s,
+            r.latency_floor_max_s * 1e3,
+            r.latency_median_s * 1e3,
+            r.latency_dev_p99_s * 1e3,
+            r.realigns,
+            r.underruns
+        );
+        assert!(r.target_final_s > sc.servo.target_latency_s);
         assert!(
-            r.latency_floor_max_s > 0.100,
-            "floor {:.1} ms",
+            r.target_raised_at_s
+                .is_some_and(|t| t < 1.0 + FLOOR_SETTLE_S),
+            "raised at {:?}",
+            r.target_raised_at_s
+        );
+        // Above the floor, by no more than a callback period (what the servo
+        // cannot see of a cycle's peak) and the margin.
+        let above = r.target_final_s - r.latency_floor_max_s;
+        let period = sc.quantum as f64 / sc.servo.output_rate_hz;
+        assert!(
+            above > 0.0 && above < period + sc.servo.floor_margin_s + 1e-4,
+            "target {:.2} ms, floor {:.2} ms",
+            r.target_final_s * 1e3,
             r.latency_floor_max_s * 1e3
+        );
+        // The start costs a few realigns; the hour that follows none.
+        assert!(r.realigns <= 4, "{} realigns", r.realigns);
+        assert!(r.underruns <= r.realigns, "{} underruns", r.underruns);
+        assert!(
+            r.latency_dev_p99_s < P99_S,
+            "p99 {:.3} ms",
+            r.latency_dev_p99_s * 1e3
+        );
+        // What is heard is the raised target (plus the delay nobody reports).
+        assert!(
+            (r.latency_median_s - r.target_final_s - sc.hidden_delay_s).abs() < 0.5e-3,
+            "median {:.2} ms",
+            r.latency_median_s * 1e3
+        );
+    }
+
+    /// Run `sc`, printing each raise of the target (for the test log).
+    fn run_traced(name: &str, sc: &Scenario) -> Report {
+        let mut target = sc.servo.target_latency_s;
+        let r = run_with(sc, |sample, _, servo| {
+            let now = servo.telemetry().target_s;
+            // (The level creeps by µs as the deliveries drift against the
+            // callbacks: not worth a line.)
+            if now - target > 0.5e-3 {
+                eprintln!(
+                    "{name}: t={:.3} s target {:.2} -> {:.2} ms (floor {:.2} ms)",
+                    sample.t,
+                    target * 1e3,
+                    now * 1e3,
+                    servo.telemetry().latency_floor_s * 1e3
+                );
+                target = now;
+            }
+        });
+        describe(name, sc, &r);
+        r
+    }
+
+    fn describe(name: &str, sc: &Scenario, r: &Report) {
+        eprintln!(
+            "{name}: target {:.1} -> {:.1} ms at {:?} s, floor {:.1} ms, median {:.2} ms, p99 {:.3} ms, realigns {}, underruns {}",
+            sc.servo.target_latency_s * 1e3,
+            r.target_final_s * 1e3,
+            r.target_raised_at_s,
+            r.latency_floor_max_s * 1e3,
+            r.latency_median_s * 1e3,
+            r.latency_dev_p99_s * 1e3,
+            r.realigns,
+            r.underruns
+        );
+    }
+
+    /// The same with TrueHD at 60 ms, the kind of value a config written for
+    /// the adaptive resampler carries (its target was the output buffer).
+    #[test]
+    fn a_buffer_sized_target_is_raised_with_truehd() {
+        let sc = Scenario {
+            duration_s: 3_600.0,
+            servo: with_target(0.060),
+            ..Scenario::default()
+        };
+        let r = run_traced("legacy_truehd", &sc);
+        let period = sc.quantum as f64 / sc.servo.output_rate_hz;
+        let above = r.target_final_s - r.latency_floor_max_s;
+        assert!(
+            above > 0.0 && above < period + sc.servo.floor_margin_s + 1e-4,
+            "{above}"
+        );
+        assert!(
+            r.target_raised_at_s
+                .is_some_and(|t| t < 1.0 + FLOOR_SETTLE_S)
+        );
+        assert!(r.realigns <= 4, "{} realigns", r.realigns);
+        assert!(r.latency_dev_p99_s < P99_S);
+    }
+
+    /// Hiccups do not set the latency: a source that stops for 150 ms twice
+    /// in a few seconds costs a realign each time, and the target stays.
+    #[test]
+    fn short_stops_of_the_source_do_not_raise_the_target() {
+        let sc = Scenario {
+            duration_s: 400.0,
+            servo: with_target(0.150),
+            decoder: Decoder::EAC3,
+            pauses: vec![
+                Pause {
+                    start_s: 200.0,
+                    len_s: 0.15,
+                },
+                Pause {
+                    start_s: 203.0,
+                    len_s: 0.15,
+                },
+            ],
+            ..Scenario::default()
+        };
+        let r = run_traced("short_stops", &sc);
+        assert_eq!(r.target_final_s, sc.servo.target_latency_s);
+        assert!(r.realigns <= 2, "{} realigns", r.realigns);
+    }
+
+    /// A device with a long cycle (a 2048-frame ASIO buffer, an ALSA plugin:
+    /// 43 ms) under a `follow` source, with a target that is a little short
+    /// of what the pipeline needs. A cycle's wait is read at the callbacks,
+    /// up to one period before its peak, so a reading can stand below the
+    /// target while the peak underruns; and after an underrun a `follow`
+    /// source's reading cannot say by itself whether it stopped. The
+    /// underruns of a source that did not stop are cycles above the target:
+    /// they raise it, and they end.
+    #[test]
+    fn a_long_device_cycle_does_not_underrun_for_ever() {
+        for target_ms in [150.0, 160.0, 170.0, 180.0, 190.0, 200.0] {
+            let quantum = 2048;
+            let sc = Scenario {
+                duration_s: 120.0,
+                quantum,
+                heard_delay_s: 2.0 * f64::from(quantum) / 48_000.0,
+                servo: ServoConfig {
+                    target_latency_s: target_ms / 1e3,
+                    ..ServoConfig::follow()
+                },
+                decoder: Decoder::EAC3,
+                delivery: Delivery::Follow {
+                    video_fps: 100.0,
+                    ahead_s: 0.0,
+                    arrival_jitter_s: 0.002,
+                },
+                warmup_s: 30.0,
+                ..Scenario::default()
+            };
+            let mut last_underrun_at = 0.0;
+            let mut underruns = 0;
+            let r = run_with(&sc, |sample, _, servo| {
+                if servo.telemetry().underruns != underruns {
+                    underruns = servo.telemetry().underruns;
+                    last_underrun_at = sample.t;
+                }
+            });
+            describe("long_cycle", &sc, &r);
+            eprintln!("long_cycle {target_ms}: last underrun at {last_underrun_at:.1} s");
+            assert!(
+                last_underrun_at < 10.0,
+                "target {target_ms} ms: still underrunning at {last_underrun_at:.1} s \
+                 ({} underruns)",
+                r.underruns
+            );
+        }
+    }
+
+    /// A `follow` source below its floor: the arrivals are more irregular
+    /// than a callback period, so the cycles do not bound each other and
+    /// the target is learned from the ones that exceed it.
+    #[test]
+    fn a_follow_target_below_the_arrival_jitter_is_raised() {
+        let sc = Scenario {
+            duration_s: 900.0,
+            servo: ServoConfig {
+                target_latency_s: 0.120,
+                ..ServoConfig::follow()
+            },
+            source_ppm: 80.0,
+            delivery: Delivery::Follow {
+                video_fps: 24_000.0 / 1001.0,
+                ahead_s: 0.050,
+                arrival_jitter_s: 0.040,
+            },
+            warmup_s: 120.0,
+            ..Scenario::default()
+        };
+        let mut last_underrun_at = 0.0;
+        let mut underruns = 0;
+        let r = run_with(&sc, |sample, _, servo| {
+            if servo.telemetry().underruns != underruns {
+                underruns = servo.telemetry().underruns;
+                last_underrun_at = sample.t;
+            }
+        });
+        describe("follow_below_jitter", &sc, &r);
+        eprintln!("follow_below_jitter: last underrun at {last_underrun_at:.1} s");
+        assert!(r.target_final_s > sc.servo.target_latency_s);
+        // Learned in the first seconds, then held as a feasible target is.
+        assert!(last_underrun_at < 5.0, "underrun at {last_underrun_at} s");
+        assert!(r.realigns <= 8, "{} realigns", r.realigns);
+        assert!(
+            r.latency_dev_p99_s < FOLLOW_P99_S,
+            "p99 {:.3} ms",
+            r.latency_dev_p99_s * 1e3
         );
     }
 
