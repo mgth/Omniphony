@@ -229,7 +229,7 @@ that deletes the old code. `main` stays buildable throughout.
   - the old `latency-regulation*.md` (rewritten for the new design).
 - One cutover PR into `main`.
 
-### Phase 7 — Hardware validation
+### Phase 7 — Hardware validation — in progress, see §29
 
 - TrueHD, E-AC-3 and PCM through the sink (`own`) and the pipe (`follow`).
 - Two hours of mpv with video: measure A/V offset drift (start vs end), the
@@ -2284,3 +2284,129 @@ argument parser, as any unknown flag is.
   one capture was read.
 - `output_channel_mapping: by_name` is still not positional on PipeWire
   (it was not before either).
+
+## 29. Phase 7 — validation (2026-10-12)
+
+What could be validated without the hardware that is not here, what a real
+session on real hardware showed, and what is left for ears and for other
+machines. Everything below is measured; nothing was judged by ear.
+
+### A real session, read and observed
+
+The renderer of the workflow was in use that morning (Firefox, linear PCM
+into the sink; output to a Bluetooth headset, binaural). Its log was read,
+and a passive client was put on its OSC port for two hours: it registers,
+asks for the diagnostic metrics for itself (a per-client flag) and sets
+nothing (`phase7/observe.py` in the test kit).
+
+- 250 ms held for the two hours: latency error p99 0.002 ms, no realign, no
+  underrun after the first.
+- One excursion, −1.7 ms: a switch of binaural mode changed the render's
+  own delay by 127 frames, and the loop steered it back in 20 s at up to
+  450 ppm, with no realign. As §25 intends.
+- The headset's sink reads +0.02 ppm against the renderer's clock: PipeWire
+  drives a Bluetooth sink from the system clock and matches the radio's rate
+  inside it. Nothing here exercised a foreign DAC clock.
+
+### Found, and fixed
+
+- **An output that is not there.** The configured device was not connected
+  when the renderer started. PipeWire refused the stream ("defined target
+  not found") and never linked it later; the ring filled, and every block
+  after that was refused with a warning: 6551 lines in 2.5 minutes and 6.7
+  million frames counted as lost for the rest of the run, until another
+  device was picked by hand. Now an output that is not playing takes
+  nothing (no event, no loss counted), its device is looked for every 3 s
+  and the output is opened again when it is back after having been seen
+  missing, and a discontinuity that repeats is written once per 5 s with a
+  count. Live: started on a sink that does not exist, the sink created,
+  destroyed under the stream, created again: said once each time, reopened
+  by itself, 180 ms held within 0.03 ms, nothing lost.
+- **A source clock the input cannot have** closed and reopened the stream
+  for nothing (on the sink the clock is the renderer's whatever is asked).
+  It is taken without a reopen, and the Studio shows the sink's clock
+  instead of offering a choice.
+- **A cycle the player misses** (soak, below). The graph skips a cycle the
+  player was not there for, and what the player sends next comes one cycle
+  later. The sink's capture counted bytes, so the carrier seemed to lose
+  that time: the latency fell by a cycle (21.3 ms), was steered back over
+  tens of seconds, and past the realign threshold ended in a realign. The
+  capture counts the carrier's time now: the gap is part of the position,
+  and it plays as silence of its length. Live, mpv stopped for 8 ms on
+  TrueHD passthrough: before, −7 and −20 ms and a realign; after, within
+  0.001 ms, 1024 frames filled, no realign.
+- **The review of the cutover** (four findings, each reproduced first): a
+  piped standard input never ended (a hangup was taken for nothing to
+  read); a capture opened for a run lost what it had already queued (a file
+  opened in place of a pipe: 100 bytes in, 0 out); a device-paced source
+  with a target shorter than one device callback never played, and held the
+  host on it; `output_sample_rate` from the config never reached the host,
+  and the first Save erased it from the file.
+
+### Formats, with a real player and real streams
+
+Isolated (private null sinks, private config, a free port), 28 s each, the
+error read from 8 s on (`run_matrix.sh`):
+
+| Path | Stream | Latency error | Realigns |
+|---|---|---|---|
+| sink (`own`), mpv `--ao=pipewire` | TrueHD passthrough | ≤ 0.001 ms | 0 |
+| sink | E-AC-3 passthrough | ≤ 0.001 ms | 0 |
+| sink | linear PCM 7.1 | ≤ 0.001 ms | 0 |
+| pipe (`follow`), the fork's mpv, timed writer | TrueHD | ≤ 0.022 ms | 0 |
+| pipe, the fork's mpv, timed writer | E-AC-3 | ≤ 0.020 ms | 0 |
+
+The pipe needs the fork's mpv (`--ao-pcm-timed`): the source then reads
+−7.5 ppm, mpv's `CLOCK_MONOTONIC_RAW` against the renderer's
+`CLOCK_MONOTONIC`. An upstream mpv writes untimed, and shows the start-up
+transient of §15: 2 to 3 realigns in the first 2 s and the correction at
+its 500 ppm clamp for up to 30 s.
+
+### Two hours
+
+TrueHD with a video track, a 31-minute file looped, through the sink and
+through the pipe at once (`phase7/run_soak.sh`), release build:
+
+| | sink (`own`) | pipe (`follow`) |
+|---|---|---|
+| Latency error, p99 / max | 0.38 ms / 6.6 ms | 0.58 ms / 0.99 ms |
+| Realigns | 3 (the three loops) | 3 (the three loops) |
+| mpv's own A/V sync | 0.000 s throughout, no frame dropped | 0.0001 s, no frame dropped |
+| CPU (12 channels) | 2.2 % of a core | 2.4 % of a core |
+| Memory | 66 → 67 MB | 54 → 54 MB |
+
+- The file's end and restart is a stream that stops and starts: an underrun
+  and a realign on either path, by design (§15, "what a pipe cannot avoid").
+- The sink's 6.6 ms is the missed cycle above, from before its fix (the
+  soak ran on the build of the flip). The real session, on the same code at
+  the same moment, did not move: its player was not the one starved.
+- **Not fixed: the audit flaps on TrueHD through a pipe.** After the third
+  loop the in-flight count sat on the edge between two values one access
+  unit apart (40 frames), and the audit took each move for a loss or a
+  gain: 30 pairs of "40 frames made up" / "40 frames lost" in 27 minutes,
+  each a 0.83 ms step of the count, steered out by the loop. Nothing was
+  lost; the log and the two counters say otherwise. The audit's tolerance
+  (8 frames) is below what a batching decoder's hold moves by. To settle
+  before the pipe is used in a product: a tolerance of one access unit, or
+  a longer confirmation.
+
+### CPU on a wide layout
+
+Release, Ryzen 9 9950X, TrueHD with objects through the pipe, 24 speakers
+over five rings with the FIR crossover (`phase7/run_cpu.sh`): 3.6 % of one
+core in all, of which the render thread 2.8 % and the device callback
+(resampler included) 0.5 %. This is the development machine, not a target
+box.
+
+### Left
+
+- **A foreign DAC clock over hours**: a USB or S/PDIF DAC, two hours of
+  film. `observe.py` on the port of the renderer in use records it, and
+  `report.py` gives the error, the two clocks, the counts and when they
+  moved.
+- **ASIO and CoreAudio**: nothing has been opened on Windows or macOS
+  hardware. The code builds and its tests pass on the three CI platforms.
+- **The target box at 24 channels.**
+- **Listening.** The real session was listened to by its user as it ran;
+  no verdict is recorded here.
+- The audit on TrueHD through a pipe (above).
