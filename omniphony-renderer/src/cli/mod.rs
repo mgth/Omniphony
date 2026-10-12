@@ -8,3 +8,4 @@ pub(crate) mod list_coreaudio_devices;
 pub(crate) mod options;
 #[cfg(target_os = "linux")]
 pub(crate) mod sync_host;
+pub(crate) mod wrap_iec61937;
