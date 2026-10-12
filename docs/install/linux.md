@@ -25,7 +25,6 @@ release is out, take the versions its release notes pair together.
 | `mpv-omniphony-…-linux-x86_64.zip` | Ubuntu 24.04 | **Ubuntu 24.04 and its derivatives only.** It links the system's FFmpeg 6.1 (`libavcodec.so.60`) and libplacebo (`libplacebo.so.338`). |
 | `harletty-bridge-…-linux-x86_64.zip` | Ubuntu 24.04 | Any x86_64 distribution with glibc 2.39 or newer. It needs nothing else. |
 | `omniphony-studio-egui-…-linux-x86_64.tar.gz` | Ubuntu 22.04 | Any x86_64 distribution with glibc 2.35 or newer and PipeWire. |
-| `Omniphony.Studio_…_amd64.AppImage` (Tauri Studio) | Ubuntu 22.04 | Any x86_64 distribution with glibc 2.35 or newer. |
 
 **On Arch and its derivatives**, skip the downloads: the whole stack is on the
 AUR, built on your machine. `paru -S mpv-omniphony harletty-bridge` installs the
