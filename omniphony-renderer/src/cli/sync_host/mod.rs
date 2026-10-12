@@ -1894,9 +1894,10 @@ fn feed_pcm(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, tr: Transpor
 }
 
 /// Deframe, decode and render one chunk, push the audio, publish the clock.
-/// Deframe, decode and render one chunk, push the audio, publish the clock.
-/// `skipped`: bytes a pipe's reader read before these and could not hand
-/// over.
+/// `skipped`: carrier bytes that came before these and are not in them. On a
+/// pipe, bytes its reader read and could not hand over: they are lost. On
+/// the sink's carrier, cycles its player gave nothing for: nothing is lost,
+/// the time passed, and it plays as the silence it was.
 fn feed_chunk(
     engine: &mut Engine,
     ep: &mut Epoch,
@@ -1909,6 +1910,10 @@ fn feed_chunk(
         .last_transport
         .filter(|tr| tr.format == CarrierFormat::PcmF32);
     if let Some(tr) = pcm_transport {
+        if skipped > 0 {
+            // Linear PCM that was not sent is silence of that length.
+            feed_pcm(engine, ep, ctx, tr, &vec![0u8; skipped as usize]);
+        }
         feed_pcm(engine, ep, ctx, tr, bytes);
         publish_clock(ep, t, bytes.len());
         // Linear PCM has no hold: what is in flight is what was lost.
@@ -1932,7 +1937,13 @@ fn feed_chunk(
             Some(tr) => tr.bytes_end.saturating_sub(bytes.len() as u64),
             None => ep.parser_bytes + skipped,
         };
-        if starts_at != ep.parser_bytes {
+        let idled = ep.last_transport.is_some() && skipped > 0;
+        if idled && starts_at == ep.parser_bytes + skipped {
+            // The carrier idled: every byte is here, and what follows sits
+            // that much later on it. A burst in the making is not cut; the
+            // gap is filled when the next one shows where it ends.
+            ep.parser_origin += skipped;
+        } else if starts_at != ep.parser_bytes {
             if starts_at > ep.parser_bytes && ep.parser_bytes > ep.parser_origin {
                 log::warn!(
                     "sync host: {} bytes of the input never reached the deframer",
