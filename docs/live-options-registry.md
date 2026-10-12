@@ -315,38 +315,12 @@ seeds its state at its own bootstrap (the CLI's argument resolution).
 | `output_file_format` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file_format` |
 | `output_sample_rate` | int or null [1, 768000] | unset | `audio_output` (live, restart_output) | — | `/control/audio/sample_rate` |
 | `latency_target` | int or null [1, 10000] | unset | `audio_output` (live, restart_output) | — | `/control/latency_target` |
-| `enable_adaptive_resampling` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling` |
-| `adaptive_resampling_enable_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/enable_far_mode` |
-| `adaptive_resampling_force_silence_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/force_silence_in_far_mode` |
-| `adaptive_resampling_hard_recover_high_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_high_in_far_mode` |
-| `adaptive_resampling_hard_recover_low_in_far_mode` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_low_in_far_mode` |
-| `adaptive_resampling_far_mode_return_fade_in_ms` | int ≥ 0 | `500` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/far_mode_return_fade_in_ms` |
-| `adaptive_resampling_kp_near` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/kp_near` |
-| `adaptive_resampling_ki` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/ki` |
-| `adaptive_resampling_integral_discharge_ratio` | float [0, 1], step 0.01 | `0.25` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/integral_discharge_ratio` |
-| `adaptive_resampling_max_adjust` | float [0, 1000000], step 0.01 | `0.01` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/max_adjust` |
-| `adaptive_resampling_update_interval_callbacks` | int ≥ 1 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/update_interval_callbacks` |
-| `adaptive_resampling_high_recover_entry_margin_ms` | int ≥ 1 | `1000` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/high_recover_entry_margin_ms` |
-| `adaptive_resampling_low_recover_settle_stable_ms` | float [0, 1000000], step 0.1 | `200` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_entry_margin_ms` | float [0, 1000000], step 0.1 | `18` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_exit_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_settle_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_refill_delta_alpha` | float [0, 1], step 0.01 | `0.5` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_control_smoothing_cutoff_hz` | float [0.001, 1000], step 0.001 | `0.5` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_control_smoothing_order` | int [1, 2] | `1` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_use_pre_bridge_clock` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_use_output_pacing` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_disable_backpressure` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `loop_bandwidth_hz` | float [0, 1], step 0.001 | `0` | `sync` (live, restart_output) | — | — |
+| `source_clock` | `auto` \| `own` \| `follow` \| `none` | `"auto"` | `sync` (live, restart_output) | — | — |
+| `realign_threshold_ms` | float [1, 1000], step 1 | `20` | `sync` (live, restart_output) | — | — |
 | `input_mode` | `pipe_bridge` \| `pipewire` | `"pipe_bridge"` | `live_input` (staged, restart_input) | — | `/control/input/mode` |
-| `live_input_backend` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/backend` |
 | `live_input_node` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/node` |
 | `live_input_description` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/description` |
-| `live_input_layout` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/layout` |
-| `live_input_clock_mode` | `dac` \| `pipewire` \| `upstream` | `"dac"` | `live_input` (staged, restart_input) | — | `/control/input/live/clock_mode` |
-| `live_input_channels` | int or null [1, 64] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/channels` |
-| `live_input_sample_rate` | int or null [1, 768000] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/sample_rate` |
-| `live_input_map` | string | `"7.1-fixed"` | `live_input` (staged, restart_input) | — | `/control/input/live/map` |
-| `live_input_lfe_mode` | `object` \| `direct` \| `drop` | `"direct"` | `live_input` (staged, restart_input) | — | `/control/input/live/lfe_mode` |
 <!-- END GENERATED host-options -->
 
 The host exposes its rows through `runtime_control::HostControlHandler`'s

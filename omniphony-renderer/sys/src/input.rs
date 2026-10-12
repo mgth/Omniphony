@@ -146,23 +146,17 @@ fn create_named_pipe_server(pipe_name: &str) -> Result<isize> {
     Ok(handle.0)
 }
 
-/// Create a new named-pipe server instance with FILE_FLAG_OVERLAPPED and wait
-/// for the first client connection.
+/// One inbound, overlapped instance of the named pipe `wide_name` (UTF-16,
+/// NUL-terminated), not connected yet.
 #[cfg(windows)]
-fn create_new_pipe_server_overlapped(
-    wide_name: &[u16],
-) -> Result<windows::Win32::Foundation::HANDLE> {
-    use windows::Win32::Foundation::{BOOL, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+fn create_pipe_instance(wide_name: &[u16]) -> Result<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::Foundation::{BOOL, INVALID_HANDLE_VALUE};
     use windows::Win32::Security::{
         InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
         SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl,
     };
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
-    use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-    use windows::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, NAMED_PIPE_MODE};
-    use windows::Win32::System::Threading::{
-        CreateEventW, INFINITE, ResetEvent, WaitForMultipleObjects,
-    };
+    use windows::Win32::System::Pipes::{CreateNamedPipeW, NAMED_PIPE_MODE};
     use windows::core::PCWSTR;
 
     // dwOpenMode = PIPE_ACCESS_INBOUND (0x1) | FILE_FLAG_OVERLAPPED (0x40000000)
@@ -216,6 +210,310 @@ fn create_new_pipe_server_overlapped(
             io::Error::last_os_error()
         ));
     }
+
+    Ok(handle)
+}
+
+/// A named pipe served for one writer at a time, read with a timeout: what a
+/// reader that must stay stoppable reads (the sync host's capture). The
+/// instance outlives its writers: when one disconnects, the next is waited
+/// for on the same handle.
+///
+/// One overlapped operation is pending at a time (the connect, or a read
+/// into the buffer this owns), and [`read`](Self::read) only waits for it.
+#[cfg(windows)]
+pub struct NamedPipeSource {
+    handle: windows::Win32::Foundation::HANDLE,
+    event: windows::Win32::Foundation::HANDLE,
+    /// Boxed: the kernel keeps its address while an operation is pending.
+    overlapped: Box<windows::Win32::System::IO::OVERLAPPED>,
+    buffer: Box<[u8]>,
+    state: PipeState,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeState {
+    /// No writer, and no connect pending.
+    Idle,
+    /// A connect is pending.
+    Connecting,
+    /// A writer is connected, and no read is pending.
+    Connected,
+    /// A read into `buffer` is pending.
+    Reading,
+}
+
+// SAFETY: the handles are owned by this value alone, and Win32 handles may
+// be used from any thread.
+#[cfg(windows)]
+unsafe impl Send for NamedPipeSource {}
+
+#[cfg(windows)]
+impl NamedPipeSource {
+    const ERROR_IO_PENDING: u32 = 997;
+    const ERROR_PIPE_CONNECTED: u32 = 535;
+    const ERROR_NO_DATA: u32 = 232;
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 258;
+
+    /// Create the pipe `name` (`\\.\pipe\…`), with `chunk` bytes of read
+    /// buffer. Writers can connect from then on.
+    pub fn create(name: &str, chunk: usize) -> Result<Self> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Foundation::BOOL;
+        use windows::Win32::System::Threading::CreateEventW;
+
+        let wide: Vec<u16> = std::ffi::OsStr::new(name)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = create_pipe_instance(&wide)?;
+        // Manual-reset: it stays signaled until the next operation starts.
+        let event = unsafe { CreateEventW(None, BOOL(1), BOOL(0), windows::core::PCWSTR::null()) }
+            .map_err(|e| {
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(handle);
+                }
+                anyhow::anyhow!("CreateEventW: {e}")
+            })?;
+        Ok(Self {
+            handle,
+            event,
+            // SAFETY: an all-zero OVERLAPPED is its initial state.
+            overlapped: Box::new(unsafe { std::mem::zeroed() }),
+            buffer: vec![0u8; chunk.max(1)].into_boxed_slice(),
+            state: PipeState::Idle,
+        })
+    }
+
+    /// Start an operation: the event is reset and set in a fresh OVERLAPPED.
+    fn arm(&mut self) {
+        use windows::Win32::System::Threading::ResetEvent;
+        // SAFETY: no operation is pending on `overlapped` (the caller's
+        // state says so), and the event is ours.
+        unsafe {
+            let _ = ResetEvent(self.event);
+            *self.overlapped = std::mem::zeroed();
+        }
+        self.overlapped.hEvent = self.event;
+    }
+
+    /// The writer is gone: free the instance for the next one.
+    fn disconnect(&mut self) {
+        // SAFETY: our handle; nothing is pending.
+        unsafe {
+            let _ = windows::Win32::System::Pipes::DisconnectNamedPipe(self.handle);
+        }
+        self.state = PipeState::Idle;
+    }
+
+    /// Wait up to `timeout_ms` for bytes, and copy them into `out`: `Some(n)`
+    /// with `n > 0`, or `None` when nothing came (no writer yet, a writer
+    /// that left, a writer that is silent).
+    pub fn read(&mut self, out: &mut [u8], timeout_ms: u32) -> Option<usize> {
+        use windows::Win32::Foundation::{BOOL, GetLastError};
+        use windows::Win32::Storage::FileSystem::ReadFile;
+        use windows::Win32::System::IO::GetOverlappedResult;
+        use windows::Win32::System::Pipes::ConnectNamedPipe;
+        use windows::Win32::System::Threading::WaitForSingleObject;
+
+        loop {
+            match self.state {
+                PipeState::Idle => {
+                    self.arm();
+                    // SAFETY: our handle and our boxed OVERLAPPED.
+                    let connected =
+                        unsafe { ConnectNamedPipe(self.handle, Some(&mut *self.overlapped)) };
+                    let error = unsafe { GetLastError().0 };
+                    self.state = match connected {
+                        Ok(()) => PipeState::Connected,
+                        Err(_) if error == Self::ERROR_PIPE_CONNECTED => PipeState::Connected,
+                        Err(_) if error == Self::ERROR_IO_PENDING => PipeState::Connecting,
+                        // A writer that came and went before the connect.
+                        Err(_) if error == Self::ERROR_NO_DATA => {
+                            self.disconnect();
+                            return None;
+                        }
+                        Err(e) => {
+                            log::debug!("ConnectNamedPipe: {e}");
+                            std::thread::sleep(std::time::Duration::from_millis(u64::from(
+                                timeout_ms,
+                            )));
+                            return None;
+                        }
+                    };
+                }
+                PipeState::Connecting | PipeState::Reading => {
+                    // SAFETY: our event.
+                    let wait = unsafe { WaitForSingleObject(self.event, timeout_ms) }.0;
+                    if wait == Self::WAIT_TIMEOUT {
+                        return None;
+                    }
+                    if wait != Self::WAIT_OBJECT_0 {
+                        log::debug!("WaitForSingleObject returned {wait:#x}");
+                        return None;
+                    }
+                    let mut transferred = 0u32;
+                    // SAFETY: the operation on `overlapped` has completed.
+                    let done = unsafe {
+                        GetOverlappedResult(
+                            self.handle,
+                            &*self.overlapped,
+                            &mut transferred,
+                            BOOL(0),
+                        )
+                    };
+                    let was_reading = self.state == PipeState::Reading;
+                    match done {
+                        Ok(()) if was_reading && transferred > 0 => {
+                            self.state = PipeState::Connected;
+                            return Some(self.take(out, transferred as usize));
+                        }
+                        Ok(()) if was_reading => self.disconnect(),
+                        Ok(()) => self.state = PipeState::Connected,
+                        // The writer left (broken pipe), or the connect failed.
+                        Err(_) => self.disconnect(),
+                    }
+                    if self.state == PipeState::Idle {
+                        return None;
+                    }
+                }
+                PipeState::Connected => {
+                    self.arm();
+                    let want = self.buffer.len().min(out.len());
+                    // SAFETY: `buffer` and `overlapped` are boxed and outlive
+                    // the operation (it is cancelled and waited for on drop).
+                    let read = unsafe {
+                        ReadFile(
+                            self.handle,
+                            Some(&mut self.buffer[..want]),
+                            None,
+                            Some(&mut *self.overlapped),
+                        )
+                    };
+                    let error = unsafe { GetLastError().0 };
+                    match read {
+                        // Completed at once: the result is read as for one
+                        // that was pending (the event is signaled).
+                        Ok(()) => self.state = PipeState::Reading,
+                        Err(_) if error == Self::ERROR_IO_PENDING => {
+                            self.state = PipeState::Reading
+                        }
+                        Err(_) => {
+                            self.disconnect();
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hand over the `n` bytes the read left in the buffer.
+    fn take(&mut self, out: &mut [u8], n: usize) -> usize {
+        let n = n.min(out.len());
+        out[..n].copy_from_slice(&self.buffer[..n]);
+        n
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NamedPipeSource {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{BOOL, CloseHandle};
+        use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult};
+        // SAFETY: our handles; a pending operation is cancelled and waited
+        // for before the OVERLAPPED and the buffer it writes to are freed.
+        unsafe {
+            if matches!(self.state, PipeState::Connecting | PipeState::Reading) {
+                let _ = CancelIoEx(self.handle, Some(&*self.overlapped));
+                let mut transferred = 0u32;
+                let _ =
+                    GetOverlappedResult(self.handle, &*self.overlapped, &mut transferred, BOOL(1));
+            }
+            let _ = CloseHandle(self.handle);
+            let _ = CloseHandle(self.event);
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod pipe_tests {
+    use super::NamedPipeSource;
+    use std::io::Write;
+
+    fn name(tag: &str) -> String {
+        format!(r"\\.\pipe\orender-test-{}-{tag}", std::process::id())
+    }
+
+    /// Read until `want` bytes came or `tries` timeouts passed.
+    fn read_all(pipe: &mut NamedPipeSource, want: usize, tries: usize) -> Vec<u8> {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        for _ in 0..tries {
+            if let Some(n) = pipe.read(&mut buf, 50) {
+                got.extend_from_slice(&buf[..n]);
+            }
+            if got.len() >= want {
+                break;
+            }
+        }
+        got
+    }
+
+    /// With no writer a read times out, again and again; what a writer
+    /// sends comes out in order; and after it leaves, the next writer is
+    /// served on the same pipe.
+    #[test]
+    fn writers_come_and_go_and_reads_time_out_between_them() {
+        let name = name("come-and-go");
+        let mut pipe = NamedPipeSource::create(&name, 4096).unwrap();
+        let mut buf = [0u8; 16];
+        let started = std::time::Instant::now();
+        assert_eq!(pipe.read(&mut buf, 30), None);
+        assert_eq!(pipe.read(&mut buf, 30), None);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+
+        for round in 0..2u8 {
+            let data: Vec<u8> = (0..10_000u32).map(|i| (i as u8) ^ round).collect();
+            let (path, sent) = (name.clone(), data.clone());
+            let writer = std::thread::spawn(move || {
+                let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                file.write_all(&sent).unwrap();
+            });
+            let got = read_all(&mut pipe, data.len(), 200);
+            writer.join().unwrap();
+            assert_eq!(got, data, "round {round}");
+            // The writer is gone: reads time out until the next one.
+            assert_eq!(read_all(&mut pipe, 1, 3), Vec::<u8>::new());
+        }
+    }
+
+    /// Dropping the source with a connect or a read pending does not hang.
+    #[test]
+    fn a_pending_operation_is_cancelled_on_drop() {
+        let mut pipe = NamedPipeSource::create(&name("drop"), 4096).unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(pipe.read(&mut buf, 10), None);
+        drop(pipe);
+    }
+}
+
+/// Create a new named-pipe server instance with FILE_FLAG_OVERLAPPED and wait
+/// for the first client connection.
+#[cfg(windows)]
+fn create_new_pipe_server_overlapped(
+    wide_name: &[u16],
+) -> Result<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::Foundation::{BOOL, GetLastError, HANDLE};
+    use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+    use windows::Win32::System::Pipes::ConnectNamedPipe;
+    use windows::Win32::System::Threading::{
+        CreateEventW, INFINITE, ResetEvent, WaitForMultipleObjects,
+    };
+
+    let handle = create_pipe_instance(wide_name)?;
 
     log::info!("Named pipe server created, waiting for client connection...");
 

@@ -11,6 +11,7 @@ use audio_sync::{Phase, Telemetry};
 #[derive(Debug, Default)]
 pub struct SyncTelemetry {
     phase: AtomicU8,
+    target_ms: AtomicU64,
     latency_ms: AtomicU64,
     error_ms: AtomicU64,
     floor_ms: AtomicU64,
@@ -25,12 +26,19 @@ pub struct SyncTelemetry {
     /// Ring reads that came up short after the servo had planned them: a
     /// planning bug or a ring the producer rewound; zero in normal running.
     short_reads: AtomicU64,
+    paced_demand_frames: AtomicU64,
+    /// See [`SyncTelemetry::heard_frame`].
+    heard_origin: AtomicU64,
+    heard_rate: AtomicU64,
 }
 
 /// A consistent-enough copy for display.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SyncSnapshot {
     pub phase: u8,
+    /// The latency the servo holds: the configured target, or more when the
+    /// pipeline cannot sustain it. `None` before the first callback.
+    pub target_ms: Option<f64>,
     pub latency_ms: Option<f64>,
     pub error_ms: f64,
     pub floor_ms: f64,
@@ -43,6 +51,9 @@ pub struct SyncSnapshot {
     pub source_rephases: u64,
     pub clock_mismatch: bool,
     pub short_reads: u64,
+    /// A device-paced source: the most source frames one callback has asked
+    /// the ring for; 0 before the first callback and for a clocked source.
+    pub paced_demand_frames: f64,
 }
 
 fn put(a: &AtomicU64, v: f64) {
@@ -61,8 +72,39 @@ pub const PHASE_REALIGNING: u8 = 2;
 impl SyncTelemetry {
     pub fn new() -> Self {
         let t = Self::default();
+        put(&t.target_ms, f64::NAN);
         put(&t.latency_ms, f64::NAN);
+        put(&t.heard_origin, f64::NAN);
         t
+    }
+
+    /// The cycle that starts at `t_s` reads the ring from frame
+    /// `play_position`, and what it reads is heard `heard_delay_s` later; the
+    /// ring plays at `rate` frames a second.
+    ///
+    /// Kept as one number, the ring frame heard at time 0 of the reference
+    /// clock, so that a reader never pairs one cycle's time with another's
+    /// position.
+    pub(crate) fn publish_heard(
+        &self,
+        t_s: f64,
+        play_position: f64,
+        heard_delay_s: f64,
+        rate: f64,
+    ) {
+        put(&self.heard_rate, rate);
+        put(
+            &self.heard_origin,
+            play_position - (t_s + heard_delay_s) * rate,
+        );
+    }
+
+    /// The ring frame the listener hears at `now_s` on the reference clock
+    /// (fractional, and negative before the first frame is out); `None`
+    /// before the first cycle.
+    pub fn heard_frame(&self, now_s: f64) -> Option<f64> {
+        let origin = get(&self.heard_origin);
+        (!origin.is_nan()).then(|| origin + now_s * get(&self.heard_rate))
     }
 
     pub(crate) fn publish(&self, phase: Phase, t: &Telemetry) {
@@ -72,6 +114,7 @@ impl SyncTelemetry {
             Phase::Realigning => PHASE_REALIGNING,
         };
         self.phase.store(code, Ordering::Relaxed);
+        put(&self.target_ms, t.target_s * 1e3);
         put(&self.latency_ms, t.latency_s.map_or(f64::NAN, |l| l * 1e3));
         put(&self.error_ms, t.error_s * 1e3);
         put(&self.floor_ms, t.latency_floor_s * 1e3);
@@ -85,6 +128,7 @@ impl SyncTelemetry {
             .store(t.source_rephases, Ordering::Relaxed);
         self.clock_mismatch
             .store(t.clock_mismatch as u8, Ordering::Relaxed);
+        put(&self.paced_demand_frames, t.paced_demand_frames);
     }
 
     pub(crate) fn note_short_read(&self) {
@@ -93,8 +137,10 @@ impl SyncTelemetry {
 
     pub fn snapshot(&self) -> SyncSnapshot {
         let latency = get(&self.latency_ms);
+        let target = get(&self.target_ms);
         SyncSnapshot {
             phase: self.phase.load(Ordering::Relaxed),
+            target_ms: (!target.is_nan()).then_some(target),
             latency_ms: (!latency.is_nan()).then_some(latency),
             error_ms: get(&self.error_ms),
             floor_ms: get(&self.floor_ms),
@@ -107,6 +153,7 @@ impl SyncTelemetry {
             source_rephases: self.source_rephases.load(Ordering::Relaxed),
             clock_mismatch: self.clock_mismatch.load(Ordering::Relaxed) != 0,
             short_reads: self.short_reads.load(Ordering::Relaxed),
+            paced_demand_frames: get(&self.paced_demand_frames),
         }
     }
 }

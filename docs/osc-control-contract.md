@@ -86,7 +86,7 @@ than discarded.
 UDP loses datagrams and the engine answers nothing by default, so the session
 carries what a client needs to notice either. The contract crate's
 `CONTRACT_REVISION` (`osc-contract`) is the revision this section describes:
-**6**.
+**7**.
 
 - **Stream transport** (revision 2) — the engine also listens on TCP, on
   loopback, on the OSC/UDP control port's number. A connection carries the
@@ -183,6 +183,20 @@ carries what a client needs to notice either. The contract crate's
   (`omniphony-renderer/BINAURAL.md`, "Sphere coordinates"). `/state/renderer`
   carries `binaural.sphereCoordinates`. An older engine ignores the address
   and publishes no such key, which a client reads as off.
+- **Latency loop** (revision 7) — the output is held at a latency target by
+  one loop (`docs/resampling-rework-plan.md`), set with `/control/latency_target`
+  and the host options `loop_bandwidth_hz`, `realign_threshold_ms` and
+  `source_clock`. The regulation it replaces is gone with its addresses:
+  everything under `/control/adaptive_resampling`, the live input's
+  `backend`, `channels`, `clock_mode`, `layout`, `layout_import`, `lfe_mode`,
+  `map` and `sample_rate` under `/control/input/live/`, and the states
+  `latency_control`, `latency_smoothed`, `latency_downstream`,
+  `latency_avail_input`, `latency_output_fifo`, `latency_resampler_pending`
+  and `adaptive_resampling/{state,band}`. `/state/audio` carries no
+  `adaptiveResampling` block, and `requested` in `/state/input` is the sink's
+  `node` and `description`. An engine of revision 7 answers the removed
+  controls like any unknown address; a client of revision 7 shows none of
+  them.
 - **Contract revision** — `/state/capabilities` carries `contractRevision`.
   A client compares it with its own and says so when they differ; an engine
   that advertises none predates revisions and counts as 0. The revision moves
@@ -273,31 +287,23 @@ payload shape.
 | `/control/auto_gain` | int bool | Auto gain-reduction on clipping. Registry option alias. |
 | `/control/auto_gain_ceiling` | f `[-12,0]` dB | Auto-gain target ceiling. Registry option alias (`auto_gain_ceiling_db`). |
 
-### Adaptive resampling (output clock servo)
+### Latency (output clock servo)
 
-All under `/control/adaptive_resampling/…`. Master toggle: bare
-`/control/adaptive_resampling` (int bool). Tunables: `kp_near`, `ki`,
-`max_adjust`, `update_interval_callbacks`, `high_recover_entry_margin_ms`,
-`integral_discharge_ratio`, `near_far_threshold_ms`, `reset_ratio` and `pause`
-(both transient: an action and a diagnostic hold, never saved),
-and the far-mode group `enable_far_mode`, `force_silence_in_far_mode`,
-`hard_recover_high_in_far_mode`, `hard_recover_low_in_far_mode`,
-`far_mode_return_fade_in_ms`. `/control/latency_target` sets the target buffer
-latency. All but `reset_ratio` and `pause` are host options of the
-`adaptive_resampling` group (`latency_target` of `audio_output`), keyed by
-their config key (`enable_adaptive_resampling`, `adaptive_resampling_kp_near`,
-…); the low-recover and smoothing tunables, which have no address of their
-own, are reached through `/control/config/audio` or `/control/option(s)`. See
-`PI_TUNING_PROCEDURE.md` and `docs/latency-regulation.md`.
+`/control/latency_target` (int, ms) sets the end-to-end latency the output is
+held at; it is the host option `latency_target` of the `audio_output` group.
+The loop that holds it has three more host options with no address of their
+own, set through `/control/option(s)`: `loop_bandwidth_hz`,
+`realign_threshold_ms` and `source_clock` (group `sync`). See
+`docs/resampling-rework-plan.md`.
 
 ### Audio output & live input
 
 Declared by the standalone renderer's host (`host_audio`), as host options
-of three groups — `audio_output` (live, restarts the output), 
-`adaptive_resampling` (live) and `live_input` (**staged**, restarts the input
-when applied) — so every one is also reachable through `/control/option(s)`
-under its `render.*` config key (`output_device`, `output_sample_rate`,
-`adaptive_resampling_kp_near`, `live_input_channels`, …), with its schema in
+of three groups — `audio_output` (live, restarts the output), `sync` (live)
+and `live_input` (**staged**, reopens the input when applied) — so every one
+is also reachable through `/control/option(s)` under its `render.*` config
+key (`output_device`, `output_sample_rate`, `loop_bandwidth_hz`,
+`live_input_node`, …), with its schema in
 `/state/options_schema` and its values in `/state/host_options` (see [Live
 options](#live-options)). The embedded engine declares none of them. The
 JSON patches below are aliases of a batch of these options: same fields,
@@ -305,20 +311,20 @@ same wire format; `null` unsets a nullable field.
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/control/config/audio`, `/control/config/audio/apply` | json | Audio output and adaptive-resampling config as one batch. The apply is an alias of `/control/options/apply audio_output`: the output applies its values as they arrive, so it only acknowledges. |
+| `/control/config/audio`, `/control/config/audio/apply` | json | Audio output config (device, rate, latency target) as one batch. The apply is an alias of `/control/options/apply audio_output`: the output applies its values as they arrive, so it only acknowledges. |
 | `/control/audio/output_device` | s | Select output device. Host option `output_device`. |
 | `/control/audio/output_backend` | s | Requested output backend (`pipewire`, `asio`, `file`, …; `""` = platform default). Takes effect on the next output (re)start. Host option `output_backend`. On Windows, `asio` falls back to WASAPI shared mode when ASIO has no output device or the requested device is a WASAPI one; the `outputHost` field of `/state/audio` names the host the open stream plays through (`ASIO`, `WASAPI (fallback: no ASIO driver)`, `CoreAudio`; `""` when none is open or the backend names none). |
 | `/control/audio/output_file` | s | Destination for the `file` backend (`-`, a path or a FIFO; `""` = unset). Host option `output_file`. |
 | `/control/audio/output_file_format` | s | Container/format for the `file` backend (`""` = unset). Host option `output_file_format`. |
 | `/control/audio/output_devices/refresh` | — | Re-enumerate output devices. |
-| `/control/audio/sample_rate` | int | Output sample rate (≤ 0 = the device's). Host option `output_sample_rate`. |
+| `/control/audio/sample_rate` | int | Rate the output is opened at (≤ 0 = each stream's own). Host option `output_sample_rate`. |
 | `/control/config/input`, `/control/config/input/apply`, `/control/input/apply` | json | Live-input config as one batch of staged values; the two applies are aliases of `/control/options/apply live_input`. An apply is an action: it publishes the new state and lights no Save (the staged writes already did). |
 | `/control/input/mode` | s | Input source mode. Host option `input_mode` (staged). |
 | `/control/input/refresh` | — | Re-enumerate input sources. |
 | `/control/input/drc_mode` | s | Dynamic-range-control mode (one of the bridge's `supportedDrcModes`). Registry option alias. |
 | `/control/input/drc_weight` | f `[0,1]` | DRC weight. Registry option alias. |
 | `/control/option dialogue_gain_db <f>` | f `[-12,12]` | Level of the channels the bridge tags as dialogue (`channelTags` on `/state/input`: `[{kind, language, label, channels}]`, empty when the stream tags nothing). Registry option, no alias. |
-| `/control/input/live/{backend,node,description,layout,layout_import,channels,sample_rate,clock_mode,map,lfe_mode}` | varies | Live-capture parameters, staged. `backend` accepts only `pipewire`; the retired `asio` value (never implemented) and any other value are rejected with a warning, leaving the staged backend unchanged. All but `layout_import` (an imported layout, structured) are host options `live_input_*`; a non-positive `channels` / `sample_rate` sent here is ignored, as before (through `/control/option(s)` it unsets the value, as the JSON patch does). |
+| `/control/input/live/{node,description}` | s | Name and description of the renderer's PipeWire sink, staged. Host options `live_input_node` and `live_input_description`. |
 | `/control/render/bridge_path` | s | Path to one decoder bridge library (`""`: auto-discovery). |
 | `/control/render/bridge_paths` | s… | The decoder bridge libraries, in load order, one argument each (none: auto-discovery). Saved as `render.bridge_path(s)`; takes effect on restart or `reload_config`. |
 | `/control/render/input_pipe` | s | Named-pipe input path. |
@@ -506,7 +512,7 @@ dedicated address, under `/omniphony`):
 <!-- END GENERATED live-options -->
 
 The standalone renderer's host declares its own options (audio output,
-adaptive resampling, live input — see [Audio output & live
+latency loop, live input — see [Audio output & live
 input](#audio-output--live-input)): the same setters take their keys, their
 schema entries follow the core's in `/state/options_schema`, and their values
 go out in `/state/host_options` (`{"options": {key: requested}, "applied":
@@ -528,38 +534,12 @@ The host's options (standalone renderer):
 | `output_file_format` | string | `""` | `audio_output` (live, restart_output) | — | `/control/audio/output_file_format` |
 | `output_sample_rate` | int or null [1, 768000] | unset | `audio_output` (live, restart_output) | — | `/control/audio/sample_rate` |
 | `latency_target` | int or null [1, 10000] | unset | `audio_output` (live, restart_output) | — | `/control/latency_target` |
-| `enable_adaptive_resampling` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling` |
-| `adaptive_resampling_enable_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/enable_far_mode` |
-| `adaptive_resampling_force_silence_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/force_silence_in_far_mode` |
-| `adaptive_resampling_hard_recover_high_in_far_mode` | bool | `true` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_high_in_far_mode` |
-| `adaptive_resampling_hard_recover_low_in_far_mode` | bool | `false` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/hard_recover_low_in_far_mode` |
-| `adaptive_resampling_far_mode_return_fade_in_ms` | int ≥ 0 | `500` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/far_mode_return_fade_in_ms` |
-| `adaptive_resampling_kp_near` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/kp_near` |
-| `adaptive_resampling_ki` | float [0, 1000000], step 0.01 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/ki` |
-| `adaptive_resampling_integral_discharge_ratio` | float [0, 1], step 0.01 | `0.25` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/integral_discharge_ratio` |
-| `adaptive_resampling_max_adjust` | float [0, 1000000], step 0.01 | `0.01` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/max_adjust` |
-| `adaptive_resampling_update_interval_callbacks` | int ≥ 1 | `1` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/update_interval_callbacks` |
-| `adaptive_resampling_high_recover_entry_margin_ms` | int ≥ 1 | `1000` | `adaptive_resampling` (live, none) | — | `/control/adaptive_resampling/high_recover_entry_margin_ms` |
-| `adaptive_resampling_low_recover_settle_stable_ms` | float [0, 1000000], step 0.1 | `200` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_entry_margin_ms` | float [0, 1000000], step 0.1 | `18` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_exit_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_settle_margin_ms` | float [0, 1000000], step 0.1 | `6` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_low_recover_refill_delta_alpha` | float [0, 1], step 0.01 | `0.5` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_control_smoothing_cutoff_hz` | float [0.001, 1000], step 0.001 | `0.5` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_control_smoothing_order` | int [1, 2] | `1` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_use_pre_bridge_clock` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_use_output_pacing` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
-| `adaptive_resampling_disable_backpressure` | bool | `false` | `adaptive_resampling` (live, none) | — | — |
+| `loop_bandwidth_hz` | float [0, 1], step 0.001 | `0` | `sync` (live, restart_output) | — | — |
+| `source_clock` | `auto` \| `own` \| `follow` \| `none` | `"auto"` | `sync` (live, restart_output) | — | — |
+| `realign_threshold_ms` | float [1, 1000], step 1 | `20` | `sync` (live, restart_output) | — | — |
 | `input_mode` | `pipe_bridge` \| `pipewire` | `"pipe_bridge"` | `live_input` (staged, restart_input) | — | `/control/input/mode` |
-| `live_input_backend` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/backend` |
 | `live_input_node` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/node` |
 | `live_input_description` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/description` |
-| `live_input_layout` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/layout` |
-| `live_input_clock_mode` | `dac` \| `pipewire` \| `upstream` | `"dac"` | `live_input` (staged, restart_input) | — | `/control/input/live/clock_mode` |
-| `live_input_channels` | int or null [1, 64] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/channels` |
-| `live_input_sample_rate` | int or null [1, 768000] | unset | `live_input` (staged, restart_input) | — | `/control/input/live/sample_rate` |
-| `live_input_map` | string | `"7.1-fixed"` | `live_input` (staged, restart_input) | — | `/control/input/live/map` |
-| `live_input_lfe_mode` | `object` \| `direct` \| `drop` | `"direct"` | `live_input` (staged, restart_input) | — | `/control/input/live/lfe_mode` |
 <!-- END GENERATED host-options -->
 
 `/control/options/apply [group]` applies a group: a `staged` group
@@ -805,10 +785,8 @@ exhaustive machine-readable list.
 - **Metering / timing** — `clip`, `decode_time_ms`, `render_time_ms`,
   `write_time_ms`, `crossover_time_ms`, `frame_duration_ms`, `monitoring`,
   `loudness`, `realtime/{master_gain,speaker_gain}`.
-- **Latency & resampling** — `latency`, `latency_instant`, `latency_smoothed`,
-  `latency_control`, `latency_target`, `latency_avail_input`,
-  `latency_output_fifo`, `latency_resampler_pending`, `latency_downstream`,
-  `resample_ratio`, `adaptive_resampling/state`, `adaptive_resampling/band`.
+- **Latency & resampling** — `latency`, `latency_instant` (the latency
+  measured), `latency_target`, `resample_ratio`.
 - **Input / config echoes** — `input`, `input_pipe`, `audio`, `log_level`.
 - **OSC publication flags** — `osc/metering`, `osc/diag`.
 - **Diagnostics** — `diag_schema`, `diag_values`.
@@ -865,22 +843,6 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 
 <details><summary>Control (162)</summary>
 
-- `/omniphony/control/adaptive_resampling`
-- `/omniphony/control/adaptive_resampling/enable_far_mode`
-- `/omniphony/control/adaptive_resampling/far_mode_return_fade_in_ms`
-- `/omniphony/control/adaptive_resampling/force_silence_in_far_mode`
-- `/omniphony/control/adaptive_resampling/hard_recover_high_in_far_mode`
-- `/omniphony/control/adaptive_resampling/hard_recover_in_far_mode`
-- `/omniphony/control/adaptive_resampling/hard_recover_low_in_far_mode`
-- `/omniphony/control/adaptive_resampling/high_recover_entry_margin_ms`
-- `/omniphony/control/adaptive_resampling/integral_discharge_ratio`
-- `/omniphony/control/adaptive_resampling/ki`
-- `/omniphony/control/adaptive_resampling/kp_near`
-- `/omniphony/control/adaptive_resampling/max_adjust`
-- `/omniphony/control/adaptive_resampling/near_far_threshold_ms`
-- `/omniphony/control/adaptive_resampling/pause`
-- `/omniphony/control/adaptive_resampling/reset_ratio`
-- `/omniphony/control/adaptive_resampling/update_interval_callbacks`
 - `/omniphony/control/audio/output_backend`
 - `/omniphony/control/audio/output_device`
 - `/omniphony/control/audio/output_devices/refresh`
@@ -951,16 +913,8 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/input/apply`
 - `/omniphony/control/input/drc_mode`
 - `/omniphony/control/input/drc_weight`
-- `/omniphony/control/input/live/backend`
-- `/omniphony/control/input/live/channels`
-- `/omniphony/control/input/live/clock_mode`
 - `/omniphony/control/input/live/description`
-- `/omniphony/control/input/live/layout`
-- `/omniphony/control/input/live/layout_import`
-- `/omniphony/control/input/live/lfe_mode`
-- `/omniphony/control/input/live/map`
 - `/omniphony/control/input/live/node`
-- `/omniphony/control/input/live/sample_rate`
 - `/omniphony/control/input/mode`
 - `/omniphony/control/input/refresh`
 - `/omniphony/control/latency_target`
@@ -1037,8 +991,6 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 
 <details><summary>State (77)</summary>
 
-- `/omniphony/state/adaptive_resampling/band`
-- `/omniphony/state/adaptive_resampling/state`
 - `/omniphony/state/audio`
 - `/omniphony/state/backend/file/content`
 - `/omniphony/state/backend/file/error`
@@ -1062,13 +1014,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/input`
 - `/omniphony/state/input_pipe`
 - `/omniphony/state/latency`
-- `/omniphony/state/latency_avail_input`
-- `/omniphony/state/latency_control`
-- `/omniphony/state/latency_downstream`
 - `/omniphony/state/latency_instant`
-- `/omniphony/state/latency_output_fifo`
-- `/omniphony/state/latency_resampler_pending`
-- `/omniphony/state/latency_smoothed`
 - `/omniphony/state/latency_target`
 - `/omniphony/state/layout`
 - `/omniphony/state/log_level`

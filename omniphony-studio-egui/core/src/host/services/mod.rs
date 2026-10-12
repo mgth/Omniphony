@@ -10,7 +10,6 @@
 //! time, and says when it wants to be looked at again. The clock sleeps until
 //! then, or until something nudges it, so an idle Studio wakes for nothing.
 
-pub mod auto_tune;
 pub mod backend_files;
 pub mod interests;
 pub mod jobs;
@@ -61,7 +60,6 @@ pub struct Services {
     pub overlay: overlay::MpvOverlay,
     pub object_test: object_test::ObjectTestSource,
     pub virtual_bed: virtual_bed::VirtualBed,
-    pub auto_tune: auto_tune::AutoTuneRunner,
 }
 
 impl Services {
@@ -79,7 +77,6 @@ impl Services {
             self.overlay.tick(state, now),
             self.object_test.tick(state, now),
             self.virtual_bed.tick(state, now),
-            self.auto_tune.tick(state, now),
         ] {
             changed |= tick.changed;
             next = match (next, tick.next) {
@@ -116,7 +113,6 @@ impl ServiceRuntime {
         self.watchdog.request_stop();
         self.clock.shutdown();
         speaker_test::stop(state);
-        auto_tune::revert(state);
     }
 
     pub fn shutdown(&mut self) {

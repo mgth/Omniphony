@@ -127,7 +127,9 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
 /// be *one* param with ranges: a fixed-stride param per format lets PipeWire
 /// pair a format with another format's stride and size, and the player is
 /// then asked for half a quantum per cycle (measured: mpv queued 2048 of a
-/// 4096-frame cycle, i.e. half real time). Ranges as in spike S1.
+/// 4096-frame cycle, i.e. half real time). Ranges as in spike S1, widened
+/// to the sink's linear-PCM alternative: eight `f32` channels are 32 bytes a
+/// frame, twice the widest IEC 958 carrier.
 pub fn build_pipewire_bridge_iec958_quantum_buffers_pod() -> Result<Vec<u8>> {
     let range = |default: i32, min: i32, max: i32| {
         pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
@@ -135,14 +137,14 @@ pub fn build_pipewire_bridge_iec958_quantum_buffers_pod() -> Result<Vec<u8>> {
             pw::spa::utils::ChoiceEnum::Range { default, min, max },
         )))
     };
-    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * 16;
+    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * 32;
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamBuffers,
         spa::param::ParamType::Buffers,
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_buffers), range(4, 2, 16)),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_blocks), Int, 1i32),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_size), range(max_size, 4096, max_size)),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, 16)),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, 32)),
     };
     let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
@@ -226,7 +228,7 @@ pub fn build_pipewire_bridge_format_pod(
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
     build_format_pod(
-        sample_rate_hz,
+        &[sample_rate_hz],
         channels,
         iec958_codec_for_channels(channels),
         param_type,
@@ -245,7 +247,24 @@ pub fn build_pipewire_bridge_codec_format_pod(
     channels: u16,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
-    build_format_pod(sample_rate_hz, channels, codec, param_type)
+    build_format_pod(&[sample_rate_hz], channels, codec, param_type)
+}
+
+/// Carrier rates of the codecs that ride theirs at the content's own rate
+/// (AC-3, the DTS core): the first is the one a player with no preference
+/// gets. A 44.1 kHz stream is passed through on a 44.1 kHz carrier, and a
+/// sink that only states 48 kHz refuses it ("no target node available").
+pub const IEC958_CONTENT_RATES_HZ: [u32; 3] = [48_000, 44_100, 32_000];
+
+/// [`build_pipewire_bridge_codec_format_pod`] for a codec whose carrier runs
+/// at the content's rate: any of `rates_hz`, the first by default.
+pub fn build_pipewire_bridge_codec_format_pod_at_rates(
+    codec: u32,
+    rates_hz: &[u32],
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    build_format_pod(rates_hz, channels, codec, param_type)
 }
 
 /// Advertise a linear-PCM alternative next to the IEC 61937 formats.
@@ -262,6 +281,26 @@ pub fn build_pipewire_bridge_codec_format_pod(
 /// expect to parse; a fixed scalar reads back as an empty capability set.
 pub fn build_pipewire_bridge_raw_format_pod(
     sample_rate_hz: u32,
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    build_raw_format_pod(sample_rate_hz, &RAW_RATES_HZ, channels, param_type)
+}
+
+/// [`build_pipewire_bridge_raw_format_pod`] at one rate only: for a sink
+/// whose renderer runs at that rate and neither resamples nor follows the
+/// stream's. A player at another rate converts on its side.
+pub fn build_pipewire_bridge_raw_format_pod_at(
+    sample_rate_hz: u32,
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    build_raw_format_pod(sample_rate_hz, &[sample_rate_hz], channels, param_type)
+}
+
+fn build_raw_format_pod(
+    sample_rate_hz: u32,
+    rates_hz: &[u32],
     channels: u16,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
@@ -285,7 +324,7 @@ pub fn build_pipewire_bridge_raw_format_pod(
                 pw::spa::utils::ChoiceFlags::empty(),
                 pw::spa::utils::ChoiceEnum::Enum {
                     default: sample_rate_hz as i32,
-                    alternatives: RAW_RATES_HZ.iter().map(|rate| *rate as i32).collect(),
+                    alternatives: rates_hz.iter().map(|rate| *rate as i32).collect(),
                 }
             )))
         ),
@@ -328,18 +367,32 @@ fn raw_audio_positions(channels: u16) -> Vec<pw::spa::utils::Id> {
 }
 
 fn build_format_pod(
-    sample_rate_hz: u32,
+    rates_hz: &[u32],
     channels: u16,
     codec: u32,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
+    let default_rate = rates_hz.first().copied().unwrap_or_default() as i32;
+    // One rate is stated as it always was; several are a choice.
+    let rate = match rates_hz {
+        [_] | [] => pw::spa::pod::Value::Int(default_rate),
+        rates => {
+            pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
+                pw::spa::utils::ChoiceFlags::empty(),
+                pw::spa::utils::ChoiceEnum::Enum {
+                    default: default_rate,
+                    alternatives: rates.iter().map(|rate| *rate as i32).collect(),
+                },
+            )))
+        }
+    };
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamFormat,
         param_type,
         property!(spa::param::format::FormatProperties::MediaType, Id, spa::param::format::MediaType::Audio),
         property!(spa::param::format::FormatProperties::MediaSubtype, Id, spa::param::format::MediaSubtype::Iec958),
         property!(spa::param::format::FormatProperties::AudioFormat, Id, spa::param::audio::AudioFormat::Encoded),
-        property!(spa::param::format::FormatProperties::AudioRate, Int, sample_rate_hz as i32),
+        property!(spa::param::format::FormatProperties::AudioRate, rate),
         property!(spa::param::format::FormatProperties::AudioChannels, Int, channels as i32),
         property!(
             spa::param::format::FormatProperties::AudioIec958Codec,
@@ -552,6 +605,7 @@ pub fn spa_param_info(id: u32, flags: u32) -> spa::sys::spa_param_info {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pw::spa::pod::Pod;
 
     /// A PCM buffer carries a whole graph cycle, so sizing it from the 10 ms
     /// window that suits the deframer makes every cycle arrive oversized and
@@ -571,6 +625,33 @@ mod tests {
                 size >= PW_QUANTUM_LIMIT_FRAMES as usize * stride,
                 "rate {rate}: buffer of {size} B cannot hold a {PW_QUANTUM_LIMIT_FRAMES}-frame quantum",
             );
+        }
+    }
+
+    /// A codec format at one rate is the pod it always was; at several, the
+    /// rate becomes a choice and nothing else changes.
+    #[test]
+    fn a_codec_format_states_one_rate_or_a_choice_of_them() {
+        let codec = spa::sys::SPA_AUDIO_IEC958_CODEC_AC3;
+        let enum_fmt = spa::param::ParamType::EnumFormat;
+        let one = build_pipewire_bridge_codec_format_pod(codec, 48_000, 2, enum_fmt).unwrap();
+        let same =
+            build_pipewire_bridge_codec_format_pod_at_rates(codec, &[48_000], 2, enum_fmt).unwrap();
+        assert_eq!(one, same);
+        let several = build_pipewire_bridge_codec_format_pod_at_rates(
+            codec,
+            &IEC958_CONTENT_RATES_HZ,
+            2,
+            enum_fmt,
+        )
+        .unwrap();
+        assert!(several.len() > one.len());
+        assert!(Pod::from_bytes(&several).is_some());
+        // 44100 and 32000 are in it, little-endian, after the default.
+        for rate in [44_100i32, 32_000] {
+            let needle = rate.to_le_bytes();
+            assert!(several.windows(4).any(|w| w == needle), "{rate}");
+            assert!(!one.windows(4).any(|w| w == needle), "{rate}");
         }
     }
 

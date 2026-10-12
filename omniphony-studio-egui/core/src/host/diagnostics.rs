@@ -142,11 +142,11 @@ pub fn select(state: &super::commands::SharedState, selected: &BTreeSet<String>)
 }
 
 /// Independent resampler publications use the same bounded, timestamped cache.
-/// Interest persists while a window is minimized, and is released when both
-/// consumers (the plot and the tuning wizard) are closed.
+/// Interest persists while a window is minimized, and is released when the
+/// plot is closed.
 pub fn select_resample(state: &super::commands::SharedState, plot_open: bool) {
     let mut live = state.inner.lock().unwrap();
-    let wanted = plot_open || live.auto_tune.is_some();
+    let wanted = plot_open;
     if live.resample_wanted != wanted {
         live.resample_wanted = wanted;
         live.resampling.restart();
@@ -174,7 +174,7 @@ pub fn refresh_resample(state: &super::commands::SharedState, plot_open: bool, t
 mod tests {
     use super::*;
     #[test]
-    fn the_last_consumer_releases_history_and_cache_but_the_wizard_keeps_them() {
+    fn closing_the_plot_releases_history_and_cache() {
         let state = crate::host::commands::tests::state();
         let mut trace = Trace::default();
         refresh_resample(&state, true, &mut trace);
@@ -186,10 +186,6 @@ mod tests {
             .record_value("latency", 4.0, Instant::now());
         refresh_resample(&state, true, &mut trace);
         assert_eq!(trace.series["latency"].len(), 1);
-        crate::host::services::auto_tune::open(&state);
-        refresh_resample(&state, false, &mut trace);
-        assert_eq!(trace.series["latency"].len(), 1);
-        crate::host::services::auto_tune::close(&state);
         refresh_resample(&state, false, &mut trace);
         assert!(trace.series.is_empty());
         assert!(state.read().resampling.series.is_empty());

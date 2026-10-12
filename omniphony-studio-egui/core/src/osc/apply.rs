@@ -26,36 +26,10 @@ struct AudioDomainState {
     sample_rate: Option<u32>,
     sample_format: Option<String>,
     error: Option<String>,
-    adaptive_resampling: Option<AudioAdaptiveDomainState>,
     latency_target_ms: Option<u32>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AudioAdaptiveDomainState {
-    enabled: Option<bool>,
-    enable_far_mode: Option<bool>,
-    force_silence_in_far_mode: Option<bool>,
-    hard_recover_high_in_far_mode: Option<bool>,
-    hard_recover_low_in_far_mode: Option<bool>,
-    far_mode_return_fade_in_ms: Option<u32>,
-    kp_near: Option<f64>,
-    ki: Option<f64>,
-    integral_discharge_ratio: Option<f64>,
-    max_adjust: Option<f64>,
-    high_recover_entry_margin_ms: Option<u32>,
-    update_interval_callbacks: Option<u32>,
-    low_recover_settle_stable_ms: Option<f32>,
-    low_recover_entry_margin_ms: Option<f32>,
-    low_recover_exit_margin_ms: Option<f32>,
-    low_recover_settle_margin_ms: Option<f32>,
-    low_recover_refill_delta_alpha: Option<f32>,
-    control_smoothing_cutoff_hz: Option<f64>,
-    control_smoothing_order: Option<u32>,
-    paused: Option<bool>,
-    use_pre_bridge_clock: Option<bool>,
-    use_output_pacing: Option<bool>,
-    disable_backpressure: Option<bool>,
+    /// The latency held in place of the target when the stream needs more;
+    /// absent or null while the target holds.
+    latency_target_held_ms: Option<f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -75,15 +49,8 @@ struct InputDomainState {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RequestedInputDomainState {
-    backend: Option<String>,
     node: Option<String>,
     description: Option<String>,
-    layout: Option<String>,
-    clock_mode: Option<String>,
-    channels: Option<u32>,
-    sample_rate: Option<u32>,
-    map: Option<String>,
-    lfe_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -438,81 +405,12 @@ pub fn apply_audio_domain_state(s: &mut AppState, value: &str) -> bool {
     if let Some(error) = parsed.error {
         s.set_audio_error(&error);
     }
-    if let Some(adaptive) = parsed.adaptive_resampling {
-        if let Some(enabled) = adaptive.enabled {
-            s.adaptive_resampling = Some(if enabled { 1 } else { 0 });
-        }
-        if let Some(enabled) = adaptive.enable_far_mode {
-            s.adaptive_resampling_enable_far_mode = Some(if enabled { 1 } else { 0 });
-        }
-        if let Some(enabled) = adaptive.force_silence_in_far_mode {
-            s.adaptive_resampling_force_silence_in_far_mode = Some(if enabled { 1 } else { 0 });
-        }
-        if let Some(enabled) = adaptive.hard_recover_high_in_far_mode {
-            s.adaptive_resampling_hard_recover_high_in_far_mode = Some(if enabled { 1 } else { 0 });
-        }
-        if let Some(enabled) = adaptive.hard_recover_low_in_far_mode {
-            s.adaptive_resampling_hard_recover_low_in_far_mode = Some(if enabled { 1 } else { 0 });
-        }
-        if let Some(value) = adaptive.far_mode_return_fade_in_ms {
-            s.adaptive_resampling_far_mode_return_fade_in_ms = Some(value as i64);
-        }
-        if let Some(value) = adaptive.kp_near {
-            s.adaptive_resampling_kp_near = Some(value);
-        }
-        if let Some(value) = adaptive.ki {
-            s.adaptive_resampling_ki = Some(value);
-        }
-        if let Some(value) = adaptive.integral_discharge_ratio {
-            s.adaptive_resampling_integral_discharge_ratio = Some(value);
-        }
-        if let Some(value) = adaptive.max_adjust {
-            s.adaptive_resampling_max_adjust = Some(value);
-        }
-        if let Some(value) = adaptive.high_recover_entry_margin_ms {
-            s.adaptive_resampling_high_recover_entry_margin_ms = Some(value as i64);
-        }
-        if let Some(value) = adaptive.update_interval_callbacks {
-            s.adaptive_resampling_update_interval_callbacks = Some(value as i64);
-        }
-        if let Some(value) = adaptive.low_recover_settle_stable_ms {
-            s.adaptive_resampling_low_recover_settle_stable_ms = Some(value as f64);
-        }
-        if let Some(value) = adaptive.low_recover_entry_margin_ms {
-            s.adaptive_resampling_low_recover_entry_margin_ms = Some(value as f64);
-        }
-        if let Some(value) = adaptive.low_recover_exit_margin_ms {
-            s.adaptive_resampling_low_recover_exit_margin_ms = Some(value as f64);
-        }
-        if let Some(value) = adaptive.low_recover_settle_margin_ms {
-            s.adaptive_resampling_low_recover_settle_margin_ms = Some(value as f64);
-        }
-        if let Some(value) = adaptive.low_recover_refill_delta_alpha {
-            s.adaptive_resampling_low_recover_refill_delta_alpha = Some(value as f64);
-        }
-        if let Some(value) = adaptive.control_smoothing_cutoff_hz {
-            s.adaptive_resampling_control_smoothing_cutoff_hz = Some(value);
-        }
-        if let Some(value) = adaptive.control_smoothing_order {
-            s.adaptive_resampling_control_smoothing_order = Some(value);
-        }
-        if let Some(paused) = adaptive.paused {
-            s.adaptive_resampling_paused = Some(if paused { 1 } else { 0 });
-        }
-        if let Some(enabled) = adaptive.use_pre_bridge_clock {
-            s.adaptive_resampling_use_pre_bridge_clock = Some(if enabled { 1 } else { 0 });
-        }
-        if let Some(enabled) = adaptive.use_output_pacing {
-            s.adaptive_resampling_use_output_pacing = Some(if enabled { 1 } else { 0 });
-        }
-        if let Some(disabled) = adaptive.disable_backpressure {
-            s.adaptive_resampling_disable_backpressure = Some(if disabled { 1 } else { 0 });
-        }
-    }
     if let Some(latency_target_ms) = parsed.latency_target_ms {
         s.latency.latency_target_ms = Some(latency_target_ms as i64);
         s.latency.latency_requested_ms = Some(latency_target_ms as i64);
     }
+    // Every document says it: one without the field means the target holds.
+    s.latency.latency_held_ms = parsed.latency_target_held_ms.map(|ms| ms.round() as i64);
     true
 }
 
@@ -549,15 +447,8 @@ pub fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
         s.channel_tags = channel_tags;
     }
     if let Some(requested) = parsed.requested {
-        s.live_input.backend = requested.backend;
         s.live_input.node = requested.node;
         s.live_input.description = requested.description;
-        s.live_input.layout = requested.layout;
-        s.live_input.clock_mode = requested.clock_mode;
-        s.live_input.channels = requested.channels;
-        s.live_input.sample_rate = requested.sample_rate;
-        s.live_input.map = requested.map;
-        s.live_input.lfe_mode = requested.lfe_mode;
     }
     if let Some(applied) = parsed.applied {
         s.input_backend = applied.backend;
@@ -1464,6 +1355,31 @@ mod audio_domain_tests {
             r#"{"sampleRate": 48000}"#
         ));
         assert_eq!(state.audio.audio_output_host.as_deref(), Some("ASIO"));
+    }
+
+    /// The latency the renderer holds in place of the target follows every
+    /// audio document: there when the stream needs more, gone when the
+    /// document says null or (an engine that never raises it) nothing.
+    #[test]
+    fn the_held_latency_follows_every_document() {
+        let mut state = AppState::default();
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"latencyTargetMs": 50, "latencyTargetHeldMs": 98.6}"#
+        ));
+        assert_eq!(state.latency.latency_requested_ms, Some(50));
+        assert_eq!(state.latency.latency_held_ms, Some(99));
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"latencyTargetMs": 120, "latencyTargetHeldMs": null}"#
+        ));
+        assert_eq!(state.latency.latency_held_ms, None);
+        state.latency.latency_held_ms = Some(99);
+        assert!(apply_audio_domain_state(
+            &mut state,
+            r#"{"latencyTargetMs": 120}"#
+        ));
+        assert_eq!(state.latency.latency_held_ms, None);
     }
 }
 

@@ -3,8 +3,8 @@
 //! A test only makes sound while the render loop runs, and the render
 //! loop only runs when decoded frames arrive. With no input stream nothing
 //! flows, so a test started from idle stayed silent (or, with the reverted
-//! render-pump approach, starved the adaptive latency controller by writing
-//! output the input path never saw — converge, hard-recover, cut).
+//! render-pump approach, starved the latency controller of the time by
+//! writing output the input path never saw).
 //!
 //! The fix mirrors what PipeWire live input mode does naturally: keep the
 //! *input* flowing. While a client's test pane is armed (or a test is
@@ -80,6 +80,11 @@ impl IdleFeeder {
         self.stop_feeding();
     }
 
+    /// Whether the feed is running: armed, with no real input.
+    pub fn is_feeding(&self) -> bool {
+        self.feeding
+    }
+
     fn stop_feeding(&mut self) {
         if self.feeding {
             log::info!("Speaker-test idle feed: stopping (real input or disarm)");
@@ -145,16 +150,6 @@ mod tests {
             test_active: false,
             sample_rate: 48_000,
         }
-    }
-
-    /// With output pacing on, a test started in front of a capture stream
-    /// that streams and delivers nothing is drained on the feed's tokens, and
-    /// those only drain once the capture has been silent for its limit. The
-    /// feed must not start before that, or its first chunks would sit in the
-    /// pacer with their tokens dropped.
-    #[test]
-    fn the_feed_starts_after_a_silent_capture_has_lost_the_pacer_drain() {
-        assert!(audio_input::pacer_drain::CAPTURE_SILENCE_LIMIT < REAL_FRAME_HOLDOFF);
     }
 
     #[test]

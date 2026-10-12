@@ -5,7 +5,6 @@
 //! Tauri host was removed in 0.7.0, #677.)
 #![allow(dead_code)]
 
-pub mod adaptive;
 pub mod app;
 pub mod audio;
 pub mod binaural;
@@ -142,7 +141,6 @@ pub struct SharedState {
     pub(crate) connection_request: Mutex<u64>,
     pub(crate) renderer_child: Arc<Mutex<Option<std::process::Child>>>,
     pub(crate) watchdog: Arc<Mutex<WatchdogControl>>,
-    pub(crate) auto_tune_snapshot: Arc<Mutex<Option<serde_json::Value>>>,
     pub(crate) paths: HostPaths,
     /// What the listener has seen, for the services that judge the link.
     pub(crate) stats: Arc<crate::osc::OscStats>,
@@ -189,7 +187,6 @@ impl SharedState {
             connection_request: Mutex::new(0),
             renderer_child: Default::default(),
             watchdog: Default::default(),
-            auto_tune_snapshot: Default::default(),
             paths,
             stats,
             waker,
@@ -369,7 +366,6 @@ pub(crate) mod tests {
             connection_request: Mutex::new(0),
             renderer_child: Default::default(),
             watchdog: Default::default(),
-            auto_tune_snapshot: Default::default(),
             paths: HostPaths::default(),
             stats: crate::osc::OscStats::new(),
             waker,

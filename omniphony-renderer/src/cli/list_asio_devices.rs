@@ -8,7 +8,12 @@ use anyhow::Result;
 /// Lists the output devices of the host realtime output opens: the ASIO
 /// devices, or, when ASIO has none, the WASAPI ones output falls back to.
 pub fn cmd_list_asio_devices() -> Result<()> {
-    let (host, devices) = audio_output::list_output_host_devices()?;
+    let host = audio_output::sync_output::output_host_label()
+        .ok_or_else(|| anyhow::anyhow!("no audio output host could be opened"))?;
+    let devices: Vec<String> = audio_output::sync_output::list_output_devices()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
     let fallback = host != audio_output::host_choice::HostChoice::Asio.label();
 
     println!();

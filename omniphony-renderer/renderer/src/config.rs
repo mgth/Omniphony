@@ -320,6 +320,18 @@ pub struct RenderConfig {
     pub adaptive_resampling_disable_backpressure: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_sample_rate: Option<u32>,
+    /// Sync engine: bandwidth of the latency loop (Hz); absent or 0 is the
+    /// source's own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_bandwidth_hz: Option<f32>,
+    /// Sync engine: latency error beyond which the output realigns instead
+    /// of steering (ms); absent is 20.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realign_threshold_ms: Option<f32>,
+    /// Sync engine: the clock the source is taken to run on (`auto`, `own`,
+    /// `follow`, `none`); absent is `auto`, the input's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_clock: Option<String>,
     /// OSC meter cadence (Hz). Persisted so the renderer is the source of truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meter_rate: Option<f32>,
@@ -679,6 +691,29 @@ pub struct LiveInputConfig {
 }
 
 impl RenderConfig {
+    /// The keys this section sets that nothing reads any more: the tuning of
+    /// the adaptive resampler the renderer regulated its output with before
+    /// it held an end-to-end latency (`docs/resampling-rework-plan.md`), and
+    /// the parts of the live input that went with it or that no host ever
+    /// read. They are kept as they are when the config is saved; a host says
+    /// once that it ignores them.
+    pub fn retired_keys(&self) -> Vec<&'static str> {
+        let mut keys = Vec::new();
+        macro_rules! set {
+            ($from:expr, $prefix:literal: $($field:ident),* $(,)?) => {
+                $( if $from.$field.is_some() {
+                    keys.push(concat!($prefix, stringify!($field)));
+                } )*
+            };
+        }
+        set!(self, "": enable_adaptive_resampling, adaptive_resampling_enable_far_mode, adaptive_resampling_force_silence_in_far_mode, adaptive_resampling_hard_recover_high_in_far_mode, adaptive_resampling_hard_recover_low_in_far_mode, adaptive_resampling_far_mode_return_fade_in_ms, adaptive_resampling_kp_near, adaptive_resampling_ki, adaptive_resampling_integral_discharge_ratio, adaptive_resampling_max_adjust, adaptive_resampling_update_interval_callbacks, adaptive_resampling_high_recover_entry_margin_ms, adaptive_resampling_low_recover_settle_stable_ms, adaptive_resampling_low_recover_entry_margin_ms, adaptive_resampling_low_recover_exit_margin_ms, adaptive_resampling_low_recover_settle_margin_ms, adaptive_resampling_low_recover_refill_delta_alpha, adaptive_resampling_control_smoothing_cutoff_hz, adaptive_resampling_control_smoothing_order, adaptive_resampling_use_pre_bridge_clock, adaptive_resampling_use_output_pacing, adaptive_resampling_disable_backpressure);
+        if let Some(live) = &self.live_input {
+            set!(live, "live_input.": backend, layout, current_layout, clock_mode, channels,
+                sample_rate, map, lfe_mode);
+        }
+        keys
+    }
+
     /// The bridges asked for, in load order: `bridge_paths`, else the one
     /// `bridge_path`; empty for auto-discovery.
     pub fn bridges(&self) -> Vec<PathBuf> {
@@ -2500,6 +2535,29 @@ mod config_dir_override_tests {
 
 #[cfg(test)]
 mod save_tests {
+    /// The keys of the engine before this one are named, the ones still read
+    /// are not, and an empty section has none.
+    #[test]
+    fn retired_keys_are_the_ones_nothing_reads() {
+        assert!(RenderConfig::default().retired_keys().is_empty());
+        let render: RenderConfig = serde_yaml_ng::from_str(
+            "latency_target: 150\nenable_adaptive_resampling: true\n\
+             adaptive_resampling_kp_near: 0.0001\nadaptive_resampling_use_output_pacing: true\n\
+             live_input:\n  node: omniphony\n  clock_mode: dac\n  lfe_mode: direct\n",
+        )
+        .expect("a render section");
+        assert_eq!(
+            render.retired_keys(),
+            [
+                "enable_adaptive_resampling",
+                "adaptive_resampling_kp_near",
+                "adaptive_resampling_use_output_pacing",
+                "live_input.clock_mode",
+                "live_input.lfe_mode"
+            ]
+        );
+    }
+
     use super::*;
 
     fn dir(tag: &str) -> PathBuf {

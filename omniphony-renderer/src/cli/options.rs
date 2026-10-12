@@ -19,8 +19,6 @@ const NOT_GENERATED: &[&str] = &[
     // The flag takes decibels, as the config stores them; the option's wire
     // value is linear (`--master-gain -6` would mean silence).
     "master_gain",
-    // Not a tuning lever of the controller as it stands.
-    "adaptive_resampling_integral_discharge_ratio",
 ];
 
 /// One registered option, as the command line sees it.
@@ -335,10 +333,6 @@ mod tests {
             "output_file_format" => "caf",
             "live_input_node" => "omniphony-in",
             "live_input_description" => "Omniphony input",
-            "live_input_backend" => "pipewire",
-            "live_input_layout" => "7.1.4",
-            // Its only value so far.
-            "live_input_map" => "7.1-fixed",
             other => panic!("no command-line sample for string option `{other}`"),
         }
     }
