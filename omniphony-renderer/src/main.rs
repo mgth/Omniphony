@@ -25,6 +25,7 @@ where
     let known_subcommands = [
         OsString::from("render"),
         OsString::from("generate-vbap"),
+        OsString::from("wrap-iec61937"),
         #[cfg(target_os = "windows")]
         OsString::from("list-asio-devices"),
         #[cfg(target_os = "macos")]
@@ -166,6 +167,7 @@ fn main() -> Result<()> {
     let result: Result<()> = match cli.command {
         Commands::Render(ref args) => cmd_render(args, &cli, &parsed.render_sources()),
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
+        Commands::WrapIec61937(ref args) => cli::wrap_iec61937::cmd_wrap_iec61937(args),
         #[cfg(target_os = "windows")]
         Commands::ListAsioDevices => cmd_list_asio_devices(),
         #[cfg(target_os = "macos")]

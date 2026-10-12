@@ -7,3 +7,4 @@ pub(crate) mod list_asio_devices;
 pub(crate) mod list_coreaudio_devices;
 pub(crate) mod options;
 pub(crate) mod sync_host;
+pub(crate) mod wrap_iec61937;
