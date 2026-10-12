@@ -47,8 +47,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use audio_output::sync_output::{
-    OutputCore, OutputCoreConfig, SourceTap, SyncOutput, SyncOutputConfig, SyncSnapshot,
-    SyncTelemetry, negotiate,
+    ChannelMap, OutputCore, OutputCoreConfig, SourceTap, SyncOutput, SyncOutputConfig,
+    SyncSnapshot, SyncTelemetry, negotiate,
 };
 use audio_rt::{Producer, frame_ring};
 use audio_sync::{Accounting, DiscontinuityEvent, DiscontinuityReason, InFlightAudit, Stage};
@@ -1563,16 +1563,30 @@ fn start_device(
         anyhow::bail!(reason);
     }
     // The live option says how the device routes the channels: by the
-    // position each is tagged with, or one to one in order (positionless
-    // names), port N being the layout's speaker N.
+    // position each speaker's name gives, or one to one in order, port N
+    // being the layout's speaker N — which, on a device that routes by
+    // position, is its own map taken in order.
     let mapping = engine.output_channel_mapping();
-    let names = match mapping {
+    let channel_map = match mapping {
         OutputChannelMapping::ByName => {
-            Some(engine.output_channel_names()).filter(|names| names.len() == format.channels)
+            let names = engine.output_channel_names();
+            if names.len() == format.channels {
+                ChannelMap::Named(names.iter().map(|n| pipewire_position_name(n)).collect())
+            } else {
+                log::warn!(
+                    "sync host: {} channel names for {} channels: the channels are left untagged",
+                    names.len(),
+                    format.channels
+                );
+                ChannelMap::Unpositioned
+            }
         }
-        OutputChannelMapping::ByIndex => {
-            Some((0..format.channels).map(|i| format!("AUX{i}")).collect())
-        }
+        OutputChannelMapping::ByIndex => ChannelMap::DeviceOrder,
+    };
+    let map_label = match &channel_map {
+        ChannelMap::Unpositioned => "untagged".to_string(),
+        ChannelMap::DeviceOrder => "the device's map".to_string(),
+        ChannelMap::Named(names) => names.join(","),
     };
     // The device is asked for the stream's rate unless another is asked
     // for. It runs at what it says: PipeWire at any rate (the graph
@@ -1585,7 +1599,7 @@ fn start_device(
         node_name: "omniphony-sync".into(),
         target: settings.output_target.clone(),
         channels: format.channels as u32,
-        positions: names.clone(),
+        channel_map,
         rate: wanted_rate,
         quantum,
     })?;
@@ -1624,7 +1638,7 @@ fn start_device(
         "sync host: output {} Hz x {} ({}), device at {device_rate} Hz, quantum {quantum}",
         format.rate,
         format.channels,
-        names.as_ref().map_or("default map".into(), |n| n.join(",")),
+        map_label,
     );
     let output = negotiated.start(core)?;
     // What the source keeps ahead of the device: the latency target, as a
@@ -1647,6 +1661,44 @@ fn start_device(
 /// sink this renderer publishes as its input: the rendered audio would come
 /// back in to be rendered again. Refused while it is still a setting to
 /// change; the message reaches the clients as the output's error.
+/// The PipeWire position a speaker is routed to by name: through the
+/// channel label its name resolves to (`C` and `Centre` are `FC`, `TBL` is
+/// `TRL`, `FWL` is `FLW`), else the name itself in upper case, for one
+/// PipeWire knows without a label (`AUX3`, `TSL`) — or does not, which
+/// leaves the channel untagged, as the Studio's warning says.
+fn pipewire_position_name(name: &str) -> String {
+    use bridge_api::RChannelLabel as L;
+    let known = match bridge_api::labels::label_for_name(name) {
+        L::L => "FL",
+        L::R => "FR",
+        L::C => "FC",
+        L::LFE => "LFE",
+        L::LFE2 => "LFE2",
+        L::Ls => "SL",
+        L::Rs => "SR",
+        L::Lb => "RL",
+        L::Rb => "RR",
+        L::Cb => "RC",
+        L::Lw => "FLW",
+        L::Rw => "FRW",
+        L::Tfl => "TFL",
+        L::Tfr => "TFR",
+        L::Tfc => "TFC",
+        L::Tsl => "TSL",
+        L::Tsr => "TSR",
+        L::Tbl => "TRL",
+        L::Tbr => "TRR",
+        L::Tc => "TC",
+        L::Lh => "FLH",
+        L::Rh => "FRH",
+        L::Ch => "FCH",
+        // Labels PipeWire has no position for, objects, and names outside
+        // the table: the name itself, in case it is PipeWire's own.
+        _ => return name.trim().to_ascii_uppercase(),
+    };
+    known.to_string()
+}
+
 fn own_sink_loop(source: &Source, output_target: Option<&str>) -> Option<String> {
     match (source, output_target) {
         (Source::OwnSink { node_name, .. }, Some(target)) if target == node_name => Some(format!(
@@ -2466,6 +2518,27 @@ fn describe(ep: &Epoch, stats: &reader::ReaderStats) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layout's speaker names, in PipeWire's spelling: through the label
+    /// table where it knows the name, as is where PipeWire might.
+    #[test]
+    fn speaker_names_become_pipewire_positions() {
+        let layout = [
+            "FL", "FR", "C", "LFE", "FWL", "FWR", "SL", "SR", "BL", "BR", "TFL", "TFR", "TSL",
+            "TSR", "TBL", "TBR",
+        ];
+        let positions: Vec<String> = layout.iter().map(|n| pipewire_position_name(n)).collect();
+        assert_eq!(
+            positions,
+            [
+                "FL", "FR", "FC", "LFE", "FLW", "FRW", "SL", "SR", "RL", "RR", "TFL", "TFR", "TSL",
+                "TSR", "TRL", "TRR"
+            ]
+        );
+        assert_eq!(pipewire_position_name("Centre"), "FC");
+        assert_eq!(pipewire_position_name("aux3"), "AUX3");
+        assert_eq!(pipewire_position_name("Lsd"), "LSD");
+    }
 
     /// A second of each known pipe carrier is a second of source frames at
     /// the render rate.

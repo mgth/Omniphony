@@ -4,9 +4,9 @@
 
 use anyhow::{Result, anyhow};
 use pipewire as pw;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::pipewire_registry::{
     ClientEntry, client_from_props, connect_main_loop, non_empty, owner_pid, registry_snapshot,
@@ -149,6 +149,172 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
     ))
 }
 
+/// The PipeWire channel behind a position name (`FL`, `TSL`, `AUX3`), as a
+/// format's `position` array states it; `None` for a name PipeWire does not
+/// know: a sink whose map reads `1 2 3 …`, a layout's own `FWL`.
+pub(crate) fn channel_position_id(name: &str) -> Option<u32> {
+    use pw::spa::sys as spa;
+    let id = match name {
+        "MONO" => spa::SPA_AUDIO_CHANNEL_MONO,
+        "FL" => spa::SPA_AUDIO_CHANNEL_FL,
+        "FR" => spa::SPA_AUDIO_CHANNEL_FR,
+        "FC" => spa::SPA_AUDIO_CHANNEL_FC,
+        "LFE" => spa::SPA_AUDIO_CHANNEL_LFE,
+        "SL" => spa::SPA_AUDIO_CHANNEL_SL,
+        "SR" => spa::SPA_AUDIO_CHANNEL_SR,
+        "FLC" => spa::SPA_AUDIO_CHANNEL_FLC,
+        "FRC" => spa::SPA_AUDIO_CHANNEL_FRC,
+        "RC" => spa::SPA_AUDIO_CHANNEL_RC,
+        "RL" => spa::SPA_AUDIO_CHANNEL_RL,
+        "RR" => spa::SPA_AUDIO_CHANNEL_RR,
+        "TC" => spa::SPA_AUDIO_CHANNEL_TC,
+        "TFL" => spa::SPA_AUDIO_CHANNEL_TFL,
+        "TFC" => spa::SPA_AUDIO_CHANNEL_TFC,
+        "TFR" => spa::SPA_AUDIO_CHANNEL_TFR,
+        "TRL" => spa::SPA_AUDIO_CHANNEL_TRL,
+        "TRC" => spa::SPA_AUDIO_CHANNEL_TRC,
+        "TRR" => spa::SPA_AUDIO_CHANNEL_TRR,
+        "RLC" => spa::SPA_AUDIO_CHANNEL_RLC,
+        "RRC" => spa::SPA_AUDIO_CHANNEL_RRC,
+        "FLW" => spa::SPA_AUDIO_CHANNEL_FLW,
+        "FRW" => spa::SPA_AUDIO_CHANNEL_FRW,
+        "LFE2" => spa::SPA_AUDIO_CHANNEL_LFE2,
+        "FLH" => spa::SPA_AUDIO_CHANNEL_FLH,
+        "FCH" => spa::SPA_AUDIO_CHANNEL_FCH,
+        "FRH" => spa::SPA_AUDIO_CHANNEL_FRH,
+        "TFLC" => spa::SPA_AUDIO_CHANNEL_TFLC,
+        "TFRC" => spa::SPA_AUDIO_CHANNEL_TFRC,
+        "TSL" => spa::SPA_AUDIO_CHANNEL_TSL,
+        "TSR" => spa::SPA_AUDIO_CHANNEL_TSR,
+        "LLFE" => spa::SPA_AUDIO_CHANNEL_LLFE,
+        "RLFE" => spa::SPA_AUDIO_CHANNEL_RLFE,
+        "BC" => spa::SPA_AUDIO_CHANNEL_BC,
+        "BLC" => spa::SPA_AUDIO_CHANNEL_BLC,
+        "BRC" => spa::SPA_AUDIO_CHANNEL_BRC,
+        aux => {
+            // `AUX0`…`AUX63`, the ones PipeWire has names for.
+            let n: u32 = aux.strip_prefix("AUX")?.parse().ok()?;
+            if n > 63 {
+                return None;
+            }
+            spa::SPA_AUDIO_CHANNEL_START_Aux + n
+        }
+    };
+    Some(id)
+}
+
+/// The names in an `audio.position` property, as the registry shows a
+/// node's (`[ FL FR ]`) or as a stream states its own (`FL,FR`).
+pub(crate) fn parse_audio_position(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | '[' | ']' | '"'))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The channel map of the `Audio/Sink` named `target`: its `audio.position`,
+/// in port order. `None` when the sink is not there, or states no map.
+///
+/// The registry announces a node with a few of its properties only, the map
+/// not among them: the sink is found in a snapshot, then bound and its own
+/// info read, a round trip more than the device list.
+pub fn sink_channel_map(target: &str) -> Result<Option<Vec<String>>> {
+    let conn = connect_main_loop()?;
+    let node_id = Rc::new(Cell::new(None::<u32>));
+    let answered = {
+        let node_id = Rc::clone(&node_id);
+        let target = target.to_owned();
+        registry_snapshot(
+            &conn.mainloop,
+            &conn.core,
+            DEVICE_LIST_TIMEOUT,
+            move |global| {
+                if node_id.get().is_some() || global.type_ != pw::types::ObjectType::Node {
+                    return;
+                }
+                let Some(props) = global.props.as_ref() else {
+                    return;
+                };
+                if props.get(*pw::keys::MEDIA_CLASS) == Some("Audio/Sink")
+                    && non_empty(props.get(*pw::keys::NODE_NAME)) == Some(target.as_str())
+                {
+                    node_id.set(Some(global.id));
+                }
+            },
+        )?
+    };
+    if !answered {
+        return Err(anyhow!(
+            "PipeWire registry did not answer within {DEVICE_LIST_TIMEOUT:?}"
+        ));
+    }
+    let Some(id) = node_id.get() else {
+        return Ok(None);
+    };
+
+    let registry = conn
+        .core
+        .get_registry()
+        .map_err(|e| anyhow!("Failed to get PipeWire registry: {e:?}"))?;
+    let node: pw::node::Node = registry
+        .bind(&pw::registry::GlobalObject {
+            id,
+            permissions: pw::permissions::PermissionFlags::empty(),
+            type_: pw::types::ObjectType::Node,
+            version: 0,
+            props: None::<&pw::spa::utils::dict::DictRef>,
+        })
+        .map_err(|e| anyhow!("Failed to bind the sink {target}: {e:?}"))?;
+    // Queued after the bind: its `done` lands after the node's info, or
+    // without it when the node went away in between.
+    let pending = conn
+        .core
+        .sync(0)
+        .map_err(|e| anyhow!("PipeWire sync failed: {e:?}"))?;
+    let done = Rc::new(Cell::new(false));
+    let map = Rc::new(RefCell::new(None::<Vec<String>>));
+    let _core_listener = {
+        let done = Rc::clone(&done);
+        conn.core
+            .add_listener_local()
+            .done(move |id, seq| {
+                if id == pw::core::PW_ID_CORE && seq == pending {
+                    done.set(true);
+                }
+            })
+            .register()
+    };
+    let _node_listener = {
+        let (map, done) = (Rc::clone(&map), Rc::clone(&done));
+        node.add_listener_local()
+            .info(move |info| {
+                *map.borrow_mut() = info
+                    .props()
+                    .and_then(|props| props.get("audio.position"))
+                    .map(parse_audio_position)
+                    .filter(|names| !names.is_empty());
+                done.set(true);
+            })
+            .register()
+    };
+    let deadline = Instant::now() + DEVICE_LIST_TIMEOUT;
+    while !done.get() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(anyhow!(
+                "PipeWire did not answer for the sink {target} within {DEVICE_LIST_TIMEOUT:?}"
+            ));
+        }
+        let _ = conn
+            .mainloop
+            .loop_()
+            .iterate(remaining.min(Duration::from_millis(50)));
+    }
+    let map = map.borrow().clone();
+    Ok(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +437,54 @@ mod tests {
         let props = output_target_properties("alsa_output.pci-0000_00_1f.3.analog-stereo");
         assert!(props.contains(&("node.dont-move", "true")));
         assert!(props.contains(&("node.dont-fallback", "true")));
+    }
+    /// The names PipeWire knows, and the ones it does not: a map of
+    /// `1 2 3 …` tags nothing, and so does a layout's own `FWL`.
+    #[test]
+    fn channel_positions_are_the_names_pipewire_knows() {
+        use pw::spa::sys as spa;
+        assert_eq!(channel_position_id("FL"), Some(spa::SPA_AUDIO_CHANNEL_FL));
+        assert_eq!(channel_position_id("TSL"), Some(spa::SPA_AUDIO_CHANNEL_TSL));
+        assert_eq!(
+            channel_position_id("AUX0"),
+            Some(spa::SPA_AUDIO_CHANNEL_AUX0)
+        );
+        assert_eq!(
+            channel_position_id("AUX7"),
+            Some(spa::SPA_AUDIO_CHANNEL_AUX7)
+        );
+        assert_eq!(
+            channel_position_id("AUX63"),
+            Some(spa::SPA_AUDIO_CHANNEL_AUX63)
+        );
+        for unknown in ["AUX64", "AUX", "AUX-1", "1", "FWL", "UNK", "", "fl"] {
+            assert_eq!(channel_position_id(unknown), None, "{unknown}");
+        }
+    }
+
+    /// Both spellings of a channel map: the registry's and a stream's.
+    #[test]
+    fn audio_position_is_read_in_both_spellings() {
+        assert_eq!(parse_audio_position("[ FL FR FC ]"), ["FL", "FR", "FC"]);
+        assert_eq!(parse_audio_position("FL,FR"), ["FL", "FR"]);
+        assert_eq!(
+            parse_audio_position("[ \"AUX0\", \"AUX1\" ]"),
+            ["AUX0", "AUX1"]
+        );
+        assert_eq!(parse_audio_position("[ 1 2 ]"), ["1", "2"]);
+        assert!(parse_audio_position("[ ]").is_empty());
+    }
+
+    /// Talks to the session's PipeWire daemon: run with `--ignored` to see
+    /// the map a named sink states. Read-only (one registry snapshot).
+    #[test]
+    #[ignore = "needs a running PipeWire session"]
+    fn live_sink_channel_map_answers_within_the_timeout() {
+        for (name, _) in list_pipewire_output_devices().expect("device list") {
+            eprintln!(
+                "{name}\t{:?}",
+                sink_channel_map(&name).expect("channel map")
+            );
+        }
     }
 }

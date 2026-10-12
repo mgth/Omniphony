@@ -1745,6 +1745,19 @@ PipeWire today. Stating the positions in the format would make it real, and
 would also make PipeWire remix a stream whose layout is not the sink's: a
 change of behaviour to decide, not made here.
 
+**Decided and done since (branch `feat/output-sink-channel-map`):** the
+positions are stated in the format. `by_index` reads the target sink's own
+map (`audio.position`, in port order) and tags the channels with it, so port
+N carries speaker N on a sink that routes by position too; a sink with a map
+PipeWire cannot route by (a null sink's `1 2 3 …`) is linked in order as
+before, and a sink with fewer channels than the stream is refused with a
+message. `by_name` tags each speaker with the position its channel label
+gives (`TBL` is `TRL`, `FWL` is `FLW`). The reason: WirePlumber links an
+untagged port to whatever port of the sink scores best, a MIDI port
+included, and a sink with one (`module-netjack2-driver`) then refused the
+whole stream ("no more output formats"). No remix follows: the stream's
+ports are DSP ports linked one to one, tags route them, they do not mix.
+
 ### The `file` output
 
 The writer is opened by the first block too, at its rate and width. A block

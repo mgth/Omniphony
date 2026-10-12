@@ -24,7 +24,8 @@ pub mod telemetry;
 pub use self::core::{DeviceTiming, OutputCore, OutputCoreConfig};
 pub use clock::reference_now_s;
 pub use device::{
-    Negotiated, SyncOutput, SyncOutputConfig, list_output_devices, negotiate, output_host_label,
+    ChannelMap, Negotiated, SyncOutput, SyncOutputConfig, list_output_devices, negotiate,
+    output_host_label,
 };
 #[cfg(target_os = "linux")]
 pub use pipewire::{PipewireSyncOutput, PipewireSyncOutputConfig};
