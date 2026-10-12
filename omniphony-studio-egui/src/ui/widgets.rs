@@ -946,6 +946,42 @@ mod choice_card_tests {
         assert_eq!(layout(440.0), CardLayout::Row);
     }
 
+    /// A row of cards is as high as its icons and the label lines in use,
+    /// not two lines whatever the labels: one line in the default panel,
+    /// a second only where a label wraps, and then for every card.
+    #[test]
+    fn a_row_of_cards_keeps_only_the_label_lines_in_use() {
+        let height = |labels: [&'static str; 3], width: f32| {
+            with_ui(width, Vec::new(), |ui| {
+                let options = cards(labels);
+                let plan = CardPlan::new(ui, width, &options);
+                assert_eq!(plan.layout, CardLayout::Row, "{labels:?} at {width}");
+                let rows = options
+                    .iter()
+                    .map(|o| plan.label(ui, o.label, egui::Color32::WHITE).rows.len())
+                    .max()
+                    .unwrap();
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let line = ui.fonts_mut(|f| f.row_height(&font));
+                (plan.size.y, rows, line)
+            })
+        };
+        for labels in LOCALES {
+            let (high, rows, line) = height(labels, room(440.0));
+            assert_eq!(rows, 1, "{labels:?} wraps in the default panel");
+            assert_eq!(
+                high,
+                2.0 * CardPlan::ROW_PADDING_Y + CardPlan::ICON + CardPlan::ICON_GAP + line
+            );
+        }
+        // "Fones de ouvido" takes two lines in a share too narrow for it
+        // but wide enough for each of its words.
+        let (one, _, line) = height(LOCALES[2], room(440.0));
+        let (two, rows, _) = height(LOCALES[2], 270.0);
+        assert_eq!(rows, 2);
+        assert_eq!(two, one + line);
+    }
+
     /// One click anywhere on a card — its icons, its label, its padding —
     /// picks it, the first time, in a row and in a stack; a click on the
     /// card in force picks nothing.
@@ -1111,13 +1147,17 @@ struct CardPlan {
 }
 
 impl CardPlan {
-    const ICON: f32 = 26.0;
-    const STACK_ICON: f32 = 20.0;
-    const ICON_SPACING: f32 = 8.0;
-    const STACK_ICON_SPACING: f32 = 6.0;
+    // Sized against the rows around the cards: a card in a row is some two
+    // and a half control rows high, a stacked one a little over one, so the
+    // choice stands out without outweighing the section it heads.
+    const ICON: f32 = 20.0;
+    const STACK_ICON: f32 = 16.0;
+    const ICON_SPACING: f32 = 6.0;
+    const STACK_ICON_SPACING: f32 = 4.0;
     const PADDING: f32 = 8.0;
-    const STACK_PADDING_Y: f32 = 6.0;
-    const ICON_GAP: f32 = 5.0;
+    const ROW_PADDING_Y: f32 = 6.0;
+    const STACK_PADDING_Y: f32 = 4.0;
+    const ICON_GAP: f32 = 3.0;
     const ROW_LABEL_ROWS: usize = 2;
 
     fn icons_width(count: usize, icon: f32, spacing: f32) -> f32 {
@@ -1126,7 +1166,8 @@ impl CardPlan {
 
     /// Side by side while every label fits its share of `width` without a
     /// word broken or a line cut; stacked otherwise. Depends on the width
-    /// and the labels only, so it does not change while a card is clicked.
+    /// and the labels only — the cards' height included — so it does not
+    /// change while a card is clicked.
     fn new<T>(ui: &Ui, width: f32, options: &[Choice<'_, T>]) -> Self {
         let count = options.len().max(1) as f32;
         let gap = theme::GROUP_GAP;
@@ -1134,19 +1175,26 @@ impl CardPlan {
         let line = ui.fonts_mut(|f| f.row_height(&font));
         let most_icons = options.iter().map(|o| o.icons.len()).max().unwrap_or(0);
         let share = ((width - gap * (count - 1.0)) / count).floor().max(0.0);
-        let row = CardPlan {
+        let mut row = CardPlan {
             layout: CardLayout::Row,
-            size: vec2(
-                share,
-                Self::PADDING
-                    + Self::ICON
-                    + Self::ICON_GAP
-                    + line * Self::ROW_LABEL_ROWS as f32
-                    + Self::PADDING,
-            ),
+            size: vec2(share, 0.0),
             text_width: (share - 2.0 * Self::PADDING).max(0.0),
             icon_slot: 0.0,
         };
+        // As many label lines as the longest label takes at this width,
+        // the same for every card: one where they all fit on a line, so
+        // the cards are no higher than they need to be.
+        let label_rows = options
+            .iter()
+            .map(|option| row.label(ui, option.label, Color32::WHITE).rows.len())
+            .max()
+            .unwrap_or(1)
+            .clamp(1, Self::ROW_LABEL_ROWS);
+        row.size.y = Self::ROW_PADDING_Y
+            + Self::ICON
+            + Self::ICON_GAP
+            + line * label_rows as f32
+            + Self::ROW_PADDING_Y;
         let fits = Self::icons_width(most_icons, Self::ICON, Self::ICON_SPACING) <= row.text_width
             && options.iter().all(|option| {
                 let whole_words = option.label.split_whitespace().all(|word| {
@@ -1196,8 +1244,9 @@ impl CardPlan {
 /// is the click target. Returns the newly picked value.
 ///
 /// The cards sit side by side, an equal share of the width each, icons over
-/// label, and are all as high as an icon and two lines of label so that a
-/// longer translation wraps without moving what follows. Where a share of
+/// label, and are all as high as an icon and the lines the longest label
+/// takes at that width: one as a rule, two where a longer translation
+/// wraps. Where a share of
 /// the width would break a label inside a word or cut it — a narrow panel —
 /// they are stacked instead, one line each, icons before the label. A label
 /// that is cut all the same, or that shortens the choice's name, shows the
@@ -1291,17 +1340,19 @@ pub fn choice_cards<T: PartialEq + Clone>(
                             CardPlan::ICON,
                             CardPlan::ICON_SPACING,
                         );
-                        let icons_centre = rect.top() + CardPlan::PADDING + CardPlan::ICON / 2.0;
+                        let icons_centre =
+                            rect.top() + CardPlan::ROW_PADDING_Y + CardPlan::ICON / 2.0;
                         paint_icons(
                             rect.center().x - icons_width / 2.0,
                             icons_centre,
                             CardPlan::ICON,
                             CardPlan::ICON_SPACING,
                         );
-                        // Centred in the two lines kept for it: a one-line
-                        // label sits level with the middle of a two-line one.
+                        // Centred in the lines kept for it: beside a
+                        // two-line label, a one-line one sits level with
+                        // its middle.
                         let label_top = icons_centre + CardPlan::ICON / 2.0 + CardPlan::ICON_GAP;
-                        let room = rect.bottom() - CardPlan::PADDING - label_top;
+                        let room = rect.bottom() - CardPlan::ROW_PADDING_Y - label_top;
                         let slack = (room - galley.size().y).max(0.0);
                         painter.galley(
                             egui::pos2(rect.center().x, label_top + slack / 2.0),
