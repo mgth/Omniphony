@@ -2,10 +2,10 @@
 
 Status: **in progress**. Written 2026-10-07; implementation started
 2026-10-12. Built so far: the burst format (`spdif::burst`, `spdif::iamf`),
-the test framer (`orender wrap-iec61937`) and the bridge's decode of the
-burst type (harletty-bridge, `bridge-family-iamf::iec61937`). Not built: the
-PCM-carrier input, the sender in the mpv fork, anything on the audio machine.
-See "Order of work".
+the test framer (`orender wrap-iec61937`), the bridge's decode of the burst
+type (harletty-bridge, `bridge-family-iamf::iec61937`) and the sender in the
+mpv fork (`--ad=iamf-iec61937`). Not built: the receiver's PCM-carrier
+input, anything on the audio machine. See "Order of work".
 
 ## Problem
 
@@ -199,28 +199,41 @@ boundary.
    looked up from the data type (one more arm, the IAMF data type).
 5. ALSA S/PDIF devices and the FIFO need nothing beyond the bridge arm.
 
-### Sender work (mpv fork)
+### Sender (mpv fork), as built
 
-- A `forward` host decoder in `ad_orender`
-  (`--ad-orender-host-decoder=forward`) that frames the bursts itself:
-  descriptors from `CodecPrivate` as redundant copies on the schedule above,
-  one temporal unit per burst, zero padding to the period, carrier geometry
-  from an option (`--ad-orender-forward-channels`, rate = the graph rate).
-  The frames come out spdif-flagged (a new `AF_FORMAT_S_IAMF`), so mpv's
-  filter chain never touches them, and their pseudo-sample count is real time
-  on the carrier, so mpv's A/V sync works unchanged.
-- `ao_pipewire`: a fork option to present a spdif-flagged stream as plain S16
-  PCM with N channels, so a PCM sink (`nj2-sink`) accepts it; today an
-  spdif format is mapped to an IEC958 codec and PipeWire refuses to route it
-  to a PCM sink.
-- Flush on pause, stop and seek; a seek into another sequence writes a
-  non-redundant header.
-- Not recommended: a libavformat `spdifenc` patch. FFmpeg has no codec id
-  for IAMF (it is a container there, elements are Opus, AAC, FLAC or PCM), so
-  the muxer would need a private codec id through the whole chain.
-- For tests: a Rust framer in the orender CLI (`orender wrap-iec61937`) that
-  turns a raw OBU file into a burst stream on a given carrier, used by the
-  null test and the parser round-trip.
+`--ad=iamf-iec61937` on an IAMF track (`audio/decode/ad_iamf_iec61937.c`,
+branch `feat/iamf-forward`). A decoder of its own rather than a mode of
+`ad_orender`: it needs no engine and no liborender.
+
+- One burst per Matroska block. The descriptors from `CodecPrivate` lead the
+  first burst and the first after a seek, as they are, which opens a new
+  sequence at the receiver; a redundant copy leads one every
+  `--ad-iamf-iec61937-copy-interval` (1 s by default).
+- The carrier is `--ad-iamf-iec61937-channels` wide (8 by default) at the
+  track's own sample rate, so a unit is that many carrier frames and mpv's
+  A/V sync works unchanged. **The far end has to run at that rate**: a
+  resampler on the way destroys the words, so a 44.1 kHz track does not
+  cross a 48 kHz link.
+- A unit longer than its period leaves the period empty and says to widen
+  the carrier.
+- The frames are a compressed format, `AF_FORMAT_S_IAMF`: no filter, volume
+  or resampler of mpv's touches them, and the player refuses any output
+  that would change the format.
+- `ao_pcm` writes the words as they are. `ao_pipewire` presents them as
+  unpositioned S16 channels with remixing, resampling, dither and restored
+  volume off. **It refuses the default sink and any fallback**: on a
+  loudspeaker these words are full-scale noise, so the carrier sink is named
+  with `--audio-device=pipewire/<sink>` or nothing plays.
+- Not done: a libavformat `spdifenc` patch (FFmpeg has no codec id for
+  IAMF, it is a container there), and the same change on the fork's
+  `orender-master` branch with both patch sets of mpv-omniphony.
+
+Checked: through `ao_pcm` the output is byte-identical to
+`orender wrap-iec61937` on the same content (Opus, FLAC and object
+encodings; 2, 8, 16 and 24 channels; FLAC units of 67 kB, past what `Pd`
+alone counts). Through PipeWire into a null sink and back from its monitor
+(S16 to float to S16), 600 bursts of 600 came back intact on their period.
+That is the local graph, not the netjack2 link.
 
 ### Where transport B does not work
 
@@ -291,12 +304,20 @@ reports from the receiver turned into the reported output delay.
    null test lives in the bridge (`bridge/tests/iamf_carrier.rs`): every
    libiamf conformance vector the framer can carry, 233 of them, decodes
    through the parser and the burst type to the frames of its raw decode.
-3. orender: the PCM-carrier mode of the PipeWire input sink and the stated
-   carrier byte rate in the sync host. **Stacked on the resampling cutover
-   (#830)**, which removes the input sink and the live decode path this
-   would otherwise be written against; not started before it settles.
-4. mpv fork: `forward` decoder with the IEC 61937 framer, `AF_FORMAT_S_IAMF`,
-   `ao_pipewire` PCM presentation option. Fork PR plus both patch sets.
+3. orender: the PCM-carrier input. **Not started, and to be redesigned
+   against the resampling cutover (#830)**, which removes the input sink and
+   the live decode path this plan was written against. In the cutover the
+   `own` sink runs on orender's own timer driver in a private node group, and
+   the sync host regulates between that clock and the output's: "input and
+   output on the same graph, nothing to track" (clocking option 1) no longer
+   holds as written. What the input needs there: a carrier format beside
+   IEC 958 and float PCM (the words come as S16, or as floats to turn back),
+   never rendered as audio, the stated carrier byte rate for the transport
+   count, and a decision on which clock the netjack2 manager's stream is
+   slaved to on the audio machine.
+4. **Done on the fork's `orender` branch.** mpv: `--ad=iamf-iec61937`,
+   `AF_FORMAT_S_IAMF`, `ao_pcm` and `ao_pipewire`. Left: `orender-master`
+   and the mpv-omniphony patch sets.
 5. Audio machine: orender installed there with an `iamf` bridge, local config
    and layout; netjack2 channel plan (split or widen); link null test; fixed
    `--audio-delay`; listening.
