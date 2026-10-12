@@ -8,9 +8,11 @@
                                       configOBUs, then every Block
 
 The track: CodecID A_IAMF; CodecPrivate = IAConfigurationBox payload
-(version 1, leb128 size, configOBUs); one temporal unit per SimpleBlock,
-without Temporal Delimiter or Descriptor OBUs, keyframe flag from
-is_not_key_frame; CodecDelay = the in-band start trim; SeekPreRoll from
+(version 1, leb128 size, configOBUs); one temporal unit per Block, without
+Temporal Delimiter or Descriptor OBUs, keyframe flag from is_not_key_frame;
+CodecDelay = the in-band start trim; a unit whose Audio Frame OBUs trim their
+end is a BlockGroup whose DiscardPadding restates that trim (the OBUs stay
+authoritative: a player applies one of the two, never both); SeekPreRoll from
 audio_roll_distance; DefaultDuration = one frame; Channels 2 (ignored).
 
 Only the standard library. Holds one cluster at a time in memory; the output
@@ -399,6 +401,7 @@ FLAG_LACING, LANGUAGE, CODEC_ID, CODEC_PRIVATE = 0x9C, 0x22B59C, 0x86, 0x63A2
 CODEC_DELAY, SEEK_PRE_ROLL, DEFAULT_DURATION = 0x56AA, 0x56BB, 0x23E383
 AUDIO, SAMPLING_FREQUENCY, CHANNELS, BIT_DEPTH = 0xE1, 0xB5, 0x9F, 0x6264
 CLUSTER, CLUSTER_TIMESTAMP, SIMPLE_BLOCK = 0x1F43B675, 0xE7, 0xA3
+BLOCK_GROUP, BLOCK, DISCARD_PADDING = 0xA0, 0xA1, 0x75A2
 CUES, CUE_POINT, CUE_TIME, CUE_TRACK_POSITIONS = 0x1C53BB6B, 0xBB, 0xB3, 0xB7
 CUE_TRACK, CUE_CLUSTER_POSITION, VOID = 0xF7, 0xF1, 0xEC
 
@@ -424,6 +427,13 @@ def element(eid, payload):
 
 def uint(eid, value):
     return element(eid, value.to_bytes(max(1, (value.bit_length() + 7) // 8), "big"))
+
+
+def sint(eid, value):
+    width = 1
+    while not -(1 << (8 * width - 1)) <= value < (1 << (8 * width - 1)):
+        width += 1
+    return element(eid, value.to_bytes(width, "big", signed=True))
 
 
 def flt(eid, value):
@@ -501,8 +511,16 @@ def mux(config, units, out_path):
                 if unit.keyframe:
                     cues.append((ms, f.tell() - segment_data))
                 cluster = [uint(CLUSTER_TIMESTAMP, ms)]
-            block = b"\x81" + struct.pack(">h", ms - cluster_ms) + bytes([0x80 if unit.keyframe else 0]) + unit.data
-            cluster.append(element(SIMPLE_BLOCK, block))
+            if unit.trim_end:
+                # The end trim, restated for the container: a BlockGroup's
+                # Block (same header, the flags byte without the keyframe
+                # bit, which SimpleBlock alone carries) and DiscardPadding.
+                block = b"\x81" + struct.pack(">h", ms - cluster_ms) + b"\x00" + unit.data
+                padding = sint(DISCARD_PADDING, unit.trim_end * 1_000_000_000 // sr)
+                cluster.append(element(BLOCK_GROUP, element(BLOCK, block) + padding))
+            else:
+                block = b"\x81" + struct.pack(">h", ms - cluster_ms) + bytes([0x80 if unit.keyframe else 0]) + unit.data
+                cluster.append(element(SIMPLE_BLOCK, block))
         if cluster:
             f.write(element(CLUSTER, b"".join(cluster)))
 
@@ -528,6 +546,7 @@ def mux(config, units, out_path):
         "codec_delay_ns": codec_delay, "seek_preroll_ns": seek_preroll,
         "default_duration_ns": frame_ns, "duration_s": duration_ms / 1000,
         "non_keyframes": sum(1 for u in units if not u.keyframe), "cue_points": len(cues),
+        "discard_padding_blocks": sum(1 for u in units if u.trim_end),
     }
 
 
@@ -578,6 +597,13 @@ def extract(mka):
                     if cid == SIMPLE_BLOCK:
                         _, at = read_vint(data, cbody)
                         out += data[at + 3:cend]
+                    elif cid == BLOCK_GROUP:
+                        # DiscardPadding restates the OBUs' own end trim,
+                        # which they keep: nothing to put back.
+                        for gid, gbody, gend in elements(data, cbody, cend):
+                            if gid == BLOCK:
+                                _, at = read_vint(data, gbody)
+                                out += data[at + 3:gend]
     return bytes(out)
 
 
