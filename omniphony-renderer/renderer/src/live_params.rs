@@ -298,9 +298,11 @@ impl SurroundPlacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputChannelMapping {
-    /// Positionless: output port N = layout speaker N, in order, no position tags.
-    /// Matches a custom DAC wired to the layout order (and what ASIO/CoreAudio
-    /// already do). The default.
+    /// In order: output port N = layout speaker N. On a host that routes by
+    /// position (PipeWire) the channels take the device's own map in order,
+    /// so that port N carries speaker N there too; ASIO and CoreAudio play
+    /// the channels in order anyway. Matches a custom DAC wired to the
+    /// layout order. The default.
     #[default]
     ByIndex,
     /// Positional: tag each output channel with its speaker position (FC, …) so a
