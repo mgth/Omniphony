@@ -104,6 +104,14 @@ fn output_devices() -> Vec<OutputDeviceOption> {
         .collect()
 }
 
+/// The names an output can be asked for, as [`output_devices`] lists them.
+pub fn output_device_names() -> Vec<String> {
+    output_devices()
+        .into_iter()
+        .map(|device| device.value)
+        .collect()
+}
+
 impl Controls {
     /// The controls of a run, seeded with what it was launched with.
     pub fn new(config: &HostConfig, renderer: Arc<RendererControl>) -> Self {

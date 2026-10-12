@@ -75,6 +75,41 @@ pub struct HostTelemetry {
     /// Counts of the streams already over: an epoch's servo starts from zero,
     /// the channels count for the life of the host.
     carried: Counts,
+    /// The warning last written for a discontinuity, and what came after it
+    /// of the same kind and was not written.
+    repeated: Option<Repeated>,
+}
+
+/// How long one kind of discontinuity is said once: a fault that comes back
+/// block after block (a ring nothing drains) is a line and then a count,
+/// not a line per block.
+const REPEAT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A warning written for a discontinuity at a stage, and the ones of the
+/// same kind held back since.
+struct Repeated {
+    stage: audio_sync::Stage,
+    reason: audio_sync::DiscontinuityReason,
+    written: std::time::Instant,
+    events: u64,
+    frames: u64,
+}
+
+impl Repeated {
+    /// What was held back, in one line; nothing when nothing was.
+    fn flush(&mut self) {
+        if self.events > 0 {
+            log::warn!(
+                "sync host: {} more times at the {:?} ({:?}): {} frames",
+                self.events,
+                self.stage,
+                self.reason,
+                self.frames
+            );
+        }
+        self.events = 0;
+        self.frames = 0;
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -141,6 +176,7 @@ impl HostTelemetry {
             lost_total: 0,
             filled_total: 0,
             carried: Counts::default(),
+            repeated: None,
             registry,
         };
         for name in BASE_CHANNELS {
@@ -242,13 +278,9 @@ impl HostTelemetry {
                 frames.unsigned_abs(),
                 event.position
             ),
-            reason => log::warn!(
-                "sync host: {} frames {} at the {:?} ({reason:?}, stream frame {})",
-                frames.unsigned_abs(),
-                if frames < 0 { "lost" } else { "made up" },
-                event.stage,
-                event.position
-            ),
+            reason => {
+                self.warn_once_in_a_while(event, reason, std::time::Instant::now());
+            }
         }
         if frames < 0 {
             self.lost_total += frames.unsigned_abs();
@@ -259,8 +291,52 @@ impl HostTelemetry {
         put(&self.frames_filled, self.filled_total as f64);
     }
 
+    /// Write the warning for `event`, unless one of the same kind was
+    /// written within [`REPEAT_WINDOW`]: then it is counted, and the count is
+    /// written when the window ends or another kind comes. Returns whether a
+    /// line was written for the event itself.
+    fn warn_once_in_a_while(
+        &mut self,
+        event: &DiscontinuityEvent,
+        reason: audio_sync::DiscontinuityReason,
+        now: std::time::Instant,
+    ) -> bool {
+        let frames = event.delta_frames;
+        if let Some(repeated) = self.repeated.as_mut()
+            && repeated.stage == event.stage
+            && repeated.reason == reason
+        {
+            if now.duration_since(repeated.written) < REPEAT_WINDOW {
+                repeated.events += 1;
+                repeated.frames += frames.unsigned_abs();
+                return false;
+            }
+            repeated.flush();
+        } else if let Some(repeated) = self.repeated.as_mut() {
+            repeated.flush();
+        }
+        log::warn!(
+            "sync host: {} frames {} at the {:?} ({reason:?}, stream frame {})",
+            frames.unsigned_abs(),
+            if frames < 0 { "lost" } else { "made up" },
+            event.stage,
+            event.position
+        );
+        self.repeated = Some(Repeated {
+            stage: event.stage,
+            reason,
+            written: now,
+            events: 0,
+            frames: 0,
+        });
+        true
+    }
+
     /// A stream is over: its counts stay in the totals.
     pub fn close_epoch(&mut self, last: &SyncSnapshot) {
+        if let Some(repeated) = self.repeated.as_mut() {
+            repeated.flush();
+        }
         self.carried = self.carried.plus(Counts::of(last));
         self.put_counts(self.carried);
     }
@@ -391,6 +467,30 @@ mod tests {
         }
         assert_eq!(value(&t, "frames_lost"), 1600.0);
         assert_eq!(value(&t, "frames_filled"), 38_400.0);
+    }
+
+    /// A fault that comes back block after block is written once, then
+    /// counted: every event still moves the totals.
+    #[test]
+    fn a_repeated_discontinuity_is_written_once_per_window() {
+        use audio_sync::{Accounting, DiscontinuityReason as Reason, Stage};
+        use std::time::{Duration, Instant};
+        let mut t = HostTelemetry::new(150.0);
+        let mut accounting = Accounting::new();
+        let start = Instant::now();
+        let mut written = 0;
+        // 47 blocks a second for 12 s, as a ring nothing drains refuses them.
+        for i in 0..(47 * 12) {
+            let event = accounting.note(Stage::Ring, 192_000, -1024, Reason::Overflow);
+            let at = start + Duration::from_secs_f64(i as f64 / 47.0);
+            written += usize::from(t.warn_once_in_a_while(&event, Reason::Overflow, at));
+        }
+        assert_eq!(written, 3, "one line at 0 s, 5 s and 10 s");
+        // Another kind is written at once, and starts its own window.
+        let other = accounting.note(Stage::Decoder, 0, -1536, Reason::DecoderShortfall);
+        let at = start + Duration::from_secs(12);
+        assert!(t.warn_once_in_a_while(&other, Reason::DecoderShortfall, at));
+        assert!(!t.warn_once_in_a_while(&other, Reason::DecoderShortfall, at));
     }
 
     #[test]

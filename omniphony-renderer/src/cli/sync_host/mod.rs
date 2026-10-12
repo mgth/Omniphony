@@ -179,6 +179,31 @@ enum OutputReport {
 /// it is not (a device that is not there leaves the stream waiting for it).
 const OUTPUT_WAIT: Duration = Duration::from_secs(2);
 
+/// How often the devices are listed while the output is not playing, to see
+/// the one asked for come back.
+const OUTPUT_POLL: Duration = Duration::from_secs(3);
+
+/// An output that is not playing, watched until its device is there again:
+/// a DAC switched on after the renderer, a headset that reconnects. The
+/// stream PipeWire refused for a missing target is not linked later, and a
+/// cpal device that could not be opened is not opened again by itself.
+struct OutputWatch {
+    next_poll: Instant,
+    /// The device was seen missing since the output stopped: its return is
+    /// what reopens the output. One that was there all along failed for
+    /// another reason, which opening it again would only repeat.
+    seen_absent: bool,
+}
+
+/// Whether the device an output is asked on is among `devices` (the names a
+/// client can ask for); with none asked for, whether there is any device.
+fn output_present(target: Option<&str>, devices: &[String]) -> bool {
+    match target {
+        Some(name) => devices.iter().any(|device| device == name),
+        None => !devices.is_empty(),
+    }
+}
+
 /// What an epoch plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EpochKind {
@@ -317,7 +342,8 @@ struct Epoch {
     /// The device's ring and stream, once a block has said what to open it
     /// for; always `None` when the output is a file.
     device: Option<Device>,
-    /// The device could not be opened: not tried again for this epoch.
+    /// The device could not be opened: not tried again for this epoch (the
+    /// host opens another epoch when the device is there again).
     device_failed: bool,
     /// The file the run writes, when the output is one.
     file: Option<FileOut>,
@@ -508,6 +534,18 @@ impl Source {
     /// Whether the source's clock is read from the arrival of its bytes.
     fn follows_the_writer(&self, clock: SourceClock) -> bool {
         matches!(self, Source::Pipe { .. }) && !self.device_paced(clock)
+    }
+
+    /// Whether `a` and `b` play this source the same way: they differ at
+    /// most by a source clock that makes no difference for it.
+    fn same_playback(&self, a: &OutputSettings, b: &OutputSettings) -> bool {
+        let same_clock = self.device_paced(a.source_clock) == self.device_paced(b.source_clock)
+            && self.follows_the_writer(a.source_clock) == self.follows_the_writer(b.source_clock);
+        same_clock
+            && OutputSettings {
+                source_clock: b.source_clock,
+                ..a.clone()
+            } == *b
     }
 }
 
@@ -751,6 +789,8 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
     let mut capture_gone = false;
     // A stream has ended: without `continuous`, the run ends with it.
     let mut stream_ended = false;
+    // The output is not playing: its device is watched for.
+    let mut output_watch: Option<OutputWatch> = None;
 
     // The path the run was given is the input path a client is shown and a
     // Save writes.
@@ -852,7 +892,16 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         // closed; its next chunk opens it again with the new settings, as
         // for a run that takes a running stream over.
         let wanted = controls.settings();
-        if wanted != settings {
+        if wanted != settings && source.same_playback(&settings, &wanted) {
+            // Another clock asked for where the input has only one (the
+            // renderer's own on its sink, the device's for a file): nothing
+            // to reopen.
+            log::info!(
+                "sync host: source clock {:?} asked for, no change for this input",
+                wanted.source_clock
+            );
+            settings = wanted;
+        } else if wanted != settings {
             log::info!("sync host: output settings changed: {wanted:?}");
             if wanted.target_ms != settings.target_ms {
                 telemetry.set_configured_target(wanted.target_ms);
@@ -1011,6 +1060,37 @@ pub fn run(config: &HostConfig, session: &mut HostSession) -> Result<HostRun> {
         }
         if let Some(ep) = epoch.as_mut().filter(|ep| ep.ending_at.is_none()) {
             ep.report_output(&controls, &settings);
+        }
+        // An output that is not playing is opened again when its device is
+        // back: the epoch is closed, and the stream's next chunk opens one.
+        let lost = settings.output == OutputKind::Device
+            && epoch
+                .as_ref()
+                .is_some_and(|ep| ep.ending_at.is_none() && ep.output_lost());
+        if !lost {
+            output_watch = None;
+        } else {
+            let now = Instant::now();
+            let watch = output_watch.get_or_insert(OutputWatch {
+                next_poll: now,
+                seen_absent: false,
+            });
+            if now >= watch.next_poll {
+                watch.next_poll = now + OUTPUT_POLL;
+                let target = settings.output_target.as_deref();
+                if !output_present(target, &controls::output_device_names()) {
+                    watch.seen_absent = true;
+                } else if watch.seen_absent {
+                    log::info!(
+                        "sync host: {} is there again, output reopened",
+                        target.unwrap_or("an output device")
+                    );
+                    output_watch = None;
+                    if let Some(mut ep) = epoch.take() {
+                        close_epoch(&mut telemetry, &mut ep);
+                    }
+                }
+            }
         }
         if let Some(ep) = epoch.as_mut() {
             // A file that cannot be written ends the run: there is nothing
@@ -1216,6 +1296,25 @@ impl Epoch {
                 ctx.env.controls.failed(format!("{e:#}"));
                 self.device_failed = true;
             }
+        }
+    }
+
+    /// Whether this epoch's output plays nothing: it could not be opened, or
+    /// it is not playing and the clients were told.
+    fn output_lost(&self) -> bool {
+        self.device_failed || self.output_report == OutputReport::Missing
+    }
+
+    /// `frames` rendered for an output that is not playing: they go nowhere.
+    /// Its ring would only fill and then refuse them block after block, and
+    /// nothing was playing for them to be missing from, so this is neither
+    /// an event nor a loss. The count moves as for frames a full ring
+    /// refuses: what plays when the output is back has the latency it has.
+    fn drop_unplayed(&mut self, frames: u64) {
+        self.dropped_frames += frames;
+        self.refused_frames += frames;
+        if self.counts_transport() {
+            self.tap.account(-(frames as i64));
         }
     }
 
@@ -2212,6 +2311,13 @@ fn push_blocks(engine: &mut Engine, ep: &mut Epoch, ctx: &PlayCtx<'_>, blocks: V
         if ep.device.as_ref().is_none_or(|d| d.format != format) && !ep.device_failed {
             ep.open_device(engine, ctx, format);
         }
+        let playable = ep.device.as_ref().is_some_and(|d| d.format == format);
+        // (A paced source waits instead: nothing of it is dropped.)
+        if playable && !ep.paced && ep.output_report == OutputReport::Missing {
+            ep.drop_unplayed(frames);
+            done.push(block);
+            continue;
+        }
         let Some(device) = ep.device.as_mut().filter(|d| d.format == format) else {
             // No output to play it on (it could not be opened).
             ep.dropped_frames += frames;
@@ -2731,6 +2837,86 @@ mod tests {
         // Silence filled a gap after the anchor and is being heard: the
         // listener is on the last sample rendered, not past it.
         assert_eq!(heard_sample((48_000, 96_000), 60_000.0, 0), 96_000);
+    }
+
+    /// An output that is not playing takes nothing and says nothing: the
+    /// frames rendered for it are neither events nor a loss, and the count
+    /// moves so that what plays when it is back has the latency it has.
+    #[test]
+    fn an_output_that_is_not_playing_takes_nothing() {
+        let mut ep = Epoch::new(EpochKind::Stream, None);
+        assert!(!ep.output_lost());
+        ep.output_report = OutputReport::Missing;
+        assert!(ep.output_lost());
+        // Counted on the transport: the frames were counted in.
+        ep.transport_base = Some((0, 0.0));
+        ep.last_transport = Some(Transport {
+            rate: 48_000,
+            channels: 8,
+            format: CarrierFormat::PcmF32,
+            bytes_end: 0,
+        });
+        for _ in 0..47 {
+            ep.drop_unplayed(1024);
+        }
+        assert!(ep.events.is_empty(), "not a discontinuity");
+        assert_eq!(ep.dropped_frames, 47 * 1024);
+        assert_eq!(ep.pushed_frames, 0);
+        assert_eq!(ep.tap.offset(), -(47.0 * 1024.0));
+        // Counted as what the decoder delivered: they never were in.
+        let mut decoded = Epoch::new(EpochKind::Stream, None);
+        decoded.drop_unplayed(1024);
+        assert_eq!(decoded.tap.offset(), 0.0);
+    }
+
+    /// The device asked for is there when it is listed; with none asked
+    /// for, when anything is.
+    #[test]
+    fn an_output_is_present_when_its_device_is_listed() {
+        let devices = vec!["dac".to_owned(), "headset".to_owned()];
+        assert!(output_present(Some("headset"), &devices));
+        assert!(!output_present(Some("usb"), &devices));
+        assert!(output_present(None, &devices));
+        assert!(!output_present(None, &[]));
+        assert!(!output_present(Some("dac"), &[]));
+    }
+
+    /// A source clock asked for where the input has only one changes
+    /// nothing to reopen: the sink's is the renderer's, a file's the
+    /// device's. On a pipe, `none` hands the pace to the device, and that is
+    /// another playback; so is any other setting.
+    #[test]
+    fn a_clock_the_input_cannot_have_reopens_nothing() {
+        let settings = |clock| OutputSettings {
+            target_ms: 150.0,
+            output_target: None,
+            loop_bandwidth_hz: None,
+            realign_threshold_ms: 20.0,
+            source_clock: clock,
+            output_rate_hz: None,
+            output: OutputKind::Device,
+        };
+        let sink = Source::OwnSink {
+            node_name: "omniphony".into(),
+            description: "x".into(),
+            session_priority: None,
+        };
+        let pipe = Source::Pipe {
+            path: "/run/x.pipe".into(),
+            drain: false,
+        };
+        let auto = settings(SourceClock::Auto);
+        for clock in [SourceClock::Own, SourceClock::Follow, SourceClock::None] {
+            assert!(sink.same_playback(&auto, &settings(clock)), "{clock:?}");
+        }
+        assert!(pipe.same_playback(&auto, &settings(SourceClock::Follow)));
+        assert!(pipe.same_playback(&auto, &settings(SourceClock::Own)));
+        assert!(!pipe.same_playback(&auto, &settings(SourceClock::None)));
+        let other_target = OutputSettings {
+            target_ms: 200.0,
+            ..settings(SourceClock::Own)
+        };
+        assert!(!sink.same_playback(&auto, &other_target));
     }
 
     /// An output reopened under a running stream starts its ring at 0, and
