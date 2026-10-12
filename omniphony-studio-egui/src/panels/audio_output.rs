@@ -66,10 +66,11 @@ impl StudioSpike {
                     line.push_str(" • ");
                     line.push_str(&tf("status.outputHost", &[("host", host)]));
                 }
-                if let Some(error) = &audio.audio_error {
-                    line.push_str(&format!(" • Error: {error}"));
-                }
                 widgets::note(ui, &line);
+                // Nothing is heard while this is up: said where it is seen.
+                if let Some(error) = &audio.audio_error {
+                    widgets::banner(ui, widgets::Severity::Error, error, None);
+                }
                 // The Essentials view keeps the destination: the device, or
                 // the file rows while a file is what is being written, with
                 // the backend select that leads back to a device.

@@ -48,6 +48,8 @@ pub struct PipewireSyncOutputConfig {
 pub struct PipewireSyncOutput {
     shutdown: Arc<AtomicBool>,
     streaming: Arc<AtomicBool>,
+    /// Why PipeWire put the stream in its error state, while it is there.
+    refusal: Arc<std::sync::Mutex<Option<String>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -56,14 +58,17 @@ impl PipewireSyncOutput {
     pub fn start(config: PipewireSyncOutputConfig, core: OutputCore) -> Result<Self> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let streaming = Arc::new(AtomicBool::new(false));
+        let refusal = Arc::new(std::sync::Mutex::new(None));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
         let thread = {
             let shutdown = Arc::clone(&shutdown);
             let streaming = Arc::clone(&streaming);
+            let refusal = Arc::clone(&refusal);
             thread::Builder::new()
                 .name("pw-sync-output".into())
                 .spawn(move || {
-                    if let Err(e) = run(config, core, &shutdown, &streaming, &ready_tx) {
+                    let state = (&streaming, &refusal);
+                    if let Err(e) = run(config, core, &shutdown, state, &ready_tx) {
                         let _ = ready_tx.send(Err(e));
                     }
                 })?
@@ -72,6 +77,7 @@ impl PipewireSyncOutput {
             Ok(Ok(())) => Ok(Self {
                 shutdown,
                 streaming,
+                refusal,
                 thread: Some(thread),
             }),
             Ok(Err(e)) => Err(e),
@@ -85,6 +91,12 @@ impl PipewireSyncOutput {
     /// Whether the stream is in the STREAMING state.
     pub fn is_streaming(&self) -> bool {
         self.streaming.load(Ordering::Relaxed)
+    }
+
+    /// What PipeWire said when it refused the stream (no such target, no
+    /// format in common with it), while the stream is in that state.
+    pub fn refusal(&self) -> Option<String> {
+        self.refusal.lock().ok().and_then(|reason| reason.clone())
     }
 }
 
@@ -107,7 +119,7 @@ fn run(
     config: PipewireSyncOutputConfig,
     core: OutputCore,
     shutdown: &AtomicBool,
-    streaming: &Arc<AtomicBool>,
+    (streaming, refusal): (&Arc<AtomicBool>, &Arc<std::sync::Mutex<Option<String>>>),
     ready: &std::sync::mpsc::Sender<Result<()>>,
 ) -> Result<()> {
     pw::init();
@@ -151,6 +163,7 @@ fn run(
         .map_err(|e| anyhow!("PipeWire stream: {e:?}"))?;
 
     let streaming_flag = Arc::clone(streaming);
+    let refusal_slot = Arc::clone(refusal);
     let rate = config.rate as f64;
     let _listener = stream
         .add_local_listener_with_user_data(CallbackData {
@@ -164,6 +177,14 @@ fn run(
                 matches!(new, pw::stream::StreamState::Streaming),
                 Ordering::Relaxed,
             );
+            // (The main loop's thread, not the data thread: a lock is fine.)
+            if let Ok(mut reason) = refusal_slot.lock() {
+                match &new {
+                    pw::stream::StreamState::Error(message) => *reason = Some(message.clone()),
+                    pw::stream::StreamState::Streaming => *reason = None,
+                    _ => {}
+                }
+            }
         })
         .process(process)
         .register()

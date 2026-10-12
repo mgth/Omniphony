@@ -1219,8 +1219,23 @@ impl Epoch {
                 .output_target
                 .as_deref()
                 .unwrap_or("the session's default output");
-            log::warn!("sync host: {device} is not playing");
-            controls.failed(format!("{device} is not playing: is the device there?"));
+            // What the audio system said of it, when it said anything: a
+            // target that is not there, or one that is and takes no format
+            // this stream has (a sink with a channel map of its own).
+            let reason = self
+                .device
+                .as_ref()
+                .and_then(|device| device.output.refusal());
+            match reason {
+                Some(reason) => {
+                    log::warn!("sync host: {device} is not playing: {reason}");
+                    controls.failed(format!("{device} is not playing: {reason}"));
+                }
+                None => {
+                    log::warn!("sync host: {device} is not playing");
+                    controls.failed(format!("{device} is not playing: is the device there?"));
+                }
+            }
         }
         self.output_report = report;
     }
@@ -1448,6 +1463,10 @@ impl Epoch {
         let Some(device) = self.device.as_mut() else {
             return;
         };
+        // (Only a paced source has blocks waiting, or a level to keep.)
+        if !self.paced {
+            return;
+        }
         let limit = paced_level(
             self.pace_limit_frames,
             self.telemetry.snapshot().paced_demand_frames,

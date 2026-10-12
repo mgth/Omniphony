@@ -67,6 +67,12 @@ impl SyncOutput {
     pub fn is_streaming(&self) -> bool {
         self.0.is_streaming()
     }
+
+    /// Why the audio system refused the stream, when it said so (PipeWire:
+    /// no such target, no format in common with it).
+    pub fn refusal(&self) -> Option<String> {
+        self.0.refusal()
+    }
 }
 
 /// Find the device `config` names and agree on a format with it.
@@ -128,6 +134,10 @@ mod imp {
     impl Output {
         pub fn is_streaming(&self) -> bool {
             self.0.is_streaming()
+        }
+
+        pub fn refusal(&self) -> Option<String> {
+            self.0.refusal()
         }
     }
 
@@ -290,6 +300,11 @@ mod imp {
     impl Output {
         pub fn is_streaming(&self) -> bool {
             !self.failed.load(Ordering::Relaxed)
+        }
+
+        /// (A cpal device that cannot be opened fails at `negotiate`.)
+        pub fn refusal(&self) -> Option<String> {
+            None
         }
     }
 
