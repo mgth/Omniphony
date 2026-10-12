@@ -191,6 +191,11 @@ fn host_config_from(
         loop_bandwidth_hz: render_cfg.loop_bandwidth_hz.map(f64::from),
         realign_threshold_ms: resolve_realign_threshold_ms(render_cfg.realign_threshold_ms),
         output_target: args.output_device.clone(),
+        // (0 is the option's way of saying unset.)
+        output_rate_hz: args
+            .output_sample_rate
+            .or(render_cfg.output_sample_rate)
+            .filter(|hz| *hz > 0),
         output,
         source_clock: resolve_source_clock(render_cfg.source_clock.as_deref()),
         continuous: args.continuous,
@@ -397,6 +402,16 @@ mod tests {
             }
         );
         assert_eq!(sink.target_latency_ms, 80.0);
+        assert_eq!(sink.output_rate_hz, None);
+        let at_96k = host_config_from(
+            &args,
+            &file,
+            false,
+            &config("output_sample_rate: 96000\n"),
+            None,
+        )
+        .expect("a run at a device rate asked for");
+        assert_eq!(at_96k.output_rate_hz, Some(96_000));
         assert_eq!(sink.output_target.as_deref(), Some("dac"));
         assert!(sink.osc.enabled);
         assert_eq!(sink.osc.port_out, 9123);

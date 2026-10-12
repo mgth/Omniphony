@@ -353,9 +353,12 @@ struct Epoch {
     tap: Arc<SourceTap>,
     telemetry: Arc<SyncTelemetry>,
     /// The device paces the source: rendered blocks wait in `pending` until
-    /// the ring is below `pace_limit_frames`, and nothing is dropped.
+    /// the ring is below `pace_limit_frames` (or what the device needs, when
+    /// that is more: [`paced_level`]), and nothing is dropped.
     paced: bool,
     pace_limit_frames: usize,
+    /// The level kept ahead had to be more than the target, and it was said.
+    pace_raised: bool,
     /// Rendered blocks not in the ring yet, each with the frames of it
     /// already pushed.
     pending: VecDeque<(RenderedAudio, usize)>,
@@ -599,6 +602,8 @@ pub struct HostConfig {
     pub realign_threshold_ms: f64,
     /// PipeWire sink to play into (pinned); `None` is the session's choice.
     pub output_target: Option<String>,
+    /// Rate the device is opened at (Hz); `None` is each stream's own.
+    pub output_rate_hz: Option<u32>,
     /// Where the rendered audio goes as the run starts. A client can ask for
     /// the other kind, or another file, while it runs.
     pub output: OutputKind,
@@ -660,7 +665,7 @@ impl CaptureKey {
 impl HostSession {
     /// Open the capture of `source`: the one already running when it is the
     /// same, with what it queued meanwhile discarded; else a new one in its
-    /// place. A sink replaces the one running only once that one is closed
+    /// place, with all it reads. A sink replaces the one running only once that one is closed
     /// (it must leave the graph before one of the same name joins it); a
     /// pipe or a file is opened first, so that one that cannot be opened
     /// leaves what runs as it is.
@@ -670,6 +675,8 @@ impl HostSession {
         let reusable = !matches!(source, Source::File { .. });
         if reusable && self.capture.as_ref().is_some_and(|(k, _)| *k == key) {
             log::info!("sync host: keeping the capture open");
+            // What it queued while no run was taking it is not this run's.
+            self.current()?.discard_pending();
         } else {
             let capture = match source {
                 Source::File { path } => spawn_file_reader(path)
@@ -698,9 +705,11 @@ impl HostSession {
                      is a pipe or a file"
                 ),
             };
+            // (Nothing to discard: what a capture opened here has queued
+            // already is the start of what this run plays, a file's first
+            // bytes among it.)
             self.capture = Some((key, capture));
         }
-        self.current()?.discard_pending();
         Ok(())
     }
 
@@ -1227,6 +1236,7 @@ impl Epoch {
             telemetry: Arc::new(SyncTelemetry::new()),
             paced: false,
             pace_limit_frames: 0,
+            pace_raised: false,
             pending: VecDeque::new(),
             finishing: false,
             hold: 0,
@@ -1438,11 +1448,23 @@ impl Epoch {
         let Some(device) = self.device.as_mut() else {
             return;
         };
+        let limit = paced_level(
+            self.pace_limit_frames,
+            self.telemetry.snapshot().paced_demand_frames,
+        );
+        if limit > self.pace_limit_frames && !std::mem::replace(&mut self.pace_raised, true) {
+            log::info!(
+                "sync host: the latency target ({:.0} ms) is shorter than two cycles of the \
+                 device: keeping {:.0} ms ahead of it",
+                self.pace_limit_frames as f64 * 1e3 / device.format.rate as f64,
+                limit as f64 * 1e3 / device.format.rate as f64
+            );
+        }
         let (pushed, done) = pump_into(
             &mut self.pending,
             &mut device.producer,
             device.format.channels,
-            self.pace_limit_frames,
+            limit,
         );
         self.pushed_frames += pushed;
         // The ring's last frame, on the engine's timeline.
@@ -1735,6 +1757,19 @@ fn idle_stand_by(osc: &mut orender_engine::osc::OscSender) {
         }
         log::warn!("sync host: the OSC port is still held, standing by again");
     }
+}
+
+/// The level a paced source keeps in the ring: the latency target as a
+/// buffer level, and never less than two device callbacks' worth (`demand`
+/// is what one asks for, as the output has measured it; 0 before its first
+/// callback): the one being played, and the next, which the host has to
+/// have rendered by the time the device comes back for it. A target
+/// shorter than a callback would otherwise leave the device with too
+/// little to play anything: it would stay silent without draining the ring,
+/// and the source would wait on it for ever.
+fn paced_level(target_frames: usize, demand: f64) -> usize {
+    // One frame over: the read front sits between two frames.
+    target_frames.max((2.0 * demand).ceil() as usize + 1)
 }
 
 /// Push the blocks in `pending`, oldest first, until the ring holds `limit`
@@ -2521,6 +2556,7 @@ mod tests {
             loop_bandwidth_hz: None,
             realign_threshold_ms: 20.0,
             output_target: None,
+            output_rate_hz: None,
             output: OutputKind::Device,
             source_clock: SourceClock::Auto,
             continuous: true,
@@ -2837,6 +2873,84 @@ mod tests {
         // Silence filled a gap after the anchor and is being heard: the
         // listener is on the last sample rendered, not past it.
         assert_eq!(heard_sample((48_000, 96_000), 60_000.0, 0), 96_000);
+    }
+
+    /// A paced source whose latency target is shorter than one device
+    /// callback still plays: the level it keeps ahead is raised to what the
+    /// output says a callback asks for. At 10 ms (480 frames) under a
+    /// 1024-frame callback, the device used to find too little to play
+    /// anything, stayed silent without draining the ring, and the blocks
+    /// waiting for room in it kept the host from reading its input, for ever.
+    #[test]
+    fn a_paced_target_shorter_than_a_callback_still_plays() {
+        use audio_output::sync_output::{DeviceTiming, OutputCore};
+        let (mut producer, consumer) = frame_ring(2, 48_000 * 4);
+        let tap = Arc::new(SourceTap::new());
+        let telemetry = Arc::new(SyncTelemetry::new());
+        let mut core_config = OutputCoreConfig::new(2, 48_000, 48_000, 8192);
+        core_config.servo.pacing = audio_sync::Pacing::Device;
+        core_config.servo.target_latency_s = 0.010;
+        let mut core = OutputCore::new(core_config, consumer, tap, Arc::clone(&telemetry));
+        let target_frames = 480;
+        let mut pending: VecDeque<(RenderedAudio, usize)> =
+            (0..40).map(|i| (block(1024, i as f32), 0)).collect();
+        let mut out = vec![0.0f32; 1024 * 2];
+        let mut heard = 0usize;
+        for cycle in 0..100 {
+            let limit = paced_level(target_frames, telemetry.snapshot().paced_demand_frames);
+            pump_into(&mut pending, &mut producer, 2, limit);
+            let timing = DeviceTiming {
+                t_s: cycle as f64 * 1024.0 / 48_000.0,
+                position_frames: cycle as f64 * 1024.0,
+                heard_delay_s: 0.02,
+            };
+            core.process(timing, &mut out, 2);
+            heard += usize::from(out.iter().any(|sample| *sample != 0.0));
+        }
+        assert!(pending.is_empty(), "{} blocks still wait", pending.len());
+        assert!(heard >= 38, "only {heard} cycles of 100 played anything");
+        // With the target alone as the level, nothing ever plays.
+        assert_eq!(paced_level(480, 0.0), 480);
+        assert_eq!(paced_level(480, 1024.0 + 64.0), 2177);
+        assert_eq!(paced_level(7200, 1088.0), 7200);
+    }
+
+    /// A capture opened for a run is read from its first byte: what its
+    /// reader has queued by the time the session returns is the start of
+    /// the input, not something left over. (It was discarded like a kept
+    /// capture's backlog: a file opened in place of a pipe, whose reader the
+    /// session waits out, lost its head, or all of it when it was short.)
+    #[cfg(unix)]
+    #[test]
+    fn a_file_opened_in_place_of_a_pipe_is_read_from_its_first_byte() {
+        let dir = std::env::temp_dir();
+        let fifo = dir.join(format!("orender-sync-session-{}.fifo", std::process::id()));
+        let file = dir.join(format!("orender-sync-session-{}.bin", std::process::id()));
+        let content: Vec<u8> = (0..100u8).collect();
+        std::fs::write(&file, &content).unwrap();
+        let pipe = Source::Pipe {
+            path: fifo.clone(),
+            drain: false,
+        };
+        let mut session = HostSession::default();
+        session.open(&pipe, &config(pipe.clone(), 150.0)).unwrap();
+        let from_file = Source::File { path: file.clone() };
+        session
+            .open(&from_file, &config(from_file.clone(), 150.0))
+            .unwrap();
+        let capture = session.current().unwrap();
+        let mut read = Vec::new();
+        while let Ok(msg) = capture.recv_timeout(Duration::from_secs(5)) {
+            match msg {
+                ReaderMsg::Chunk { bytes, .. } => read.extend_from_slice(&bytes),
+                ReaderMsg::End => break,
+                ReaderMsg::Start => {}
+            }
+        }
+        drop(session);
+        let _ = std::fs::remove_file(&fifo);
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(read, content);
     }
 
     /// An output that is not playing takes nothing and says nothing: the

@@ -316,7 +316,16 @@ mod platform {
             match n {
                 0 => ReadOutcome::End,
                 n if n > 0 => ReadOutcome::Bytes(n as usize),
-                _ => ReadOutcome::Idle,
+                // Interrupted, or nothing after all: asked again.
+                _ if matches!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EAGAIN | libc::EINTR)
+                ) =>
+                {
+                    ReadOutcome::Idle
+                }
+                // A descriptor that cannot be read any more is at its end.
+                _ => ReadOutcome::End,
             }
         }
     }
@@ -398,7 +407,10 @@ mod platform {
         };
         // SAFETY: one valid pollfd.
         let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-        r > 0 && pfd.revents & libc::POLLIN != 0
+        // A pipe whose writer has closed shows as a hangup, without
+        // `POLLIN` once what it wrote has been read: the read that follows
+        // is the one that returns 0, the end of the stream.
+        r > 0 && pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
     }
 }
 
@@ -487,7 +499,12 @@ fn read_loop(
                 }
                 break;
             }
-            ReadOutcome::Idle | ReadOutcome::End => {
+            outcome @ (ReadOutcome::Idle | ReadOutcome::End) => {
+                // (A FIFO held open for writing has no end; one that says
+                // so anyway is not polled in a loop.)
+                if matches!(outcome, ReadOutcome::End) {
+                    thread::sleep(Duration::from_millis(u64::from(POLL_MS)));
+                }
                 if kind == ReadKind::Fifo
                     && in_stream
                     && reference_now_s() - last_data >= END_OF_STREAM_S
@@ -609,6 +626,38 @@ mod tests {
             ),
             "the reader ends with its file"
         );
+    }
+
+    /// Standard input fed by another process is a pipe: when its writer has
+    /// closed and what it wrote has been read, the stream is over and the
+    /// reader says so. (A hangup used to be taken for nothing to read, and
+    /// `cat file | orender render -` never ended.)
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_whose_writer_closed_ends_the_stream() {
+        let mut fds = [0i32; 2];
+        // SAFETY: two descriptors of the test's own.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let content = vec![9u8; 5000];
+        // SAFETY: `content` is valid for its length; the write end is closed.
+        unsafe {
+            let n = libc::write(fds[1], content.as_ptr().cast(), content.len());
+            assert_eq!(n as usize, content.len());
+            libc::close(fds[1]);
+        }
+        let capture = spawn_file_reader(Path::new(&format!("/dev/fd/{}", fds[0]))).unwrap();
+        // SAFETY: the reader has its own descriptor on the pipe.
+        unsafe { libc::close(fds[0]) };
+        assert!(matches!(next(&capture), Some(ReaderMsg::Start)));
+        let mut total = 0;
+        loop {
+            match next(&capture) {
+                Some(ReaderMsg::Chunk { bytes, .. }) => total += bytes.len(),
+                Some(ReaderMsg::End) => break,
+                other => panic!("no end of stream ({:?})", other.is_some()),
+            }
+        }
+        assert_eq!(total, content.len());
     }
 
     /// A paced reader reads no further than a chunk or two ahead of what the

@@ -26,6 +26,7 @@ pub struct SyncTelemetry {
     /// Ring reads that came up short after the servo had planned them: a
     /// planning bug or a ring the producer rewound; zero in normal running.
     short_reads: AtomicU64,
+    paced_demand_frames: AtomicU64,
     /// See [`SyncTelemetry::heard_frame`].
     heard_origin: AtomicU64,
     heard_rate: AtomicU64,
@@ -50,6 +51,9 @@ pub struct SyncSnapshot {
     pub source_rephases: u64,
     pub clock_mismatch: bool,
     pub short_reads: u64,
+    /// A device-paced source: the most source frames one callback has asked
+    /// the ring for; 0 before the first callback and for a clocked source.
+    pub paced_demand_frames: f64,
 }
 
 fn put(a: &AtomicU64, v: f64) {
@@ -124,6 +128,7 @@ impl SyncTelemetry {
             .store(t.source_rephases, Ordering::Relaxed);
         self.clock_mismatch
             .store(t.clock_mismatch as u8, Ordering::Relaxed);
+        put(&self.paced_demand_frames, t.paced_demand_frames);
     }
 
     pub(crate) fn note_short_read(&self) {
@@ -148,6 +153,7 @@ impl SyncTelemetry {
             source_rephases: self.source_rephases.load(Ordering::Relaxed),
             clock_mismatch: self.clock_mismatch.load(Ordering::Relaxed) != 0,
             short_reads: self.short_reads.load(Ordering::Relaxed),
+            paced_demand_frames: get(&self.paced_demand_frames),
         }
     }
 }

@@ -260,7 +260,7 @@ pub static HOST_OPTIONS: &[HostOptionSpec<HostIo>] = &[
         i18n_key: "audio.sampleRate",
         help_i18n_key: Some("help.audio.sampleRate"),
         legacy_control_addr: LegacyAddr::Exact(osc_contract::CONTROL_AUDIO_SAMPLE_RATE),
-        // Unset (null, or 0): the device's rate.
+        // Unset (null, or 0): each stream's own rate.
         set: |host, raw| {
             let value = raw_optional_int(raw, SAMPLE_RATE_KIND)?.map(|hz| hz as u32);
             host.audio.set_requested_output_sample_rate(value);

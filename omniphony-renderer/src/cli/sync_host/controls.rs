@@ -121,6 +121,7 @@ impl Controls {
             loop_bandwidth_hz: config.loop_bandwidth_hz.unwrap_or(0.0) as f32,
             realign_threshold_ms: config.realign_threshold_ms as f32,
             source_clock: config.source_clock,
+            output_sample_rate_hz: config.output_rate_hz,
             ..RequestedAudioOutputConfig::default()
         }));
         audio.set_available_output_devices(output_devices());
@@ -297,6 +298,7 @@ mod tests {
             loop_bandwidth_hz: None,
             realign_threshold_ms: 20.0,
             output_target: Some("dac".into()),
+            output_rate_hz: None,
             output: crate::cli::sync_host::OutputKind::Device,
             source_clock: SourceClock::Auto,
             continuous: true,
@@ -506,6 +508,27 @@ mod tests {
         );
         handler.apply_options(&[("output_backend", RawOptionValue::Str("device"))]);
         assert_eq!(controls.settings().output, device);
+    }
+
+    /// The rate the run was launched with (the config's `output_sample_rate`
+    /// or its flag) is the one the output opens at, and the one a Save
+    /// writes back: left out of the controls, it was ignored at launch and
+    /// erased from the file by the first Save.
+    #[test]
+    fn the_launch_rate_is_played_and_kept_by_a_save() {
+        let launched = HostConfig {
+            output_rate_hz: Some(96_000),
+            ..config()
+        };
+        let controls = Controls::new(&launched, fixture_control());
+        assert_eq!(controls.settings().output_rate_hz, Some(96_000));
+        let mut render: renderer::config::RenderConfig =
+            serde_yaml_ng::from_str("output_sample_rate: 96000\n").unwrap();
+        controls.handler().amend_saved_config(&mut render);
+        assert_eq!(render.output_sample_rate, Some(96_000));
+        // Unset at launch stays unset.
+        let controls = Controls::new(&config(), fixture_control());
+        assert_eq!(controls.settings().output_rate_hz, None);
     }
 
     /// Save writes this host's settings and leaves the rest of the file's

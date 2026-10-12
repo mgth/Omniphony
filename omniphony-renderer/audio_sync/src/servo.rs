@@ -297,6 +297,11 @@ pub struct Telemetry {
     /// the pipeline cannot sustain it (see [`Servo::track_floor`]). Raised
     /// within an epoch, never lowered.
     pub target_s: f64,
+    /// [`Pacing::Device`]: the most source frames one callback has asked
+    /// the ring for (what it consumes plus the resampler look-ahead). The
+    /// level a paced producer has to keep ahead for the device to play at
+    /// all; 0 before the first callback.
+    pub paced_demand_frames: f64,
 }
 
 /// Time constant with which [`Telemetry::latency_floor_s`] forgets a peak (s).
@@ -569,9 +574,9 @@ impl Servo {
         self.telemetry.latency_s =
             Some(input.heard_delay_s + buffered / self.config.source_rate_hz);
 
-        let needed = input.play_position
-            + ratio * input.frames as f64
-            + self.config.resampler_lookahead_frames;
+        let demand = ratio * input.frames as f64 + self.config.resampler_lookahead_frames;
+        self.telemetry.paced_demand_frames = self.telemetry.paced_demand_frames.max(demand);
+        let needed = input.play_position + demand;
         if needed > input.available {
             // The producer is behind (the start, a slow decode) or done.
             if self.phase == Phase::Running {
@@ -945,6 +950,10 @@ mod tests {
         assert_eq!(plan.silence_frames, 1024);
         assert_eq!(servo.phase(), Phase::Starting);
         assert_eq!(servo.telemetry().underruns, 0);
+        // What it would have taken is said, for the producer to keep it
+        // ahead: the callback's frames and the resampler's look-ahead.
+        let lookahead = ServoConfig::default().resampler_lookahead_frames;
+        assert_eq!(servo.telemetry().paced_demand_frames, 1024.0 + lookahead);
 
         // Enough: played from the read front, at the nominal ratio, faded in.
         let plan = servo.plan(&cb(0.021, 0.0, 4096.0));
