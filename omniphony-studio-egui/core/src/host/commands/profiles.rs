@@ -8,7 +8,10 @@ use super::OscControlMsg;
 use super::{SharedState, send_control};
 use crate::osc_contract;
 
-pub fn control_profile_switch(state: &SharedState, value: String) {
+/// Switch profiles. The renderer discards the outgoing profile's unsaved
+/// edits, unless `save_first`: then it saves them — the Save button — and
+/// switches only when the save succeeded (docs/persistence-policy.md).
+pub fn control_profile_switch(state: &SharedState, value: String, save_first: bool) {
     let name = value.trim().to_string();
     if name.is_empty() {
         return;
@@ -17,12 +20,19 @@ pub fn control_profile_switch(state: &SharedState, value: String) {
     {
         let mut live = state.inner.lock().unwrap();
         live.layout_context_generation = live.layout_context_generation.wrapping_add(1);
+        if save_first {
+            live.save_requested = true;
+        }
+    }
+    let mut args = vec![rosc::OscType::String(name)];
+    if save_first {
+        args.push(rosc::OscType::String("save".into()));
     }
     send_control(
         &state.osc_tx,
-        OscControlMsg::SendString {
+        OscControlMsg::SendArgs {
             address: osc_contract::CONTROL_PROFILE_SWITCH.to_string(),
-            value: name,
+            args,
         },
     );
 }
@@ -90,6 +100,8 @@ pub fn control_profile_rename(state: &SharedState, old: String, new: String) {
 pub struct Snapshot {
     pub active: Option<String>,
     pub names: Vec<String>,
+    /// The renderer holds unsaved edits, which a switch would discard.
+    pub unsaved: bool,
 }
 
 impl Snapshot {
@@ -97,6 +109,16 @@ impl Snapshot {
         Self {
             active: app.active_profile.clone(),
             names: app.profile_names.clone(),
+            unsaved: false,
+        }
+    }
+
+    /// The read model with the renderer's unsaved state, which needs the
+    /// connection as well as the model.
+    pub fn read(state: &SharedState) -> Self {
+        Self {
+            unsaved: super::engine::has_unsaved_edits(state),
+            ..Self::of(&state.read().app)
         }
     }
 }
@@ -109,14 +131,21 @@ pub enum NameEditor {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
+    /// Switch, discarding any unsaved edit of the outgoing profile.
     Switch(String),
-    Submit { editor: NameEditor, name: String },
+    /// Save the unsaved edits into the outgoing profile, then switch.
+    SaveAndSwitch(String),
+    Submit {
+        editor: NameEditor,
+        name: String,
+    },
     Delete(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Resolved {
     Switch(String),
+    SaveAndSwitch(String),
     CreateAndSwitch(String),
     Rename(String, String),
     SwitchAndDelete { keep: String, delete: String },
@@ -126,6 +155,7 @@ fn resolve(action: Action, snapshot: &Snapshot) -> Option<Resolved> {
     let exists = |name: &str| snapshot.names.iter().any(|n| n == name);
     match action {
         Action::Switch(name) => exists(&name).then_some(Resolved::Switch(name)),
+        Action::SaveAndSwitch(name) => exists(&name).then_some(Resolved::SaveAndSwitch(name)),
         Action::Submit { editor, name } => {
             let name = name.trim().to_owned();
             if name.is_empty() {
@@ -155,14 +185,19 @@ fn resolve(action: Action, snapshot: &Snapshot) -> Option<Resolved> {
 pub fn apply(state: &SharedState, action: Action) {
     let resolved = resolve(action, &Snapshot::of(&state.read().app));
     match resolved {
-        Some(Resolved::Switch(name)) => control_profile_switch(state, name),
+        Some(Resolved::Switch(name)) => control_profile_switch(state, name, false),
+        Some(Resolved::SaveAndSwitch(name)) => control_profile_switch(state, name, true),
+        // The new profile is made from what the user hears, unsaved edits
+        // included, so switching to it discards nothing.
         Some(Resolved::CreateAndSwitch(name)) => {
             control_profile_create(state, name.clone());
-            control_profile_switch(state, name);
+            control_profile_switch(state, name, false);
         }
         Some(Resolved::Rename(old, name)) => control_profile_rename(state, old, name),
+        // The profile being deleted takes its unsaved edits with it; the
+        // delete confirmation already asked.
         Some(Resolved::SwitchAndDelete { keep, delete }) => {
-            control_profile_switch(state, keep);
+            control_profile_switch(state, keep, false);
             control_profile_delete(state, delete);
         }
         None => {}
@@ -176,6 +211,7 @@ mod tests {
         Snapshot {
             active: Some("A".into()),
             names: vec!["A".into(), "B".into()],
+            ..Default::default()
         }
     }
     fn submit(editor: NameEditor, name: &str) -> Action {
@@ -229,5 +265,39 @@ mod tests {
         assert_eq!(resolve(Action::Delete("A".into()), &current), None);
         assert_eq!(resolve(Action::Delete("B".into()), &current), None);
         assert_eq!(resolve(Action::Switch("B".into()), &current), None);
+    }
+
+    /// "Save and switch" asks the renderer to save before it switches, in one
+    /// message, so a failed save cannot be followed by the switch anyway.
+    #[test]
+    fn save_and_switch_is_one_message_carrying_the_save() {
+        let (state, rx) =
+            crate::host::commands::tests::state_with_outbox(std::sync::Arc::new(|| {}));
+        {
+            let mut live = state.inner.lock().unwrap();
+            live.app.active_profile = Some("A".into());
+            live.app.profile_names = vec!["A".into(), "B".into()];
+        }
+        apply(&state, Action::SaveAndSwitch("B".into()));
+        let sent: Vec<_> = rx.try_iter().collect();
+        assert_eq!(sent.len(), 1);
+        let crate::osc::Control::Send { address, args } = &sent[0] else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(address, osc_contract::CONTROL_PROFILE_SWITCH);
+        assert_eq!(
+            args,
+            &vec![
+                rosc::OscType::String("B".into()),
+                rosc::OscType::String("save".into())
+            ]
+        );
+        assert!(state.inner.lock().unwrap().save_requested);
+
+        apply(&state, Action::Switch("B".into()));
+        let crate::osc::Control::Send { args, .. } = rx.try_recv().unwrap() else {
+            panic!();
+        };
+        assert_eq!(args, vec![rosc::OscType::String("B".into())]);
     }
 }

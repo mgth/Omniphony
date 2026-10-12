@@ -1,3 +1,14 @@
+# cargo-deny policy, gated in CI (.github/workflows/ci.yml, job `cargo-deny`).
+#
+# Run it as CI does, from omniphony-renderer/:
+#
+#   cargo deny --workspace check
+#
+# `--workspace` matters: the root manifest is also a package (`orender`), and
+# without the flag cargo-deny takes only that package as the graph root, so
+# liborender (orender_ffi) and everything only it pulls in — the patched
+# `sofar` among them — is silently left out.
+
 [graph]
 # cargo-deny is really only ever intended to run on the "normal" tier-1 targets
 targets = [
@@ -13,26 +24,57 @@ all-features = true
 unmaintained = "workspace"
 
 [bans]
+# A second version of a crate fails the check, so a new duplicate is a
+# decision made in review rather than lockfile drift. The duplicates already in
+# the graph are listed below, each pinned to the version that is the odd one
+# out: when an upgrade removes one, cargo-deny warns that its skip is
+# unnecessary, and the entry goes.
 multiple-versions = "deny"
 wildcards = 'allow'
 skip = [
-    {crate = "windows-sys"},
-    {crate = "windows-targets"},
-    {crate = "windows_x86_64_gnu"},
-    {crate = "windows_x86_64_msvc"},
-
+    { crate = "windows-sys", reason = "windows-service 0.7 is on 0.52, the rest of the graph on 0.61" },
+    { crate = "windows-core@0.54.0", reason = "the workspace's own `windows` 0.54; iana-time-zone (chrono) is on 0.62" },
+    { crate = "windows-result@0.1.2", reason = "follows windows-core 0.54" },
+    { crate = "bindgen@0.70.1", reason = "the renderer's build script; asio-sys, coreaudio-sys and the PipeWire -sys crates are on 0.72" },
+    { crate = "rustc-hash@1.1.0", reason = "follows bindgen 0.70" },
+    { crate = "shlex@1.3.0", reason = "bindgen (both); cc is on 2.0" },
+    { crate = "bitflags@1.3.2", reason = "coreaudio-rs (cpal on macOS) and defmt" },
+    { crate = "libloading@0.7.4", reason = "abi_stable's plugin loader; clang-sys is on 0.8" },
+    { crate = "nom@7.1.3", reason = "rosc, cexpr (bindgen) and parse_cfg; libspa is on 8" },
+    { crate = "syn@1.0.109", reason = "abi_stable's derive macros" },
+    { crate = "syn@3.0.5", reason = "serde_derive, clap_derive and thiserror 2; most proc macros are still on 2" },
+    { crate = "heck@0.4.1", reason = "cbindgen (orender_ffi's build script)" },
+    { crate = "toml@0.8.23", reason = "cbindgen; system-deps is on 1.x" },
+    { crate = "toml_datetime@0.6.11", reason = "follows toml 0.8" },
+    { crate = "serde_spanned@0.6.9", reason = "follows toml 0.8" },
+    { crate = "winnow@0.7.15", reason = "toml 0.8 and the sofar fork" },
+    { crate = "miniz_oxide@0.8.9", reason = "the sofar fork; flate2 is on 0.9" },
+    { crate = "rubato@0.14.1", reason = "audio_output's resampler; the sofar fork is on 1.0" },
+    { crate = "vergen-lib@0.1.6", reason = "vergen-gitcl 1.x and vergen 9.x depend on different vergen-lib generations" },
 ]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# The `sofar` fork patched in by the workspace manifest ([patch.crates-io]:
+# netCDF4 variables and chunked N-d datasets, issues #185 and #219). Drop it
+# here when the patch goes.
+allow-git = ["https://github.com/mgth/sofar"]
 
 [licenses]
 confidence-threshold = 0.93
 
+# The project is GPL-3.0-or-later; everything allowed here is compatible with
+# distributing the combined work under it.
 allow = [
-    "GPL-3.0",
+    "GPL-3.0-or-later",
     "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Zlib",
 ]
 
 exceptions = [

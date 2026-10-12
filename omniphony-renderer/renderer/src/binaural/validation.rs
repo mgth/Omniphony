@@ -223,7 +223,7 @@ fn hrir_providers_return_time_aligned_pairs() {
     use super::hrir::{HRIR_LEN, HrirPair, HrirSet};
     use super::measured::MeasuredHrirData;
 
-    let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+    let set = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
     let mut pair = HrirPair {
         left: [0.0; HRIR_LEN],
         right: [0.0; HRIR_LEN],

@@ -402,6 +402,22 @@ pub fn control_render_backend(state: &SharedState, value: String) {
     );
 }
 
+/// A plugin parameter value as the OSC argument that carries it: the scalar
+/// type follows the JSON value (bool / number / string), which the renderer
+/// reads in the type the parameter's schema declares. `None` for anything
+/// else, or a number that is not finite.
+pub(crate) fn param_value_arg(value: &serde_json::Value) -> Option<rosc::OscType> {
+    match value {
+        serde_json::Value::Bool(b) => Some(rosc::OscType::Bool(*b)),
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .map(|v| rosc::OscType::Float(v as f32)),
+        serde_json::Value::String(s) => Some(rosc::OscType::String(s.clone())),
+        _ => None,
+    }
+}
+
 /// Generic backend param setter. The scalar type follows the JSON value (bool /
 /// number / string), matching the param schema's kind. When `backend` is given,
 /// the value is applied to that specific backend (e.g. a hybrid inner backend);
@@ -412,11 +428,8 @@ pub fn control_backend_param(
     value: serde_json::Value,
     backend: Option<String>,
 ) {
-    let arg = match value {
-        serde_json::Value::Bool(b) => rosc::OscType::Bool(b),
-        serde_json::Value::Number(n) => rosc::OscType::Float(n.as_f64().unwrap_or(0.0) as f32),
-        serde_json::Value::String(s) => rosc::OscType::String(s),
-        _ => return,
+    let Some(arg) = param_value_arg(&value) else {
+        return;
     };
     let args = match backend {
         Some(backend) => vec![
@@ -525,6 +538,32 @@ pub fn control_render_evaluation_mode(state: &SharedState, value: String) {
             address: osc_contract::CONTROL_RENDER_EVALUATION_MODE.to_string(),
             value: normalized,
         },
+    );
+}
+
+/// Follow the active bridge's grid, or force the one in force
+/// (`evaluation_grid`, docs/multi-bridge.md). A switch rebuilds only when no
+/// table on that grid is at hand, so no recompute is awaited: the state
+/// says what came of it.
+pub fn set_evaluation_grid_follows_bridge(state: &SharedState, follow: bool) {
+    let source = if follow { "bridge" } else { "custom" };
+    state.inner.lock().unwrap().app.evaluation_grid = Some(source.to_owned());
+    super::engine::control_option(
+        state,
+        "evaluation_grid".to_owned(),
+        serde_json::json!(source),
+    );
+}
+
+/// Render below the floor, in a forced grid (`vbap_allow_negative_z`): the
+/// gain models are rebuilt.
+pub fn set_vbap_allow_negative_z(state: &SharedState, on: bool) {
+    state.inner.lock().unwrap().app.vbap_allow_negative_z = Some(on);
+    mark_recompute_pending(state);
+    super::engine::control_option(
+        state,
+        "vbap_allow_negative_z".to_owned(),
+        serde_json::json!(on),
     );
 }
 
@@ -667,7 +706,7 @@ pub fn control_render_input_pipe(state: &SharedState, value: String) {
 /// counts are intervals rather than nodes, and that the height axis is
 /// asymmetric (an optional negative half at its own resolution, stopping short
 /// of zero so both halves do not claim it). Both now come from
-/// `omniphony-geometry`, which is also what the renderer builds the table with.
+/// `omniphony_geometry`, which is also what the renderer builds the table with.
 pub fn get_vbap_grid_nodes(state: &SharedState) -> Option<serde_json::Value> {
     let cartesian = {
         let s = state.inner.lock().unwrap();

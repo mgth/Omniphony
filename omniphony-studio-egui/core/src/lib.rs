@@ -11,7 +11,6 @@
 /// sides and fails on any address written out by hand.
 pub use omniphony_osc_contract as osc_contract;
 
-pub mod auto_tune;
 pub mod host;
 pub mod i18n;
 pub mod model;

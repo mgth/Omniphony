@@ -59,18 +59,6 @@ fn energy_db(panner: &NativeVbapLayout, az: f32, el: f32) -> f32 {
     }
 }
 
-/// `‖g(az+Δ) − g(az)‖₂` at fixed elevation.
-fn gain_step_norm(panner: &NativeVbapLayout, az: f32, el: f32, delta: f32) -> f32 {
-    let a = panner.vbap_gains(az, el, 0.0).expect("vbap gains");
-    let b = panner.vbap_gains(az + delta, el, 0.0).expect("vbap gains");
-    let mut acc = 0.0f32;
-    for i in 0..a.len() {
-        let d = a[i] - b[i];
-        acc += d * d;
-    }
-    acc.sqrt()
-}
-
 /// Theory-derived: VBAP normalises to `Σg² = 1`, i.e. 0 dB.
 const ENERGY_TOLERANCE_DB: f32 = 0.25;
 

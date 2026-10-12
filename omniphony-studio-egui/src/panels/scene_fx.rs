@@ -25,8 +25,8 @@ use crate::view::objects::ObjectDisplayMode;
 use crate::view::trails::TrailMode;
 
 /// `#sceneEffectBar`: `rgba(18,22,28,0.72)`, a hairline of white at 8 %.
-const BAR_BG: Color32 = Color32::from_rgba_premultiplied(13, 16, 20, 184);
-const BAR_EDGE: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
+pub(crate) const BAR_BG: Color32 = Color32::from_rgba_premultiplied(13, 16, 20, 184);
+pub(crate) const BAR_EDGE: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
 /// `.scene-fx-flyout`: the same glass, denser, with a 10 % edge.
 const FLY_BG: Color32 = Color32::from_rgba_premultiplied(17, 20, 26, 235);
 const FLY_EDGE: Color32 = Color32::from_rgba_premultiplied(26, 26, 26, 26);
@@ -52,7 +52,7 @@ const ICON: f32 = 20.0;
 /// `.fx-caret`: 12 × 10 in the button's top-right corner, 2 down and 3 in.
 const CARET: egui::Vec2 = vec2(12.0, 10.0);
 /// The bar sits above the save footer, which owns the bottom margin.
-const BOTTOM_OFFSET: f32 = -56.0;
+pub(crate) const BOTTOM_OFFSET: f32 = -56.0;
 /// The flyout floats 9 points above its button, a 6-point tail between them.
 const FLYOUT_GAP: f32 = 9.0;
 const TAIL: f32 = 6.0;

@@ -9,34 +9,45 @@
 //! C is undefined behaviour) and the C caller owns all output buffers.
 
 #![allow(clippy::missing_safety_doc)]
+// Every raw-pointer access sits in its own `unsafe {}` block, also inside
+// `unsafe extern "C" fn` bodies, so each one states why it is sound.
+#![deny(unsafe_op_in_unsafe_fn)]
 
-use orender_engine::{start_degraded_reporter, DegradedReporter, Engine, OscOptions};
+use orender_engine::{
+    DecodeThreadMode, Engine, NoBridgeRuntime, NoBridgeSetup, OscOptions, OscOverrides, OscSettings,
+};
 
 use anyhow::Result;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // Process-global decoder-less OSC reporter, brought up when the bridge can't be
 // loaded so Studio can show a red banner (orender_create still returns NULL, so
 // mpv falls back to its native decoder). One per process; lives until a real
-// engine starts (which reclaims the OSC port) or the host exits.
-static DEGRADED_REPORTER: Mutex<Option<DegradedReporter>> = Mutex::new(None);
+// engine starts (which reclaims the OSC port) or the host exits. The runtime
+// itself is the one the CLI idles on (`orender_engine::degraded`); keeping it
+// alive is this host's part.
+static DEGRADED_REPORTER: Mutex<Option<NoBridgeRuntime>> = Mutex::new(None);
 static DEGRADED_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+// Build the no-bridge runtime and start its OSC server — never asking a
+// holder of the port to yield: it is only a banner and must not evict a
+// healthy standby renderer.
+fn start_degraded_reporter(setup: NoBridgeSetup, opts: &OscOptions) -> Result<NoBridgeRuntime> {
+    let mut runtime = NoBridgeRuntime::build(setup)?;
+    runtime.start_osc(opts, None, false)?;
+    Ok(runtime)
+}
 
 // Bring up the degraded reporter once. The renderer build (VBAP table) takes a
 // moment, so do it on a detached thread — the caller returns NULL immediately
 // and mpv falls back without waiting.
-fn start_degraded_reporter_global(
-    config_path: Option<PathBuf>,
-    sample_rate: u32,
-    opts: OscOptions,
-    message: String,
-) {
+fn start_degraded_reporter_global(setup: NoBridgeSetup, opts: OscOptions) {
     // Claim the single slot; bail if a reporter is already active/starting.
     if DEGRADED_ACTIVE
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -44,25 +55,17 @@ fn start_degraded_reporter_global(
     {
         return;
     }
-    std::thread::spawn(move || {
-        match start_degraded_reporter(
-            config_path.as_deref(),
-            sample_rate,
-            opts,
-            message,
-            Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR)),
-        ) {
-            Ok(reporter) => {
-                // A real engine may have started while we were building; only
-                // keep ours if the slot is still claimed (else drop → free port).
-                if DEGRADED_ACTIVE.load(Ordering::SeqCst) {
-                    *DEGRADED_REPORTER.lock().unwrap() = Some(reporter);
-                }
+    std::thread::spawn(move || match start_degraded_reporter(setup, &opts) {
+        Ok(reporter) => {
+            // A real engine may have started while we were building; only
+            // keep ours if the slot is still claimed (else drop → free port).
+            if DEGRADED_ACTIVE.load(Ordering::SeqCst) {
+                *DEGRADED_REPORTER.lock().unwrap() = Some(reporter);
             }
-            Err(e) => {
-                eprintln!("degraded reporter failed to start: {e:#}");
-                DEGRADED_ACTIVE.store(false, Ordering::SeqCst);
-            }
+        }
+        Err(e) => {
+            eprintln!("degraded reporter failed to start: {e:#}");
+            DEGRADED_ACTIVE.store(false, Ordering::SeqCst);
         }
     });
 }
@@ -76,68 +79,59 @@ fn stop_degraded_reporter_global() {
 }
 
 // Resolve OSC options from the C override → config → environment → defaults,
-// or None when OSC is off. Shared by the normal path and the degraded reporter.
+// or None when OSC is off. Shared by the normal path and the degraded reporter,
+// and — through `OscSettings::resolve` — with the CLI, so the two hosts cannot
+// disagree on when OSC is up or where it listens.
 //
-// A workflow launcher that sets OMNIPHONY_OSC_PORT is assigning this engine a
-// control port, so the variable both supplies the default port AND turns OSC on
-// when the config doesn't decide (`render.osc` unset). Without that, an
-// embedded engine in a fresh workflow config dir came up with no listener at
-// all — unreachable from Studio. An explicit `render.osc: false` still wins.
+// A zero/NULL field of the C struct defers to the config; `osc_enabled` can
+// only force OSC on (0 means "follow the config", never "off"). When nothing
+// decides, OSC is on iff no config file exists (`config_file_exists`): a first
+// start in a player, where Studio is the only place a failure can show.
 fn resolve_osc_opts(
     cfg: &OrenderConfig,
     render_cfg: Option<&orender_engine::RenderConfig>,
+    config_file_exists: bool,
 ) -> Option<OscOptions> {
-    let env_port = orender_engine::runtime_env::osc_port();
-    let osc_on = cfg.osc_enabled != 0
-        || render_cfg
-            .and_then(|c| c.osc)
-            .unwrap_or_else(|| env_port.is_some());
-    if !osc_on {
+    let overrides = OscOverrides {
+        enabled: (cfg.osc_enabled != 0).then_some(true),
+        host: unsafe { opt_str(cfg.osc_host) }.map(str::to_string),
+        port_out: (cfg.osc_port_out != 0).then_some(cfg.osc_port_out),
+        port_in: (cfg.osc_port_in != 0).then_some(cfg.osc_port_in),
+        metering: None,
+    };
+    let opts = OscSettings::resolve(render_cfg, &overrides, !config_file_exists).options();
+    if opts.is_none() {
         log::info!(
-            "OSC disabled: render.osc is unset/false, no host override, \
+            "OSC disabled: render.osc is unset/false in the config, no host override, \
              and no OMNIPHONY_OSC_PORT in the environment"
         );
-        return None;
     }
-    let host = unsafe { opt_str(cfg.osc_host) }
-        .map(str::to_string)
-        .or_else(|| render_cfg.and_then(|c| c.osc_host.clone()))
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let port_out = if cfg.osc_port_out != 0 {
-        cfg.osc_port_out
-    } else {
-        render_cfg
-            .and_then(|c| c.osc_port)
-            .unwrap_or_else(orender_engine::runtime_env::default_osc_port)
-    };
-    let port_in = if cfg.osc_port_in != 0 {
-        cfg.osc_port_in
-    } else {
-        render_cfg
-            .and_then(|c| c.osc_rx_port)
-            .unwrap_or_else(orender_engine::runtime_env::default_osc_rx_port)
-    };
-    Some(OscOptions {
-        host,
-        port_out,
-        port_in,
-    })
+    opts
 }
 
-/// Opaque handle to a decode→render session. Created by [`orender_create`],
-/// freed by [`orender_destroy`]. Internally a boxed [`Engine`].
-#[repr(C)]
+// Whether the config file the engine reads exists. Asked of the file itself,
+// not of what was loaded: a live-handoff sidecar can stand in for a missing
+// `config.yaml`, and no path at all (no home directory) is no config either.
+fn config_file_exists(config_path: Option<&Path>) -> bool {
+    config_path.is_some_and(Path::exists)
+}
+
+/// Opaque handle to a decode→render session. Created by `orender_create`,
+/// freed by `orender_destroy`. Internally an engine session.
+// Deliberately not `#[repr(C)]`: cbindgen then emits an incomplete type
+// (`typedef struct OrenderRenderer OrenderRenderer;`) instead of a body with a
+// zero-length array, which ISO C and C++ reject. Hosts only hold pointers.
 pub struct OrenderRenderer {
     _private: [u8; 0],
 }
 
-/// Session configuration passed to [`orender_create`]. All `*const c_char`
+/// Session configuration passed to `orender_create`. All `*const c_char`
 /// fields are UTF-8, nul-terminated, and may be NULL (treated as "unset").
 ///
 /// **FROZEN at ABI major 0** — never add, remove, reorder, or retype fields:
 /// consumers compiled against an older header pass this struct by layout with
 /// no size handshake, so any change here is silently breaking. New knobs go
-/// through [`orender_set_option`] (post-create) or the config YAML
+/// through `orender_set_option` (post-create) or the config YAML
 /// (create-time). See ABI.md.
 #[repr(C)]
 pub struct OrenderConfig {
@@ -150,10 +144,17 @@ pub struct OrenderConfig {
     /// Optional speaker-layout YAML path overriding the config. NULL → use the
     /// config's embedded layout, else the 7.1.4 preset.
     pub speaker_layout_path: *const c_char,
-    /// Optional decoder bridge plugin path (the `*_bridge.so` produced by
-    /// the input format's bridge crate) overriding the config. NULL → taken
-    /// from the config YAML's `render.bridge_path` (the source of truth;
-    /// library hosts have no exe-relative search).
+    /// Optional decoder bridge plugins (the `*_bridge.so` files of the input
+    /// formats' bridges) overriding the config: one path, or a path list in
+    /// the platform's syntax (`:` on Unix, `;` on Windows), in load order.
+    /// NULL → the config YAML's `render.bridge_path(s)`; when that is unset
+    /// too, the engine loads every `*_bridge.{so,dll,dylib}` of the first
+    /// folder holding one: next to the host executable, then
+    /// `$ORENDER_BRIDGE_DIR`, then the system plugin directory
+    /// (`/usr/lib/orender` on Unix) — for library hosts as for the CLI. A path
+    /// given here or in the config must name an existing file (a relative one
+    /// is tried against the working directory, then the executable's
+    /// directory); it is never replaced by a discovered bridge.
     pub bridge_path: *const c_char,
     /// Codec identifier of the raw access units the host will feed (matches
     /// the bridge's supported codec IDs, e.g. as used in FFmpeg/IEC958).
@@ -162,8 +163,10 @@ pub struct OrenderConfig {
     pub codec: *const c_char,
     /// Force the OSC live-control server on (non-zero). 0 → follow the
     /// config's `render.osc`; when that is unset too, OSC defaults to on iff
-    /// `OMNIPHONY_OSC_PORT` is set (a workflow-assigned control port implies
-    /// the engine must be reachable there).
+    /// no config file exists (a first start: Studio can then see the engine)
+    /// or `OMNIPHONY_OSC_PORT` is set (a workflow-assigned control port
+    /// implies the engine must be reachable there). An existing config without
+    /// the key keeps OSC off.
     pub osc_enabled: c_int,
     /// Incoming OSC port (0 → config `render.osc_rx_port`, else
     /// `OMNIPHONY_OSC_PORT`, else 9000).
@@ -179,13 +182,13 @@ pub struct OrenderConfig {
 
 /// C-ABI major version of this library. A bump means a breaking change: the
 /// Linux soname `liborender.so.<major>` follows automatically (see build.rs);
-/// Windows/macOS consumers must gate on [`orender_version_major`] at load time
+/// Windows/macOS consumers must gate on `orender_version_major` at load time
 /// (their library file name does not change).
 ///
 /// Exported into the generated header (as a `#define`) so a consumer can
 /// compare the constants it was compiled against with the runtime values
-/// reported by [`orender_version_major`]/[`orender_version_minor`]. Policy:
-/// additive change (new symbol, new [`orender_set_option`] key, enum value
+/// reported by `orender_version_major`/`orender_version_minor`. Policy:
+/// additive change (new symbol, new `orender_set_option` key, enum value
 /// appended) bumps the minor; anything else (signature/struct/semantic change,
 /// symbol removal, enum reorder) bumps the major. See ABI.md.
 pub const ORENDER_ABI_MAJOR: u32 = 0;
@@ -206,10 +209,23 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 //    (30° over the floor speaker of the same name — Auro-3D's height layer,
 //    BS.2051 U+030/U+000/U+110). A host that predates them reads unknown
 //    bytes for those channels; nothing existing moved.
-pub const ORENDER_ABI_MINOR: u32 = 8;
+// 9: added orender_source_label (the bridge's name for the presentation's
+//    format — "DTS-HD MA + DTS:X 7.1.4", "Dolby TrueHD + Dolby Atmos" — for
+//    the host's track info; 0/empty when the bridge states none).
+// 10: added the `decode_thread` key of orender_set_option (decode on a thread
+//     of its own, overlapping the render; a packet's audio may then come back
+//     from a later call) and orender_drain (render what the engine still holds
+//     at end of stream, one packet's audio per call).
+// 11: added the `live` value of the `decode_thread` key (follow the live
+//     option — config.yaml, Studio, OSC — switching at packet boundaries) and
+//     orender_output_packet_pts (the host timestamp of the packet whose audio
+//     the last call returned); orender_process now reads its pts_us argument.
+// 12: added the `heard_us` key of orender_set_option (where the listener is,
+//     relayed to OSC clients as /omniphony/playout/heard).
+pub const ORENDER_ABI_MINOR: u32 = 12;
 
-/// Speaker-position labels written by [`orender_channel_layout`] and
-/// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
+/// Speaker-position labels written by `orender_channel_layout` and
+/// `orender_bed_layout` (one byte per channel). Mirrors the engine's
 /// ABI-stable `bridge_api::RChannelLabel` exactly (a unit test asserts
 /// discriminant parity); values are append-only per the ABI policy.
 #[repr(u8)]
@@ -253,11 +269,14 @@ pub enum OrenderChannelLabel {
     Unknown = 255,
 }
 
+/// # Safety
+/// `p` is NULL or a nul-terminated string that outlives `'a`.
 unsafe fn opt_str<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
         return None;
     }
-    CStr::from_ptr(p).to_str().ok()
+    // SAFETY: non-null, and the caller guarantees the rest.
+    unsafe { CStr::from_ptr(p) }.to_str().ok()
 }
 
 /// Diagnostics about how the *host* process (mpv) was launched, appended to the
@@ -282,8 +301,18 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
     // once (no-op on Linux/macOS), before resolving the default path.
     orender_engine::migrate_legacy_windows_config();
 
-    // Optional override; NULL → taken from the config YAML's render.bridge_path.
+    // Optional override; NULL → taken from the config YAML's
+    // render.bridge_path(s). A path list in the platform's syntax (`:` on
+    // Unix, `;` on Windows), so a player names several bridges with one
+    // option (mpv's `ad-orender-bridge-path`).
     let bridge_path = unsafe { opt_str(cfg.bridge_path) };
+    let bridge_paths: Vec<PathBuf> = bridge_path
+        .map(|list| {
+            std::env::split_paths(list)
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
     // NULL config → the shared omniphony config (same as the CLI + studio),
     // so one config drives all hosts.
     let config_path = unsafe { opt_str(cfg.config_yaml_path) }
@@ -308,7 +337,11 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
         .and_then(|c| c.render);
     // Resolve OSC up front so we can also reach Studio with a degraded reporter
     // if the bridge fails. `None` when OSC is off.
-    let osc_opts = resolve_osc_opts(cfg, render_cfg.as_ref());
+    let osc_opts = resolve_osc_opts(
+        cfg,
+        render_cfg.as_ref(),
+        config_file_exists(config_path.as_deref()),
+    );
 
     // Settle OSC port ownership BEFORE `Engine::from_paths` reads the config:
     // a yieldable standby renderer writes its live-state sidecar while still
@@ -316,30 +349,30 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
     // handed-over state. Gated on a successful bridge pre-resolution (same
     // strict policy as `from_paths`): a host that is about to fall back to the
     // degraded reporter must not evict a healthy standby.
-    let config_bridge = render_cfg.as_ref().and_then(|c| c.bridge_path.clone());
-    let bridge_resolvable = orender_engine::bridge_loader::resolve_bridge(
-        bridge_path.map(Path::new),
-        config_bridge.as_deref(),
-    )
-    .is_ok();
+    let config_bridges = render_cfg
+        .as_ref()
+        .map(|render| render.bridges())
+        .unwrap_or_default();
+    let bridge_resolvable =
+        orender_engine::bridge_loader::resolve_bridges(&bridge_paths, &config_bridges).is_ok();
     if bridge_resolvable {
         // A same-process degraded reporter may itself hold the port.
         stop_degraded_reporter_global();
-        if let Some(opts) = osc_opts.as_ref() {
-            if !orender_engine::osc::negotiate_rx_port(opts.port_in) {
-                log::warn!(
-                    "OSC RX port {} still busy after yield negotiation; \
-                     the engine will run without an OSC listener",
-                    opts.port_in
-                );
-            }
+        if let Some(opts) = osc_opts.as_ref()
+            && !orender_engine::osc::negotiate_rx_port(opts.port_in)
+        {
+            log::warn!(
+                "OSC RX port {} still busy after yield negotiation; \
+                 the engine will run without an OSC listener",
+                opts.port_in
+            );
         }
     }
 
     let mut engine = match Engine::from_paths(
         config_path.as_deref(),
         layout_path.map(Path::new),
-        bridge_path.map(Path::new),
+        &bridge_paths,
         codec,
         sample_rate,
     ) {
@@ -351,11 +384,19 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
             // OSC reporter so Studio can show *why* spatial didn't engage —
             // Studio registers normally, so its address is known (no guessing).
             if let Some(opts) = osc_opts {
+                // The same inputs `Engine::from_paths` just used, so the
+                // banner comes with the state the engine would have shown.
                 start_degraded_reporter_global(
-                    config_path.clone(),
-                    sample_rate,
+                    NoBridgeSetup::embedded(
+                        config_path.clone(),
+                        render_cfg,
+                        layout_path.map(PathBuf::from),
+                        bridge_paths.clone(),
+                        sample_rate,
+                        format!("{e:#}{}", host_launch_diagnostics()),
+                        Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR)),
+                    ),
                     opts,
-                    format!("{e:#}{}", host_launch_diagnostics()),
                 );
             }
             return Err(e);
@@ -374,7 +415,7 @@ fn build_engine(cfg: &OrenderConfig) -> Result<Engine> {
 }
 
 /// Initialise the `log` backend once, so the engine's `log::*` diagnostics
-/// (bridge-load time, "VBAP table generated in Xs", clip warnings, engine-ready
+/// (bridge-load time, "Spatial renderer built in Xs", clip warnings, engine-ready
 /// time) surface BOTH on stderr and over OSC to connected clients (Studio's log
 /// panel).
 ///
@@ -401,14 +442,15 @@ fn init_logging() {
 }
 
 /// Create a session. Returns NULL on failure (bad config, missing bridge, etc.).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_create(cfg: *const OrenderConfig) -> *mut OrenderRenderer {
     init_logging();
     catch_unwind(AssertUnwindSafe(|| {
         if cfg.is_null() {
             return ptr::null_mut();
         }
-        match build_engine(&*cfg) {
+        // SAFETY: non-null (checked above); the caller passes a valid config.
+        match build_engine(unsafe { &*cfg }) {
             Ok(engine) => {
                 // Stamp the shim's C-ABI version so the live-state snapshot
                 // broadcasts it (Studio About shows it next to the fingerprint).
@@ -428,14 +470,15 @@ pub unsafe extern "C" fn orender_create(cfg: *const OrenderConfig) -> *mut Orend
     .unwrap_or(ptr::null_mut())
 }
 
-/// Free a session created by [`orender_create`]. NULL is ignored.
-#[no_mangle]
+/// Free a session created by `orender_create`. NULL is ignored.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_destroy(r: *mut OrenderRenderer) {
     if r.is_null() {
         return;
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        drop(Box::from_raw(r as *mut Engine));
+        // SAFETY: `r` is the boxed `Engine` from `orender_create`, freed once.
+        drop(unsafe { Box::from_raw(r as *mut Engine) });
         // Disarm the overlay as this session goes away (clears the scene when it
         // was the last one), so the box can't linger past the stream.
         orender_engine::overlay::session_ended();
@@ -450,55 +493,55 @@ pub unsafe extern "C" fn orender_destroy(r: *mut OrenderRenderer) {
 /// the first decoded frame it reports the bridge's container-level guess.
 /// Hosts keep object-bearing tracks on the renderer regardless of the channel
 /// mode (a host cannot render objects); channel-based content follows
-/// [`orender_channel_mode`].
-#[no_mangle]
+/// `orender_channel_mode`.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_has_objects(r: *const OrenderRenderer) -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return -1;
         }
-        let engine = &*(r as *const Engine);
-        if engine.has_objects() {
-            1
-        } else {
-            0
-        }
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let engine = unsafe { &*(r as *const Engine) };
+        if engine.has_objects() { 1 } else { 0 }
     }))
     .unwrap_or(-1)
 }
 
-/// Deprecated alias of [`orender_has_objects`], kept for hosts compiled
+/// Deprecated alias of `orender_has_objects`, kept for hosts compiled
 /// against ABI minor < 6. Same values, same live semantics.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_is_spatial(r: *const OrenderRenderer) -> c_int {
-    orender_has_objects(r)
+    // SAFETY: same contract as `orender_has_objects`.
+    unsafe { orender_has_objects(r) }
 }
 
 /// Dynamic object count of the last rendered frame (decoded channels minus the
 /// bed channels) for object-based content, `0` for plain multichannel, `-1` on
 /// a NULL handle / error. For the host's track info display. Meaningful after at
-/// least one [`orender_process`] call.
-#[no_mangle]
+/// least one `orender_process` call.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_object_count(r: *const OrenderRenderer) -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return -1;
         }
-        (*(r as *const Engine)).object_count() as c_int
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &*(r as *const Engine) }.object_count() as c_int
     }))
     .unwrap_or(-1)
 }
 
 /// Dialogue normalisation level in dBFS (always ≤ 0) once the stream has
-/// declared it, or [`i32::MIN`] when unknown / not yet seen (also on a NULL
+/// declared it, or `INT32_MIN` when unknown / not yet seen (also on a NULL
 /// handle / error). For the host's track info display.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_dialnorm_db(r: *const OrenderRenderer) -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return c_int::MIN;
         }
-        match (*(r as *const Engine)).dialnorm_db() {
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        match unsafe { &*(r as *const Engine) }.dialnorm_db() {
             Some(db) => db as c_int,
             None => c_int::MIN,
         }
@@ -507,14 +550,14 @@ pub unsafe extern "C" fn orender_dialnorm_db(r: *const OrenderRenderer) -> c_int
 }
 
 /// Write the bed channel labels of the last object-based frame (one
-/// [`OrenderChannelLabel`] byte per bed channel) so the host can show the bed
+/// `OrenderChannelLabel` byte per bed channel) so the host can show the bed
 /// composition (e.g. "LFE+11 objects").
 ///
-/// Same query/fill convention as [`orender_channel_layout`]: returns the bed
+/// Same query/fill convention as `orender_channel_layout`: returns the bed
 /// channel count `N`; if `out_labels` is non-NULL and `cap >= N`, the first `N`
 /// bytes are filled (else nothing is written — call with `out_labels = NULL` to
 /// query `N`). `0` for plain multichannel / no bed / NULL handle / error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_bed_layout(
     r: *const OrenderRenderer,
     out_labels: *mut u8,
@@ -524,10 +567,12 @@ pub unsafe extern "C" fn orender_bed_layout(
         if r.is_null() {
             return 0;
         }
-        let labels = (*(r as *const Engine)).bed_labels();
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let labels = unsafe { &*(r as *const Engine) }.bed_labels();
         let n = labels.len() as u32;
         if !out_labels.is_null() && cap >= n {
-            let out = std::slice::from_raw_parts_mut(out_labels, labels.len());
+            // SAFETY: non-null, and the caller's buffer holds `cap >= n` bytes.
+            let out = unsafe { std::slice::from_raw_parts_mut(out_labels, labels.len()) };
             for (dst, lbl) in out.iter_mut().zip(labels.iter()) {
                 *dst = *lbl as u8;
             }
@@ -537,38 +582,77 @@ pub unsafe extern "C" fn orender_bed_layout(
     .unwrap_or(0)
 }
 
+/// Write the name the bridge gives the current presentation's format, as a
+/// NUL-terminated UTF-8 string — `DTS-HD MA + DTS:X 7.1.4`,
+/// `DTS-HD MA + Auro-3D 11.1`, `Dolby TrueHD + Dolby Atmos`, `Dolby Digital
+/// Plus` — for the host's track info display. Declaration-level: it follows
+/// the channel labels (a lossy carrier whose spatial layer the bridge cannot
+/// read is named as the carrier alone), so poll it with the other track-info
+/// queries rather than latching it.
+///
+/// Query/fill convention: returns the label's length `N` in bytes (without the
+/// terminator); if `out` is non-NULL and `cap > N`, the label and its NUL are
+/// written (else nothing is written — call with `out = NULL` to query `N`).
+/// `0` when the bridge states no name (the host composes its own), and on a
+/// NULL handle / error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn orender_source_label(
+    r: *const OrenderRenderer,
+    out: *mut c_char,
+    cap: u32,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if r.is_null() {
+            return 0;
+        }
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let label = unsafe { &*(r as *const Engine) }.source_label().as_bytes();
+        let n = label.len() as u32;
+        if !out.is_null() && cap > n {
+            // SAFETY: non-null, and the caller's buffer holds `cap > n` bytes.
+            let out = unsafe { std::slice::from_raw_parts_mut(out as *mut u8, label.len() + 1) };
+            out[..label.len()].copy_from_slice(label);
+            out[label.len()] = 0;
+        }
+        n
+    }))
+    .unwrap_or(0)
+}
+
 /// Constant DSP latency of the rendered output, in samples at the engine
-/// sample rate: PCM fed to [`orender_process`] emerges this many samples later
+/// sample rate: PCM fed to `orender_process` emerges this many samples later
 /// in the rendered stream. 0 for the default filters; non-zero when the
 /// linear-phase FIR crossover sits on the rendered path. The host should
 /// subtract `latency / sample_rate` from the presentation timestamps of
 /// rendered frames (or delay video by the same amount) to preserve A/V sync.
 /// May change mid-stream (live crossover / output-mode switch), so poll it
-/// per rendered frame; meaningful after the first [`orender_process`] call.
+/// per rendered frame; meaningful after the first `orender_process` call.
 /// 0 on a NULL handle / error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_output_latency_samples(r: *const OrenderRenderer) -> u64 {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return 0;
         }
-        (*(r as *const Engine)).output_latency_samples()
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &*(r as *const Engine) }.output_latency_samples()
     }))
     .unwrap_or(0)
 }
 
 /// Configured render mode for channel-based (non-object) content:
 /// 0 = host, 1 = spatial; <0 on error. When this is `host` (0) and
-/// [`orender_has_objects`] reports 0, the host should decline this track and fall
+/// `orender_has_objects` reports 0, the host should decline this track and fall
 /// back to its native decoder. Meaningful once the renderer is created (the mode
 /// comes from config / live params, not from the stream).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_channel_mode(r: *const OrenderRenderer) -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return -1;
         }
-        (*(r as *const Engine)).channel_render_mode_code() as c_int
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &*(r as *const Engine) }.channel_render_mode_code() as c_int
     }))
     .unwrap_or(-1)
 }
@@ -576,13 +660,14 @@ pub unsafe extern "C" fn orender_channel_mode(r: *const OrenderRenderer) -> c_in
 /// Override the channel render mode for non-object content at runtime (a
 /// per-host override of the config value): 0 = host, 1 = spatial. No-op on a
 /// NULL handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_set_channel_mode(r: *mut OrenderRenderer, mode: c_int) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return;
         }
-        (*(r as *mut Engine)).set_channel_render_mode_code(mode as i32);
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &mut *(r as *mut Engine) }.set_channel_render_mode_code(mode as i32);
     }));
 }
 
@@ -590,51 +675,54 @@ pub unsafe extern "C" fn orender_set_channel_mode(r: *mut OrenderRenderer, mode:
 /// layout speaker N), 1 = by_name (positional — each channel tagged with its
 /// speaker position). <0 on error. The host uses this to choose between a
 /// positionless and a positional channel map.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_channel_mapping(r: *const OrenderRenderer) -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return -1;
         }
-        (*(r as *const Engine)).output_channel_mapping_code() as c_int
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &*(r as *const Engine) }.output_channel_mapping_code() as c_int
     }))
     .unwrap_or(-1)
 }
 
 /// Override the output channel mapping at runtime: 0 = by_index, 1 = by_name.
 /// No-op on a NULL handle or an unknown code.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_set_channel_mapping(r: *mut OrenderRenderer, mode: c_int) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return;
         }
-        (*(r as *mut Engine)).set_output_channel_mapping_code(mode as i32);
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &mut *(r as *mut Engine) }.set_output_channel_mapping_code(mode as i32);
     }));
 }
 
 /// Number of output channels (speakers) the renderer produces, 0 on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_channel_count(r: *const OrenderRenderer) -> u32 {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return 0;
         }
-        (*(r as *const Engine)).channel_count()
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &*(r as *const Engine) }.channel_count()
     }))
     .unwrap_or(0)
 }
 
 /// Write the active output layout's per-channel labels (one
-/// [`OrenderChannelLabel`] byte per speaker, in render order) so the host can
+/// `OrenderChannelLabel` byte per speaker, in render order) so the host can
 /// build a channel map.
 ///
 /// Returns the channel count `N`. If `out_labels` is non-NULL and `cap >= N`,
 /// the first `N` bytes are filled with label discriminants; otherwise nothing is
 /// written — call with `out_labels = NULL` to query `N`, size a buffer, then
-/// call again. Each byte is an [`OrenderChannelLabel`] value (255 = Unknown).
+/// call again. Each byte is an `OrenderChannelLabel` value (255 = Unknown).
 /// Returns 0 on error/NULL handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_channel_layout(
     r: *const OrenderRenderer,
     out_labels: *mut u8,
@@ -644,10 +732,12 @@ pub unsafe extern "C" fn orender_channel_layout(
         if r.is_null() {
             return 0;
         }
-        let labels = (*(r as *const Engine)).channel_layout();
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let labels = unsafe { &*(r as *const Engine) }.channel_layout();
         let n = labels.len() as u32;
         if !out_labels.is_null() && cap >= n {
-            let out = std::slice::from_raw_parts_mut(out_labels, labels.len());
+            // SAFETY: non-null, and the caller's buffer holds `cap >= n` bytes.
+            let out = unsafe { std::slice::from_raw_parts_mut(out_labels, labels.len()) };
             for (dst, lbl) in out.iter_mut().zip(labels.iter()) {
                 *dst = *lbl as u8;
             }
@@ -659,13 +749,14 @@ pub unsafe extern "C" fn orender_channel_layout(
 
 /// Reset after a seek/discontinuity (flushes decoder + renderer state, keeps
 /// live params).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_reset(r: *mut OrenderRenderer) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return;
         }
-        (*(r as *mut Engine)).reset();
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        unsafe { &mut *(r as *mut Engine) }.reset();
     }));
 }
 
@@ -676,13 +767,32 @@ pub unsafe extern "C" fn orender_reset(r: *mut OrenderRenderer) {
 /// `*out_channels` / `*out_pts_us` are set.
 ///
 /// Returns: 0 = OK (may be 0 frames — need more data), >0 = output buffer too
-/// small (nothing written; retry with a larger buffer), <0 = error.
-#[no_mangle]
+/// small (nothing written; call again with the same packet and a larger
+/// buffer), <0 = error.
+///
+/// The packet is decoded before its size is known, so a >0 return keeps the
+/// rendered audio and the retry hands it back without decoding the packet a
+/// second time. A host that moves on to the next packet instead loses this
+/// packet's audio, but the stream stays in step.
+///
+/// `*out_pts_us` is where the returned audio sits in the stream, from the
+/// samples decoded since `orender_create` or the last `orender_reset`;
+/// `orender_output_packet_pts` gives the `pts_us` passed with the packet it
+/// was decoded from, carried through untouched (ABI.md, "Output timestamps").
+///
+/// With the `decode_thread` option on (see `orender_set_option`) a packet's
+/// audio comes back from a later call - one packet's per call, about 30 ms of
+/// audio behind, or one packet if that is longer; occasionally two while the
+/// queue shrinks, so size `out` for two packets' audio (a smaller buffer gets
+/// the >0 return above and a retry) - or from `orender_drain`: take the
+/// timestamps from one of those two, not from the packet just passed in, and
+/// drain at end of stream.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_process(
     r: *mut OrenderRenderer,
     pkt: *const u8,
     pkt_len: usize,
-    _pts_us: i64,
+    pts_us: i64,
     out: *mut f32,
     out_cap_samples: usize,
     out_frames: *mut usize,
@@ -693,67 +803,199 @@ pub unsafe extern "C" fn orender_process(
         if r.is_null() || pkt.is_null() || out.is_null() {
             return -1;
         }
-        let engine = &mut *(r as *mut Engine);
-        let data = std::slice::from_raw_parts(pkt, pkt_len);
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let engine = unsafe { &mut *(r as *mut Engine) };
+        // SAFETY: non-null, and the caller passes `pkt_len` readable bytes.
+        let data = unsafe { std::slice::from_raw_parts(pkt, pkt_len) };
 
-        let chunks = match engine.process_raw(data) {
-            Ok(c) => c,
+        engine.set_input_pts(Some(pts_us));
+        let chunks = match engine.process_raw_within(data, out_cap_samples) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                if !out_frames.is_null() {
+                    // SAFETY: non-null out-parameter supplied by the caller.
+                    unsafe { *out_frames = 0 };
+                }
+                return 1; // buffer too small; the engine holds the audio for the retry
+            }
             Err(e) => {
                 eprintln!("orender_process error: {e:#}");
                 return -2;
             }
         };
 
-        let total_samples: usize = chunks.iter().map(|c| c.samples.len()).sum();
-        if total_samples > out_cap_samples {
-            if !out_frames.is_null() {
-                *out_frames = 0;
-            }
-            // Nothing was copied, but the buffers are still worth keeping: the
-            // caller is about to retry with a larger `out` and render again.
-            engine.recycle(chunks);
-            return 1; // buffer too small; caller retries larger
+        // SAFETY: `out` is non-null (checked above) and the caller sized it
+        // for `out_cap_samples` floats; the out-parameters may be NULL.
+        unsafe {
+            emit_chunks(
+                engine,
+                chunks,
+                out,
+                out_cap_samples,
+                out_frames,
+                out_channels,
+                out_pts_us,
+            )
         }
-
-        let out_slice = std::slice::from_raw_parts_mut(out, out_cap_samples);
-        let mut written = 0usize;
-        let mut total_frames = 0usize;
-        let mut n_channels = engine.channel_count();
-        let mut first_sample_pos: Option<u64> = None;
-        for chunk in &chunks {
-            // An output-mode switch can land between blocks of one packet; a
-            // mixed-layout copy would corrupt the frame geometry. Keep the
-            // call single-layout and drop the tail (sub-millisecond of audio,
-            // once per switch) — the next call carries the new layout.
-            if total_frames > 0 && chunk.n_channels != n_channels {
-                break;
-            }
-            out_slice[written..written + chunk.samples.len()].copy_from_slice(&chunk.samples);
-            written += chunk.samples.len();
-            total_frames += chunk.n_frames;
-            n_channels = chunk.n_channels;
-            first_sample_pos.get_or_insert(chunk.sample_pos);
-        }
-        // Copied out (or deliberately skipped, on a layout change): the sample
-        // buffers go back to the engine to be filled again next packet, instead
-        // of being freed and reallocated ~1200 times a second.
-        engine.recycle(chunks);
-
-        if !out_frames.is_null() {
-            *out_frames = total_frames;
-        }
-        if !out_channels.is_null() {
-            *out_channels = n_channels;
-        }
-        if !out_pts_us.is_null() {
-            let sr = engine.sample_rate().max(1) as i64;
-            *out_pts_us = first_sample_pos
-                .map(|p| (p as i64) * 1_000_000 / sr)
-                .unwrap_or(0);
-        }
-        0
     }))
     .unwrap_or(-100)
+}
+
+/// Render what the engine still holds, because the stream is over: with the
+/// `decode_thread` option on, the packets it has been handed and not returned
+/// yet. One packet's audio per call, as `orender_process` returns it, so a
+/// buffer that fits one packet's audio fits a drain too: after the last packet,
+/// call it until it returns 0 frames, and play what each call returns.
+///
+/// Not a reset: the renderer keeps its state, because this audio continues
+/// what came before. Once it has returned 0 frames it keeps returning 0 until
+/// new input. `out` and the out-parameters are as for `orender_process`.
+///
+/// Returns: 0 = OK (0 frames: nothing is left), >0 = output buffer too small
+/// (nothing written; call drain again with a larger buffer before sending
+/// more input — the audio is kept for it, and `orender_process` refuses
+/// input until it has been collected), <0 = error. `orender_reset`
+/// discards it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn orender_drain(
+    r: *mut OrenderRenderer,
+    out: *mut f32,
+    out_cap_samples: usize,
+    out_frames: *mut usize,
+    out_channels: *mut u32,
+    out_pts_us: *mut i64,
+) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        if r.is_null() || out.is_null() {
+            return -1;
+        }
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let engine = unsafe { &mut *(r as *mut Engine) };
+
+        let chunks = match engine.drain_with_capacity(out_cap_samples) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                if !out_frames.is_null() {
+                    // SAFETY: non-null out-parameter supplied by the caller.
+                    unsafe { *out_frames = 0 };
+                }
+                return 1; // buffer too small; the engine keeps the audio for the retry
+            }
+            Err(e) => {
+                eprintln!("orender_drain error: {e:#}");
+                return -2;
+            }
+        };
+
+        // SAFETY: `out` is non-null (checked above) and the caller sized it
+        // for `out_cap_samples` floats; the out-parameters may be NULL.
+        unsafe {
+            emit_chunks(
+                engine,
+                chunks,
+                out,
+                out_cap_samples,
+                out_frames,
+                out_channels,
+                out_pts_us,
+            )
+        }
+    }))
+    .unwrap_or(-100)
+}
+
+/// Copy rendered blocks into the caller's buffer and report their geometry:
+/// the tail shared by `orender_process` and `orender_drain`. Both have
+/// checked the capacity by then.
+///
+/// # Safety
+/// `out` must be non-null and valid for `out_cap_samples` floats; the three
+/// out-parameters are written only when non-null.
+unsafe fn emit_chunks(
+    engine: &mut Engine,
+    chunks: Vec<orender_engine::engine::RenderedAudio>,
+    out: *mut f32,
+    out_cap_samples: usize,
+    out_frames: *mut usize,
+    out_channels: *mut u32,
+    out_pts_us: *mut i64,
+) -> c_int {
+    // SAFETY: guaranteed by the caller (see above).
+    let out_slice = unsafe { std::slice::from_raw_parts_mut(out, out_cap_samples) };
+    let mut written = 0usize;
+    let mut total_frames = 0usize;
+    let mut n_channels = engine.channel_count();
+    let mut first_sample_pos: Option<u64> = None;
+    for chunk in &chunks {
+        // An output-mode switch can land between blocks of one packet; a
+        // mixed-layout copy would corrupt the frame geometry. Keep the
+        // call single-layout and drop the tail (sub-millisecond of audio,
+        // once per switch) — the next call carries the new layout.
+        if total_frames > 0 && chunk.n_channels != n_channels {
+            break;
+        }
+        out_slice[written..written + chunk.samples.len()].copy_from_slice(&chunk.samples);
+        written += chunk.samples.len();
+        total_frames += chunk.n_frames;
+        n_channels = chunk.n_channels;
+        first_sample_pos.get_or_insert(chunk.sample_pos);
+    }
+    // Copied out (or deliberately skipped, on a layout change): the sample
+    // buffers go back to the engine to be filled again next packet, instead
+    // of being freed and reallocated ~1200 times a second.
+    engine.recycle(chunks);
+
+    // SAFETY (the three writes): non-null out-parameters from the caller.
+    if !out_frames.is_null() {
+        unsafe { *out_frames = total_frames };
+    }
+    if !out_channels.is_null() {
+        unsafe { *out_channels = n_channels };
+    }
+    if !out_pts_us.is_null() {
+        let sr = engine.sample_rate().max(1) as i64;
+        unsafe {
+            *out_pts_us = first_sample_pos
+                .map(|p| (p as i64) * 1_000_000 / sr)
+                .unwrap_or(0)
+        };
+    }
+    0
+}
+
+/// The `pts_us` the host passed to `orender_process` with the packet whose
+/// audio the last `orender_process` or `orender_drain` call returned.
+///
+/// Inline, that is the packet the call was given. With the `decode_thread`
+/// option on, a packet's audio comes back a few calls later, and this says
+/// which packet it was, so a host that stamps its output with its input
+/// timestamps stamps it right. When a call returns two packets' audio, it is
+/// the first one's.
+///
+/// Returns 1 and writes `*pts_us` when the last call returned audio; 0 when it
+/// returned none (nothing ready yet, a short buffer, end of drain) and after
+/// `orender_reset`; -1 on a NULL argument.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn orender_output_packet_pts(
+    r: *const OrenderRenderer,
+    pts_us: *mut i64,
+) -> c_int {
+    catch_unwind(AssertUnwindSafe(|| {
+        if r.is_null() || pts_us.is_null() {
+            return -1;
+        }
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let engine = unsafe { &*(r as *const Engine) };
+        match engine.last_output_input_pts() {
+            Some(pts) => {
+                // SAFETY: non-null (checked above) out-parameter.
+                unsafe { *pts_us = pts };
+                1
+            }
+            None => 0,
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 /// Render the spatial overlay for the given OSD resolution and copy the ASS
@@ -773,7 +1015,7 @@ pub unsafe extern "C" fn orender_process(
 ///
 /// Handle-less by design: the overlay is a process-global singleton, and the Lua
 /// shim has no session handle (it `ffi.load`s this already-loaded library).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_overlay_ass(
     res_x: u32,
     res_y: u32,
@@ -785,7 +1027,8 @@ pub unsafe extern "C" fn orender_overlay_ass(
         let bytes = ass.as_bytes();
         let n = bytes.len();
         if !out.is_null() && cap >= n {
-            let dst = std::slice::from_raw_parts_mut(out, n);
+            // SAFETY: non-null, and the caller's buffer holds `cap >= n` bytes.
+            let dst = unsafe { std::slice::from_raw_parts_mut(out, n) };
             dst.copy_from_slice(bytes);
         }
         n
@@ -795,7 +1038,7 @@ pub unsafe extern "C" fn orender_overlay_ass(
 
 /// Enable or disable the overlay (host keybind / script message). Disabling also
 /// makes the engine stop feeding it. `0` = off, non-zero = on.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_set_enabled(enabled: c_int) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::set_enabled(enabled != 0);
@@ -808,7 +1051,7 @@ pub extern "C" fn orender_overlay_set_enabled(enabled: c_int) {
 /// so the spatial overlay clears immediately instead of lingering on the last
 /// frame until the trails decay. The next pull after feeding resumes shows the
 /// live scene again; the user's overlay on/off preference is preserved.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_clear() {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::clear();
@@ -820,7 +1063,7 @@ pub extern "C" fn orender_overlay_clear() {
 /// alive but is not spatial-rendering (mpv in host mode, decoding channel audio
 /// natively) sets `0` so the whole overlay disappears, and `1` when it resumes
 /// spatial rendering. `0` = not rendering (blank), non-zero = rendering.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_set_rendering(rendering: c_int) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::set_rendering(rendering != 0);
@@ -836,7 +1079,7 @@ pub extern "C" fn orender_overlay_set_rendering(rendering: c_int) {
 // the catch returns a safe default (0).
 
 /// Flip the master enable and return the new state (1 = on, 0 = off).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_toggle() -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::toggle_enabled() as c_int
@@ -845,7 +1088,7 @@ pub extern "C" fn orender_overlay_toggle() -> c_int {
 }
 
 /// Flip object-label visibility and return the new state (1 = on, 0 = off).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_toggle_labels() -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::toggle_labels() as c_int
@@ -855,7 +1098,7 @@ pub extern "C" fn orender_overlay_toggle_labels() -> c_int {
 
 /// Flip object visibility (markers + labels + trails + depth lines) and return
 /// the new state (1 = on, 0 = off).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_toggle_objects() -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::toggle_objects() as c_int
@@ -865,7 +1108,7 @@ pub extern "C" fn orender_overlay_toggle_objects() -> c_int {
 
 /// Flip whether motion trails are drawn and return the new state (1 = on,
 /// 0 = off). Clears the trail buffers when disabling.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_toggle_trails() -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::toggle_trails() as c_int
@@ -874,7 +1117,7 @@ pub extern "C" fn orender_overlay_toggle_trails() -> c_int {
 }
 
 /// Flip the object energy heatmap and return the new state (1 = on, 0 = off).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_toggle_heatmap() -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::toggle_heatmap() as c_int
@@ -884,7 +1127,7 @@ pub extern "C" fn orender_overlay_toggle_heatmap() -> c_int {
 
 /// Advance the heatmap colour gradient to the next index (wraps 0..=4) and return
 /// the new index.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_cycle_heatmap_colormap() -> u32 {
     catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::cycle_heatmap_colormap() as u32
@@ -894,7 +1137,7 @@ pub extern "C" fn orender_overlay_cycle_heatmap_colormap() -> u32 {
 
 /// Step the heatmap depth-plane count by `delta` (clamped to 1..=12) and return
 /// the new count.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_overlay_adjust_heatmap_bands(delta: i32) -> u32 {
     catch_unwind(AssertUnwindSafe(|| {
         orender_engine::overlay::adjust_heatmap_bands(delta) as u32
@@ -915,7 +1158,7 @@ pub extern "C" fn orender_overlay_adjust_heatmap_bands(delta: i32) -> u32 {
 /// Read-only with respect to the scene: unlike `orender_overlay_ass`, this does
 /// not advance trails or the pull clock (the ASS pull already does), so the host
 /// may call it alongside the ASS redraw.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_overlay_heatmap_bgra(
     res_x: u32,
     res_y: u32,
@@ -934,8 +1177,10 @@ pub unsafe extern "C" fn orender_overlay_heatmap_bgra(
         if n == 0 || n > cap {
             return 0;
         }
-        std::slice::from_raw_parts_mut(out, n).copy_from_slice(&bmp.pixels);
-        let g = std::slice::from_raw_parts_mut(geom, 6);
+        // SAFETY: both non-null (checked above); the caller sized `out` for
+        // `cap >= n` bytes and `geom` for 6 `i32`s.
+        unsafe { std::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&bmp.pixels);
+        let g = unsafe { std::slice::from_raw_parts_mut(geom, 6) };
         g[0] = bmp.x;
         g[1] = bmp.y;
         g[2] = bmp.w;
@@ -947,17 +1192,17 @@ pub unsafe extern "C" fn orender_overlay_heatmap_bgra(
     .unwrap_or(0)
 }
 
-/// ABI major version of the loaded library (see [`ORENDER_ABI_MAJOR`]). A
+/// ABI major version of the loaded library (see `ORENDER_ABI_MAJOR`). A
 /// consumer must refuse a library whose major differs from the one it was
 /// compiled against.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_version_major() -> u32 {
     ORENDER_ABI_MAJOR
 }
 
 /// ABI minor version of the loaded library (backwards-compatible additions;
-/// see [`ORENDER_ABI_MINOR`]). For logging — gate features on symbol presence.
-#[no_mangle]
+/// see `ORENDER_ABI_MINOR`). For logging — gate features on symbol presence.
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_version_minor() -> u32 {
     ORENDER_ABI_MINOR
 }
@@ -1050,7 +1295,7 @@ mod tests {
     }
 
     mod resolve_osc {
-        use crate::{resolve_osc_opts, OrenderConfig};
+        use crate::{OrenderConfig, config_file_exists, resolve_osc_opts};
         use orender_engine::RenderConfig;
         use std::ptr;
 
@@ -1090,19 +1335,65 @@ mod tests {
             }
         }
 
+        /// A config file that exists but says nothing about OSC keeps it off,
+        /// as before: a save with OSC off leaves the key out.
         #[test]
-        fn off_when_nothing_enables_it() {
+        fn off_when_an_existing_config_does_not_enable_it() {
             with_env_port(None, || {
-                assert!(resolve_osc_opts(&host_cfg(), None).is_none());
+                assert!(resolve_osc_opts(&host_cfg(), None, true).is_none());
                 let render = RenderConfig::default();
-                assert!(resolve_osc_opts(&host_cfg(), Some(&render)).is_none());
+                assert!(resolve_osc_opts(&host_cfg(), Some(&render), true).is_none());
             });
+        }
+
+        /// No config file: a first start in a player. OSC comes up on the
+        /// built-in rendezvous port, so Studio sees the engine.
+        #[test]
+        fn on_when_no_config_file_exists() {
+            with_env_port(None, || {
+                let opts = resolve_osc_opts(&host_cfg(), None, false)
+                    .expect("no config file must bring OSC up");
+                assert_eq!(opts.port_in, 9000);
+                assert_eq!(opts.port_out, 9000);
+                assert_eq!(opts.host, "127.0.0.1");
+                assert!(!opts.metering);
+            });
+        }
+
+        /// What the config says still wins over the missing-file default (a
+        /// live-handoff sidecar can stand in for a missing `config.yaml`),
+        /// and the workflow port still picks the port.
+        #[test]
+        fn config_and_environment_still_apply_without_a_config_file() {
+            with_env_port(Some("9010"), || {
+                let off = RenderConfig {
+                    osc: Some(false),
+                    ..RenderConfig::default()
+                };
+                assert!(resolve_osc_opts(&host_cfg(), Some(&off), false).is_none());
+                let opts = resolve_osc_opts(&host_cfg(), None, false).expect("OSC on");
+                assert_eq!((opts.port_in, opts.port_out), (9010, 9010));
+            });
+        }
+
+        #[test]
+        fn config_file_exists_asks_the_file() {
+            let dir = std::env::temp_dir()
+                .join(format!("orender-ffi-config-exists-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            let path = dir.join("config.yaml");
+            let _ = std::fs::remove_file(&path);
+            assert!(!config_file_exists(None), "no path is no config");
+            assert!(!config_file_exists(Some(&path)));
+            std::fs::write(&path, "render: {}\n").expect("write config");
+            assert!(config_file_exists(Some(&path)));
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]
         fn workflow_port_enables_osc_and_supplies_both_ports() {
             with_env_port(Some("9010"), || {
-                let opts = resolve_osc_opts(&host_cfg(), None)
+                let opts = resolve_osc_opts(&host_cfg(), None, true)
                     .expect("OMNIPHONY_OSC_PORT alone must bring OSC up");
                 assert_eq!(opts.port_in, 9010);
                 assert_eq!(opts.port_out, 9010);
@@ -1116,7 +1407,7 @@ mod tests {
                     osc: Some(false),
                     ..RenderConfig::default()
                 };
-                assert!(resolve_osc_opts(&host_cfg(), Some(&render)).is_none());
+                assert!(resolve_osc_opts(&host_cfg(), Some(&render), true).is_none());
             });
         }
 
@@ -1127,7 +1418,7 @@ mod tests {
                     osc_port_in: 9020,
                     ..host_cfg()
                 };
-                let opts = resolve_osc_opts(&cfg, None).expect("env enables OSC");
+                let opts = resolve_osc_opts(&cfg, None, true).expect("env enables OSC");
                 assert_eq!(opts.port_in, 9020);
                 assert_eq!(opts.port_out, 9010);
             });
@@ -1142,7 +1433,7 @@ mod tests {
                     ..RenderConfig::default()
                 };
                 let opts =
-                    resolve_osc_opts(&host_cfg(), Some(&render)).expect("config enables OSC");
+                    resolve_osc_opts(&host_cfg(), Some(&render), true).expect("config enables OSC");
                 assert_eq!(opts.port_in, 9005);
                 assert_eq!(opts.port_out, 9010);
             });
@@ -1152,9 +1443,10 @@ mod tests {
 
 /// Human-readable build identifier of the loaded library:
 /// `"<crate-version> <git-describe> (built <timestamp>)"`. Static storage,
-/// never NULL — for host logs, so "which engine did I actually load" is one
+/// never NULL (a fixed placeholder if the identifier cannot be built) — for
+/// host logs, so "which engine did I actually load" is one
 /// log line instead of a debugging session.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn orender_build_id() -> *const c_char {
     use std::ffi::CString;
     use std::sync::OnceLock;
@@ -1171,11 +1463,11 @@ pub extern "C" fn orender_build_id() -> *const c_char {
             })
             .as_ptr()
     }))
-    .unwrap_or(ptr::null())
+    .unwrap_or(c"unknown".as_ptr())
 }
 
 /// Set a named runtime option on a session — the additive evolution path for
-/// the frozen [`OrenderConfig`]: new knobs get a string key here instead of a
+/// the frozen `OrenderConfig`: new knobs get a string key here instead of a
 /// struct field, so consumers compiled against older headers keep working and
 /// newer consumers can probe.
 ///
@@ -1183,9 +1475,32 @@ pub extern "C" fn orender_build_id() -> *const c_char {
 /// whether this build supports a key), -2 for an invalid value, -3 on a NULL
 /// handle/argument or internal error.
 ///
-/// No keys are defined at ABI 0.5 — every call returns -1. The mechanism ships
-/// ahead of the first key so consumers can adopt the probe pattern now.
-#[no_mangle]
+/// Keys:
+///
+/// - `decode_thread` = `on` | `off` | `live` (ABI 0.10, `live` since 0.11;
+///   default `off`): decode on a thread of its own, overlapping the render, so
+///   the two share the work across two cores. With it on, a packet's audio
+///   comes back from a later `orender_process` call (one packet's per call,
+///   about 30 ms of audio behind, or one packet if that is longer;
+///   occasionally two while the queue shrinks) or from
+///   `orender_drain`, so only a host that takes its timestamps from what the
+///   call returns (`*out_pts_us` or `orender_output_packet_pts`, see
+///   `orender_process`) and drains at end of stream should turn it on.
+///   `on` and `off` force it: switch them while nothing is in flight — right
+///   after `orender_create`, after `orender_reset`, or once
+///   `orender_drain` has returned 0 frames; turning it off with packets
+///   still on the thread returns -2. `live` hands the choice to the user's
+///   `render.decode_thread` option (config.yaml, Studio, OSC), which the
+///   engine then follows at packet boundaries, winding the thread down a
+///   packet per call when it is turned off mid-stream.
+/// - `heard_us` = a decimal integer (ABI 0.12): where the listener is, in the
+///   microseconds `*out_pts_us` counts — so from 0 after `orender_reset`. A
+///   host that buffers the rendered audio plays it later than it renders it;
+///   reported as the audio plays, it reaches OSC clients as
+///   `/omniphony/playout/heard`, so a client such as Studio can show each block
+///   when it is heard rather than when it was rendered. The engine holds
+///   nothing back. A host that never sets it changes nothing.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn orender_set_option(
     r: *mut OrenderRenderer,
     key: *const c_char,
@@ -1195,14 +1510,183 @@ pub unsafe extern "C" fn orender_set_option(
         if r.is_null() {
             return -3;
         }
-        let (Some(key), Some(_value)) = (opt_str(key), opt_str(value)) else {
+        // SAFETY: NULL or nul-terminated strings (caller contract).
+        let (Some(key), Some(value)) = (unsafe { opt_str(key) }, unsafe { opt_str(value) }) else {
             return -3;
         };
-        let _engine = &mut *(r as *mut Engine);
-        // No keys defined yet (ABI 0.5): report "unknown key" so consumers can
-        // probe support. First real key: match on `key` and route to the engine.
-        let _ = key;
-        -1
+        // SAFETY: non-null (checked above) and a live `orender_create` handle.
+        let engine = unsafe { &mut *(r as *mut Engine) };
+        match key {
+            "decode_thread" => {
+                let mode = match value {
+                    "on" => DecodeThreadMode::On,
+                    "off" => DecodeThreadMode::Off,
+                    "live" => DecodeThreadMode::Live,
+                    _ => return -2,
+                };
+                match engine.set_decode_thread_mode(mode) {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        eprintln!("orender_set_option decode_thread={value}: {e:#}");
+                        -2
+                    }
+                }
+            }
+            "heard_us" => match value.trim().parse::<i64>() {
+                Ok(us) => {
+                    engine.set_heard_us(us);
+                    0
+                }
+                Err(_) => -2,
+            },
+            _ => -1,
+        }
     }))
     .unwrap_or(-3)
+}
+
+/// Held by every test that creates a session or waits on the degraded
+/// reporter: a session that starts stops the process-wide reporter, which a
+/// concurrent test may be waiting on.
+#[cfg(test)]
+static SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod live_handle_tests;
+
+#[cfg(test)]
+mod source_label_tests {
+    use super::*;
+
+    #[test]
+    fn source_label_reports_nothing_without_a_session() {
+        let mut buf = [0x7fu8 as c_char; 8];
+        unsafe {
+            assert_eq!(orender_source_label(ptr::null(), ptr::null_mut(), 0), 0);
+            assert_eq!(orender_source_label(ptr::null(), buf.as_mut_ptr(), 8), 0);
+        }
+        assert_eq!(buf[0], 0x7f, "nothing written for a NULL handle");
+    }
+}
+
+#[cfg(test)]
+mod degraded_reporter_tests {
+    use super::*;
+    use std::ffi::CString;
+    use std::net::UdpSocket;
+    use std::time::{Duration, Instant};
+
+    /// Far above the no-bridge renderer build, even in a debug build.
+    const READY_DEADLINE: Duration = Duration::from_secs(120);
+    const BRIDGE: &str = "/nonexistent/libnone_bridge.so";
+
+    fn free_port() -> u16 {
+        UdpSocket::bind("127.0.0.1:0")
+            .and_then(|socket| socket.local_addr())
+            .expect("free port")
+            .port()
+    }
+
+    /// `/omniphony/register <port>`, OSC-encoded by hand (this crate does not
+    /// link an OSC library).
+    fn register_message(port: u16) -> Vec<u8> {
+        let mut out = b"/omniphony/register\0".to_vec();
+        out.extend_from_slice(b",i\0\0");
+        out.extend_from_slice(&i32::from(port).to_be_bytes());
+        out
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// A bridge that cannot be loaded: `orender_create` still returns NULL
+    /// (mpv falls back to its native decoder), and the shared no-bridge
+    /// runtime comes up behind it, publishing the bridge error with the host's
+    /// launch diagnostics, the bridge path it was asked for and the C-ABI, and
+    /// answering a registration over OSC. A real engine start tears it down.
+    #[test]
+    fn an_unloadable_bridge_returns_null_and_keeps_the_degraded_reporter() {
+        let _session = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("orender-ffi-degraded-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let config_path = dir.join("config.yaml");
+        // A small evaluation grid, so the renderer builds fast in a debug run.
+        std::fs::write(
+            &config_path,
+            "render:\n  evaluation_cartesian_x_size: 9\n  evaluation_cartesian_y_size: 9\n  evaluation_cartesian_z_size: 5\n",
+        )
+        .expect("write config");
+        let config = CString::new(config_path.to_str().expect("utf-8 path")).unwrap();
+        let bridge = CString::new(BRIDGE).unwrap();
+        let port_in = free_port();
+        let cfg = OrenderConfig {
+            sample_rate: 48_000,
+            config_yaml_path: config.as_ptr(),
+            speaker_layout_path: ptr::null(),
+            bridge_path: bridge.as_ptr(),
+            codec: ptr::null(),
+            osc_enabled: 1,
+            osc_port_in: port_in,
+            osc_port_out: free_port(),
+            osc_bind: ptr::null(),
+            osc_host: ptr::null(),
+        };
+
+        // SAFETY: `cfg` and the strings it points to outlive the call.
+        let handle = unsafe { orender_create(&cfg) };
+        assert!(handle.is_null(), "no session without a bridge");
+
+        let started = Instant::now();
+        let control = loop {
+            if let Some(runtime) = DEGRADED_REPORTER.lock().unwrap().as_ref() {
+                break runtime.control();
+            }
+            assert!(
+                DEGRADED_ACTIVE.load(Ordering::SeqCst),
+                "the degraded reporter failed to start"
+            );
+            assert!(
+                started.elapsed() < READY_DEADLINE,
+                "no degraded reporter after {READY_DEADLINE:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let error = control.bridge_error().expect("bridge error published");
+        assert!(error.contains(BRIDGE), "{error}");
+        assert!(error.contains("Working dir:"), "{error}");
+        assert_eq!(control.bridge_paths(), [PathBuf::from(BRIDGE)]);
+        assert_eq!(
+            control.host_abi(),
+            Some((ORENDER_ABI_MAJOR, ORENDER_ABI_MINOR))
+        );
+        assert_eq!(control.config_path(), Some(config_path));
+
+        let client = UdpSocket::bind("127.0.0.1:0").expect("client socket");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let client_port = client.local_addr().unwrap().port();
+        client
+            .send_to(&register_message(client_port), ("127.0.0.1", port_in))
+            .expect("register");
+        let mut buf = vec![0u8; 65_536];
+        let mut answered = false;
+        for _ in 0..64 {
+            let Ok((len, _)) = client.recv_from(&mut buf) else {
+                break;
+            };
+            if contains(&buf[..len], b"/omniphony/state/render/bridge_error")
+                && contains(&buf[..len], BRIDGE.as_bytes())
+            {
+                answered = true;
+                break;
+            }
+        }
+        assert!(answered, "no bridge error in the registration answer");
+
+        stop_degraded_reporter_global();
+        assert!(DEGRADED_REPORTER.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

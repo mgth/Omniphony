@@ -112,6 +112,22 @@ const RULES: &[Rule] = &[
         exempt: &["src/main.rs"],
     },
     Rule {
+        id: "save-config",
+        why: "UI code saves the renderer's config: a render setting written without the user pressing Save (docs/persistence-policy.md)",
+        fix: "leave the edit pending in the renderer; the Save button, the quit prompt and the profile-switch prompt are the only places that save",
+        matchers: &[Matcher::Code(&[
+            r"\brequest_save_config\s*\(",
+            r"\bSaveAndSwitch\b",
+        ])],
+        // The three places the user chooses to save: the footer's Save
+        // button, the unsaved-changes quit prompt, the profile-switch prompt.
+        exempt: &[
+            "src/panels/footer.rs",
+            "src/panels/unsaved_quit.rs",
+            "src/panels/profiles.rs",
+        ],
+    },
+    Rule {
         id: "frame-tick",
         why: "periodic behaviour defined in UI code runs only when the toolkit draws a frame",
         fix: "make it a host service with `tick(now) -> Option<Instant>` whose deadline schedules the next wake",

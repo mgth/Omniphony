@@ -16,7 +16,7 @@
 //!
 //!   * `render_ramp_mode/<frame|sample>` — at a fixed object count, the cost of
 //!     the ramp mode itself. `Frame` is the live mpv default after the engine
-//!     parity fix; `Sample` is the old per-sample `compute_gains` behaviour.
+//!     parity fix; `Sample` follows the ramped position sample by sample.
 //!
 //! Run with:  cargo bench -p renderer
 //! A single scenario:  cargo bench -p renderer -- render_steady/32
@@ -84,8 +84,9 @@ fn bench_metadata_frame(c: &mut Criterion) {
 }
 
 /// Quantify the cost of the ramp mode itself at a fixed object count. `Frame`
-/// is the live mpv default after the engine parity fix; `Sample` is the old
-/// (per-sample `compute_gains`) behaviour the embedded host used to run in.
+/// is the live mpv default after the engine parity fix; `Sample` follows the
+/// ramped position sample by sample, with a `compute_gains` every few samples
+/// while it moves.
 fn bench_ramp_mode(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_ramp_mode");
     const N: usize = 32;
@@ -120,9 +121,9 @@ fn bench_ramp_mode(c: &mut Criterion) {
 
 /// The realistic Sample-mode common case: objects are NOT moving this block (no
 /// metadata — ~97% of real frames). `frame` recomputes gains once; `sample`
-/// recomputes per sample. Since the position is constant, the per-sample
-/// `compute_gains` calls are redundant — this is what the static early-out
-/// targets. Contrast with `render_ramp_mode` (objects move every frame).
+/// walks the position per sample but, since it is constant, calls
+/// `compute_gains` once per block too. Contrast with `render_ramp_mode`
+/// (objects move every frame).
 fn bench_static(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_static");
     const N: usize = 32;
@@ -154,10 +155,10 @@ fn bench_static(c: &mut Criterion) {
 
 /// The genuinely-moving case: position interpolation ON and a fresh ramp armed
 /// every block, so the object's interpolated position changes every sample and
-/// `Sample` must recompute the VBAP gains per sample. This is where the cost
-/// distribution shows: `sample` pays N × `compute_gains`, `interp` pays one
-/// `compute_gains` plus a per-sample gain lerp, `frame` pays one `compute_gains`
-/// and no per-sample smoothing.
+/// `Sample` has to follow it. This is where the cost distribution shows:
+/// `sample` pays a `compute_gains` every few samples plus a per-sample gain
+/// lerp between them, `interp` pays one `compute_gains` plus a per-sample gain
+/// lerp, `frame` pays one `compute_gains` and no per-sample smoothing.
 fn bench_moving(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_moving");
     const N: usize = 32;
@@ -241,8 +242,7 @@ fn bench_crossover(c: &mut Criterion) {
         let mut r = build_renderer(crossover_layout(), true, true);
         {
             let ctrl = r.renderer_control();
-            ctrl.set_requested_ramp_mode(mode);
-            ctrl.live.write().ramp_mode = mode;
+            ctrl.live.write().options.ramp_mode = mode;
         }
         let pcm = make_pcm(N);
         let init = move_events(N, 0);
@@ -323,8 +323,7 @@ fn bench_polar_crossover(c: &mut Criterion) {
         let mut r = build_renderer(crossover_layout(), true, false);
         {
             let ctrl = r.renderer_control();
-            ctrl.set_requested_ramp_mode(mode);
-            ctrl.live.write().ramp_mode = mode;
+            ctrl.live.write().options.ramp_mode = mode;
         }
         let pcm = make_pcm(N);
         let init = move_events(N, 0);

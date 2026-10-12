@@ -8,6 +8,7 @@
 use super::HostPaths;
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::host::mpv_bridge;
 use crate::osc_contract;
 use std::env;
 use std::fs::File;
@@ -50,15 +51,11 @@ fn bundled_orender_candidates(app: &HostPaths) -> Vec<PathBuf> {
     candidates
 }
 
-fn bundled_layouts_dir(app: &HostPaths) -> Option<PathBuf> {
-    app.resource_dir().ok().map(|dir| dir.join("layouts"))
-}
-
 /// The Omniphony checkout this Studio was built from: the nearest directory
 /// above the crate that holds the renderer's `omniphony-renderer/Cargo.toml`.
 ///
 /// Searched for rather than counted in `parent()` steps. The Tauri host sat
-/// one level deeper (`omniphony-studio/src-tauri`), and the two steps copied
+/// one level deeper (in its `src-tauri` directory), and the two steps copied
 /// from it climbed out of the checkout to `workflows/<wf>/`, where the
 /// renderer build of the checkout was never found. `None` for a binary run
 /// away from its source tree, where only the configured, bundled and `PATH`
@@ -175,14 +172,64 @@ fn resolve_orender_launch_spec(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<OrenderLaunchSpec, String> {
     let orender_path = resolve_orender_binary(app, orender_path)?;
+    Ok(orender_launch_spec(
+        state,
+        orender_path,
+        host,
+        osc_rx_port,
+        osc_port,
+        log_level,
+    ))
+}
 
-    let input_path = default_orender_input_path();
+/// The launch spec for an already resolved binary, persisting the connection
+/// settings it was built from.
+fn orender_launch_spec(
+    state: &SharedState,
+    orender_path: PathBuf,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+    log_level: Option<String>,
+) -> OrenderLaunchSpec {
+    let args = orender_render_args(
+        &default_orender_input_path(),
+        &host,
+        osc_rx_port,
+        log_level.as_deref(),
+    );
 
+    // Persist the connection settings used for this launch, preserving the
+    // fields this function doesn't manage (auto-start / keep-alive toggles).
+    if let Err(error) = state.config.update(|cfg| {
+        cfg.host = host.trim().to_string();
+        cfg.osc_rx_port = osc_rx_port;
+        cfg.osc_port = osc_port;
+    }) {
+        log::warn!("[osc] {error}");
+    }
+
+    OrenderLaunchSpec { orender_path, args }
+}
+
+/// The command line after `orender` for the renderer Studio launches and for
+/// the service it installs. Pure, so the unit file the packages ship can be
+/// checked against it (see the tests).
+///
+/// The metering switch is not part of it. `--osc-metering` subscribes the
+/// renderer's permanent default target, which no client can unsubscribe and
+/// which never times out: the renderer would meter with nobody watching.
+/// Studio asks for levels for itself when it registers.
+fn orender_render_args(
+    input_path: &Path,
+    host: &str,
+    osc_rx_port: u16,
+    log_level: Option<&str>,
+) -> Vec<String> {
     let mut args = vec![
         "render".to_string(),
         input_path.display().to_string(),
@@ -200,12 +247,7 @@ fn resolve_orender_launch_spec(
         "--osc-yield".to_string(),
     ];
 
-    if osc_metering_enabled {
-        args.push("--osc-metering".to_string());
-    }
-
     let level = log_level
-        .as_deref()
         .map(str::trim)
         .filter(|s| matches!(*s, "off" | "error" | "warn" | "info" | "debug" | "trace"))
         .unwrap_or("info");
@@ -214,68 +256,80 @@ fn resolve_orender_launch_spec(
         args.push(level.to_string());
     }
 
-    if let Some(selected_layout) = state.inner.lock().unwrap().selected_layout_key.clone() {
-        let layout_file = format!("{selected_layout}.yaml");
-        // The presets dir holds the immersive (with-height) layouts; the older
-        // no-height layouts now live in a `legacy/` subfolder. Look in both,
-        // bundle first then the repo (dev) fallback.
-        let layout_path = bundled_layouts_dir(app)
-            .into_iter()
-            .flat_map(|dir| {
-                [
-                    dir.join(&layout_file),
-                    dir.join("legacy").join(&layout_file),
-                ]
-            })
-            .chain(repo_root().into_iter().flat_map(|root| {
-                [
-                    root.join("layouts").join(&layout_file),
-                    root.join("layouts").join("legacy").join(&layout_file),
-                ]
-            }))
-            .find(|path| path.exists());
-        if let Some(layout_path) = layout_path {
-            args.push("--speaker-layout".to_string());
-            args.push(layout_path.display().to_string());
-        }
-    }
-
-    // Persist the connection settings used for this launch, preserving the
-    // fields this function doesn't manage (auto-start / keep-alive toggles).
-    if let Err(error) = state.config.update(|cfg| {
-        cfg.host = host.trim().to_string();
-        cfg.osc_rx_port = osc_rx_port;
-        cfg.osc_port = osc_port;
-        cfg.osc_metering_enabled = osc_metering_enabled;
-    }) {
-        log::warn!("[osc] {error}");
-    }
-
-    Ok(OrenderLaunchSpec { orender_path, args })
+    // No `--speaker-layout`: the renderer's config (`current_layout` of the
+    // active profile) is the one source of truth for the speaker layout. The
+    // Studio's selection before a renderer connects is only a display default
+    // (7.1.4); forwarding it overrode the saved layout, and the live-state
+    // handoff then carried that override from instance to instance.
+    args
 }
 
-/// Path of the `orender` binary this Studio would launch, so the UI can compare
-/// it with the path the connected renderer reports over OSC.
+/// Whether the renderer this Studio launched is still running.
 ///
-/// A mismatch means Studio is driving a renderer it did not start — typically
-/// one left running by another environment, or a system-wide install that
-/// happened to hold the OSC port. Every control still *sends*, but anything the
-/// other build does not implement is silently dropped, which is close to
-/// undiagnosable from the UI. Returns `None` when no binary can be resolved at
-/// all; that is a separate, already-reported condition.
+/// One lock and one `try_wait`, nothing that waits: the restart banner asks
+/// this on every frame it is drawn, and a quit under way on the worker (see
+/// [`quit_launched_renderer`]) must not hold the answer back.
+pub fn launched_renderer_running(state: &SharedState) -> bool {
+    state
+        .renderer_child
+        .lock()
+        .unwrap()
+        .as_mut()
+        .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+}
+
+/// Whether quitting Studio stops the renderer: one it launched and still
+/// runs, unless the user asked to keep it alive. What the quit prompt tells
+/// the user about their unsaved edits depends on it.
+pub fn quitting_stops_renderer(state: &SharedState) -> bool {
+    launched_renderer_running(state) && !state.config.snapshot().keep_renderer_alive_on_quit
+}
+
 /// At quit, take a renderer this Studio launched down with it, unless the
-/// user asked to keep it: a graceful quit first, so it writes its live-state
-/// handoff, then a kill if it has not gone within two seconds. A renderer this
-/// Studio did not start (a service, mpv's own) is left alone.
+/// user asked to keep it. A renderer this Studio did not start (a service,
+/// mpv's own) is left alone.
 pub fn stop_launched_renderer(state: &SharedState) {
-    let mut guard = state.renderer_child.lock().unwrap();
-    let Some(child) = guard.as_mut() else {
-        return;
-    };
-    if !matches!(child.try_wait(), Ok(None)) {
+    if !quitting_stops_renderer(state) {
         return;
     }
-    if state.config.snapshot().keep_renderer_alive_on_quit {
+    quit_launched_renderer(state);
+}
+
+/// Restart the renderer this Studio launched from the binary on disk, so a
+/// rebuilt or updated `orender` is the one that runs. The old instance quits
+/// first, handing its live state over, and the new one is launched with the
+/// saved OSC settings, like the Launch button.
+pub fn restart_launched_renderer(
+    app: &HostPaths,
+    state: &SharedState,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+) -> Result<serde_json::Value, String> {
+    if !launched_renderer_running(state) {
+        return Err("the running renderer was not launched by this Studio".to_string());
+    }
+    // Keep the watchdog from starting a standby in the gap; the launch below
+    // re-arms it.
+    state.watchdog.lock().unwrap().suppressed = true;
+    quit_launched_renderer(state);
+    launch_orender(app, state, host, osc_rx_port, osc_port, None, None)
+}
+
+/// How long a renderer asked to quit gets to write its live-state handoff
+/// and go before it is killed.
+const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Quit the renderer this Studio launched: a graceful quit first, so it
+/// writes its live-state handoff, then a kill if it has not gone within
+/// [`QUIT_GRACE`].
+///
+/// The child's lock is taken for one `try_wait` at a time and released while
+/// this sleeps. Holding it across the grace period stalled everyone asking
+/// whether the renderer still runs, the restart banner first: its frame waited
+/// up to the full two seconds on a renderer slow to answer.
+fn quit_launched_renderer(state: &SharedState) {
+    if state.renderer_child.lock().unwrap().is_none() {
         return;
     }
     send_control(
@@ -284,28 +338,86 @@ pub fn stop_launched_renderer(state: &SharedState) {
             address: osc_contract::CONTROL_QUIT.to_string(),
         },
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + QUIT_GRACE;
     loop {
+        let mut guard = state.renderer_child.lock().unwrap();
+        // Reaped by the watchdog in the meantime: it has gone.
+        let Some(child) = guard.as_mut() else {
+            return;
+        };
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => return,
             Ok(None) if std::time::Instant::now() < deadline => {
+                drop(guard);
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break;
+                return;
             }
         }
     }
 }
 
+/// Path of the `orender` binary this Studio would launch, so the UI can compare
+/// it with the path the connected renderer reports over OSC (see
+/// [`renderer_mismatch`]). Returns `None` when no binary can be resolved at
+/// all; that is a separate, already-reported condition.
 pub fn expected_orender_path(app: &HostPaths, orender_path: Option<String>) -> Option<String> {
     // Takes the same optional override the launch commands do, so the caller
     // gets the answer for the settings it is actually about to use.
     resolve_orender_binary(&app, orender_path)
         .ok()
         .map(|path| path.display().to_string())
+}
+
+/// What Linux appends to `/proc/self/exe` (and so to `current_exe()`) once
+/// the file a process was started from has been replaced or removed. The
+/// renderer reports that raw answer; [`renderer_mismatch`] reads it.
+const REPLACED_EXECUTABLE_SUFFIX: &str = " (deleted)";
+
+/// How the renderer answering differs from the one this Studio would launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RendererMismatch {
+    /// The same executable, but its file was replaced since the renderer
+    /// started — typically rebuilt: it still runs the older build, and a
+    /// restart loads the new one.
+    Replaced { path: String },
+    /// Another executable altogether: one left running by another
+    /// environment, or a system-wide install that happened to hold the OSC
+    /// port. Every control still *sends*, but anything that build does not
+    /// implement is silently dropped, which is close to undiagnosable from
+    /// the UI.
+    Foreign { running: String, expected: String },
+}
+
+/// Compare the executable the renderer reports (`running`) with the one this
+/// Studio would launch (`expected`). `None` when they match, while either is
+/// unknown, and always for an embedded producer, which was never ours to
+/// start.
+pub fn renderer_mismatch(
+    embedded: bool,
+    running: Option<&str>,
+    expected: Option<&str>,
+) -> Option<RendererMismatch> {
+    if embedded {
+        return None;
+    }
+    let running = running?.trim();
+    let expected = expected?.trim();
+    if running.is_empty() || expected.is_empty() || running == expected {
+        return None;
+    }
+    if running.strip_suffix(REPLACED_EXECUTABLE_SUFFIX) == Some(expected) {
+        return Some(RendererMismatch::Replaced {
+            path: expected.to_owned(),
+        });
+    }
+    Some(RendererMismatch::Foreign {
+        running: running.to_owned(),
+        expected: expected.to_owned(),
+    })
 }
 
 fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> {
@@ -384,7 +496,7 @@ fn run_elevated_windows(program: &str, args: &[String], action: &str) -> Result<
     run_command(cmd, action)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn systemd_escape_arg(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -399,8 +511,12 @@ fn systemd_escape_arg(value: &str) -> String {
     out
 }
 
-#[cfg(target_os = "linux")]
-fn linux_service_unit(exec_path: &PathBuf, args: &[String]) -> String {
+/// The systemd user unit for `exec_path args…`. The Studio deb and the AUR
+/// `orender` package ship the text this returns for `/usr/bin/orender` and the
+/// default settings (`packaging/systemd/omniphony-renderer.service`, checked by
+/// a test), so a packaged unit and one Studio installs replace each other.
+#[cfg(any(target_os = "linux", test))]
+fn linux_service_unit(exec_path: &Path, args: &[String]) -> String {
     let mut exec = Vec::with_capacity(args.len() + 1);
     exec.push(systemd_escape_arg(&exec_path.display().to_string()));
     exec.extend(args.iter().map(|arg| systemd_escape_arg(arg)));
@@ -408,6 +524,89 @@ fn linux_service_unit(exec_path: &PathBuf, args: &[String]) -> String {
         "[Unit]\nDescription=Omniphony Renderer\nAfter=graphical-session.target pipewire.service wireplumber.service\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={}\nRestart=on-failure\nRestartSec=2\nKillSignal=SIGINT\nTimeoutStopSec=30\n\n[Install]\nWantedBy=default.target\n",
         exec.join(" ")
     )
+}
+
+/// What the AppImage runtime tells the process it starts, read once by the
+/// install command and built by hand in the tests.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Default)]
+struct AppImageEnv {
+    /// `$APPDIR`: where the image is mounted (or extracted, with
+    /// `--appimage-extract-and-run`), removed when the AppImage exits.
+    appdir: Option<PathBuf>,
+    /// `$TMPDIR`, under which the runtime makes its `.mount_*` directory when
+    /// it is set; `/tmp` otherwise.
+    tmpdir: Option<PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+impl AppImageEnv {
+    fn from_env() -> Self {
+        let var = |name| {
+            env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        Self {
+            appdir: var("APPDIR"),
+            tmpdir: var("TMPDIR"),
+        }
+    }
+}
+
+/// Whether `path` lies inside an AppImage's mount: under `$APPDIR`, or in a
+/// `.mount_*` directory right under `/tmp` or `$TMPDIR`, the runtime's mount
+/// point (which also catches an orender found in *another* running AppImage).
+/// A unit naming such a path stops working when that AppImage exits.
+#[cfg(any(target_os = "linux", test))]
+fn inside_appimage_mount(path: &Path, env: &AppImageEnv) -> bool {
+    if env
+        .appdir
+        .as_deref()
+        .is_some_and(|appdir| path.starts_with(appdir))
+    {
+        return true;
+    }
+    let tmp_roots = [Some(Path::new("/tmp")), env.tmpdir.as_deref()];
+    path.ancestors().any(|dir| {
+        let is_mount = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".mount_"));
+        is_mount
+            && tmp_roots
+                .iter()
+                .flatten()
+                .any(|root| dir.parent() == Some(*root))
+    })
+}
+
+/// `(installed, running)` from `systemctl --user show -p LoadState -p
+/// UnitFileState -p ActiveState`. Installed means enabled, or running: the
+/// unit the Studio deb and the AUR package ship is loaded but disabled until
+/// the user enables it, and is offered for installation like a missing one.
+#[cfg(any(target_os = "linux", test))]
+fn systemd_service_state(show: &str) -> (bool, bool) {
+    let mut loaded = false;
+    let mut enabled = false;
+    let mut running = false;
+    for line in show.lines() {
+        match line.trim().split_once('=') {
+            Some(("LoadState", value)) => loaded = value == "loaded",
+            Some(("UnitFileState", value)) => {
+                enabled = matches!(
+                    value,
+                    "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "alias"
+                )
+            }
+            Some(("ActiveState", value)) => {
+                running = matches!(value, "active" | "reloading" | "refreshing")
+            }
+            _ => {}
+        }
+    }
+    let running = loaded && running;
+    (loaded && (enabled || running), running)
 }
 
 #[cfg(target_os = "linux")]
@@ -461,29 +660,19 @@ pub fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
                 "show",
                 "-p",
                 "LoadState",
-                "--value",
+                "-p",
+                "UnitFileState",
+                "-p",
+                "ActiveState",
                 &service_name,
             ]),
             std::time::Duration::from_secs(2),
         )
         .map_err(|e| format!("query service status: {e}"))?;
-        let load_state = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let installed =
-            output.status.success() && load_state != "not-found" && !load_state.is_empty();
-        let running = if installed {
-            crate::host::process::capture(
-                ProcessCommand::new("systemctl").args([
-                    "--user",
-                    "is-active",
-                    "--quiet",
-                    &service_name,
-                ]),
-                std::time::Duration::from_secs(2),
-            )
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        let (installed, running) = if output.status.success() {
+            systemd_service_state(&String::from_utf8_lossy(&output.stdout))
         } else {
-            false
+            (false, false)
         };
         return Ok(OrenderServiceStatus {
             installed,
@@ -532,22 +721,29 @@ pub fn install_orender_service(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    stop_non_service_orender_if_running(&state)?;
+    let orender_binary = resolve_orender_binary(app, orender_path)?;
+    // Refused before anything is stopped or written.
+    #[cfg(target_os = "linux")]
+    if inside_appimage_mount(&orender_binary, &AppImageEnv::from_env()) {
+        return Err(crate::i18n::tf(
+            "osc.service.appImageRefused",
+            &[("path", &orender_binary.display().to_string())],
+        ));
+    }
 
-    let spec = resolve_orender_launch_spec(
-        &app,
-        &state,
+    stop_non_service_orender_if_running(state)?;
+
+    let spec = orender_launch_spec(
+        state,
+        orender_binary,
         host,
         osc_rx_port,
         osc_port,
-        osc_metering_enabled,
-        orender_path,
         log_level,
-    )?;
+    );
 
     #[cfg(target_os = "linux")]
     {
@@ -783,6 +979,19 @@ fn spawn_orender_process(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    // The bridges the player is configured with in mpv.conf, as the exact
+    // files, a path list (a folder would let the engine load other bridges
+    // sitting beside them). They only take part in the engine's
+    // auto-discovery: `render.bridge_paths` in its config wins over them. A
+    // bridge variable set in Studio's own environment is inherited and wins
+    // over mpv.conf.
+    if let Some(files) = mpv_bridge::bridge_file_for_renderer(
+        std::env::var_os(mpv_bridge::BRIDGE_FILE_ENV).as_ref(),
+        std::env::var_os(mpv_bridge::BRIDGE_DIR_ENV).as_ref(),
+        &mpv_bridge::MpvPaths::from_env(),
+    ) {
+        cmd.env(mpv_bridge::BRIDGE_FILE_ENV, files);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -806,13 +1015,23 @@ fn spawn_orender_process(
     {
         let mut wd = state.watchdog.lock().unwrap();
         wd.last_spawn_at = Some(std::time::Instant::now());
-        wd.check_requested_at = None;
+        wd.awaiting_answer = true;
     }
+    // The goodbye has been answered: this is the renderer that replaces it.
+    state.stats.goodbye.forget();
 
     Ok(serde_json::json!({
         "command": format!("{} {}", spec.orender_path.display(), spec.args.join(" ")),
         "logPath": log_path.display().to_string()
     }))
+}
+
+/// Why the local renderer's last automatic start failed, and the log it
+/// writes to, for the banner shown while no engine answers. `None` when the
+/// last start did not fail, after a re-arm, and once a renderer connected.
+pub fn autostart_failure(state: &SharedState) -> Option<(String, PathBuf)> {
+    let failure = state.watchdog.lock().unwrap().last_failure.clone()?;
+    Some((failure, default_orender_log_path()))
 }
 
 /// Watchdog entry point: launch a standby renderer from the saved OSC config
@@ -831,7 +1050,6 @@ pub fn autostart_orender(
         cfg.host.clone(),
         cfg.osc_rx_port,
         cfg.osc_port,
-        cfg.osc_metering_enabled,
         None,
         None,
     )?;
@@ -844,7 +1062,6 @@ pub fn launch_orender(
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
-    osc_metering_enabled: bool,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -854,7 +1071,6 @@ pub fn launch_orender(
         host,
         osc_rx_port,
         osc_port,
-        osc_metering_enabled,
         orender_path,
         log_level,
     )?;
@@ -879,6 +1095,245 @@ pub fn stop_orender(state: &SharedState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mismatch_is_only_claimed_when_both_paths_are_known_and_differ() {
+        let ours = Some("/usr/bin/orender");
+        let theirs = Some("/opt/other/orender");
+        assert_eq!(
+            renderer_mismatch(false, theirs, ours),
+            Some(RendererMismatch::Foreign {
+                running: "/opt/other/orender".into(),
+                expected: "/usr/bin/orender".into(),
+            })
+        );
+        assert_eq!(renderer_mismatch(false, ours, ours), None);
+        // Half the answer is no answer: an unknown path must not be reported
+        // as a mismatch.
+        assert_eq!(renderer_mismatch(false, None, ours), None);
+        assert_eq!(renderer_mismatch(false, theirs, None), None);
+        assert_eq!(renderer_mismatch(false, Some("  "), ours), None);
+        // An embedded producer is never one this Studio started.
+        assert_eq!(renderer_mismatch(true, theirs, ours), None);
+    }
+
+    #[test]
+    fn a_rebuilt_binary_is_the_same_renderer_running_an_older_build() {
+        let ours = Some("/w/omniphony-renderer/target/release/orender");
+        // What Linux reports once the binary was rebuilt under the process.
+        let replaced = Some("/w/omniphony-renderer/target/release/orender (deleted)");
+        assert_eq!(
+            renderer_mismatch(false, replaced, ours),
+            Some(RendererMismatch::Replaced {
+                path: "/w/omniphony-renderer/target/release/orender".into(),
+            })
+        );
+        // A replaced binary elsewhere is still someone else's renderer, shown
+        // as reported.
+        assert_eq!(
+            renderer_mismatch(false, Some("/opt/other/orender (deleted)"), ours),
+            Some(RendererMismatch::Foreign {
+                running: "/opt/other/orender (deleted)".into(),
+                expected: "/w/omniphony-renderer/target/release/orender".into(),
+            })
+        );
+        assert_eq!(renderer_mismatch(true, replaced, ours), None);
+    }
+
+    /// The restart banner's question, asked every frame, must come back at
+    /// once while the worker is quitting the renderer: a renderer that does
+    /// not answer the quit keeps the worker in its grace loop for two seconds,
+    /// and the lock it took across that loop held every frame back with it.
+    #[cfg(unix)]
+    #[test]
+    fn asking_whether_the_renderer_runs_never_waits_on_its_quit() {
+        use crate::host::services::operations::{Action, Operations};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let (state, outbox) = crate::host::commands::tests::state_with_outbox(Arc::new(|| {}));
+        let state = Arc::new(state);
+        // Stands in for a renderer deaf to OSC: the quit runs its whole grace
+        // period to the kill.
+        let child = ProcessCommand::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("sh and sleep are available on unix");
+        *state.renderer_child.lock().unwrap() = Some(child);
+        assert!(launched_renderer_running(&state));
+
+        let quitting = {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || quit_launched_renderer(&state))
+        };
+        // The quit message goes out before the grace loop starts: once it is
+        // here, the worker is in the loop.
+        outbox
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the quit is sent before the grace loop");
+
+        let asked = Instant::now();
+        let action = Operations::default().restart_action(&state);
+        let waited = asked.elapsed();
+        assert!(
+            matches!(action, Some(Action::Restart)),
+            "the renderer is still ours while it is being quit"
+        );
+        assert!(
+            waited < Duration::from_millis(500),
+            "restart_action waited {waited:?} on the quit in progress"
+        );
+
+        quitting.join().unwrap();
+        assert!(
+            !launched_renderer_running(&state),
+            "the grace period ended in a kill"
+        );
+    }
+
+    /// The unit the Studio deb and the AUR `orender` package install, from
+    /// the repository root. Both put `orender` at `/usr/bin/orender`, so one
+    /// file serves both.
+    const SHIPPED_UNIT: &str = "packaging/systemd/omniphony-renderer.service";
+
+    #[test]
+    fn the_shipped_unit_is_the_one_install_service_writes() {
+        let root = repo_root().expect("tests run from a source tree");
+        let shipped = std::fs::read_to_string(root.join(SHIPPED_UNIT))
+            .unwrap_or_else(|e| panic!("{SHIPPED_UNIT}: {e}"))
+            .replace("\r\n", "\n");
+        // The leading `#` block explains the file; systemd ignores it, and the
+        // rest must be byte for byte what Studio writes.
+        let body = shipped
+            .lines()
+            .skip_while(|line| line.starts_with('#') || line.is_empty())
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        assert!(
+            shipped.starts_with('#'),
+            "{SHIPPED_UNIT} keeps its header saying where its settings come from"
+        );
+        let defaults = crate::host::config::OscConfig::default();
+        // Studio's defaults: `default_orender_input_path()` with neither
+        // `$TMPDIR` nor `OMNIPHONY_INPUT_PIPE` set, the default OSC target,
+        // and the default log level.
+        let args = orender_render_args(
+            Path::new("/tmp/orender.pipe"),
+            &defaults.host,
+            crate::host::runtime_env::DEFAULT_OSC_RX_PORT,
+            None,
+        );
+        assert_eq!(
+            body,
+            linux_service_unit(Path::new("/usr/bin/orender"), &args),
+            "{SHIPPED_UNIT} drifted from linux_service_unit(); regenerate it"
+        );
+    }
+
+    #[test]
+    fn the_render_args_carry_only_what_differs_from_the_defaults() {
+        let base = orender_render_args(Path::new("/p"), " 10.0.0.2 ", 9100, None);
+        assert_eq!(
+            base.join(" "),
+            "render /p --continuous --enable-vbap --osc --osc-host 10.0.0.2 \
+             --osc-port 9100 --osc-rx-port 9100 --osc-yield"
+        );
+        assert_eq!(
+            orender_render_args(Path::new("/p"), "h", 1, Some(" info ")),
+            orender_render_args(Path::new("/p"), "h", 1, None)
+        );
+        assert_eq!(
+            orender_render_args(Path::new("/p"), "h", 1, Some("nonsense")),
+            orender_render_args(Path::new("/p"), "h", 1, None)
+        );
+        let full = orender_render_args(Path::new("/p"), "h", 1, Some("debug"));
+        assert!(full.ends_with(&[
+            "--osc-yield".to_string(),
+            "--loglevel".to_string(),
+            "debug".to_string(),
+        ]));
+        // Levels are asked for by the client that wants them, never from the
+        // command line: that subscription could not be turned off.
+        assert!(!full.iter().any(|arg| arg == "--osc-metering"));
+    }
+
+    #[test]
+    fn an_orender_inside_an_appimage_mount_is_recognised() {
+        let none = AppImageEnv::default();
+        let running = AppImageEnv {
+            appdir: Some("/tmp/.mount_OmniphA1b2C3".into()),
+            tmpdir: None,
+        };
+        let inside = Path::new("/tmp/.mount_OmniphA1b2C3/usr/bin/orender");
+        assert!(inside_appimage_mount(inside, &running));
+        // Without the runtime's variables (an orender path remembered from an
+        // earlier run, another AppImage's mount), the mount point still tells.
+        assert!(inside_appimage_mount(inside, &none));
+        assert!(inside_appimage_mount(
+            Path::new("/tmp/.mount_Other999/usr/bin/orender"),
+            &running
+        ));
+        // `--appimage-extract-and-run` extracts under a name of its own and
+        // deletes it on exit; `$APPDIR` names it.
+        let extracted = AppImageEnv {
+            appdir: Some("/tmp/appimage_extracted_0123abcd".into()),
+            tmpdir: None,
+        };
+        assert!(inside_appimage_mount(
+            Path::new("/tmp/appimage_extracted_0123abcd/usr/bin/orender"),
+            &extracted
+        ));
+        // The runtime mounts under `$TMPDIR` when it is set.
+        let moved_tmp = AppImageEnv {
+            appdir: None,
+            tmpdir: Some("/run/user/1000/tmp".into()),
+        };
+        assert!(inside_appimage_mount(
+            Path::new("/run/user/1000/tmp/.mount_OmniphX/usr/bin/orender"),
+            &moved_tmp
+        ));
+        assert!(!inside_appimage_mount(
+            Path::new("/run/user/1000/tmp/.mount_OmniphX/usr/bin/orender"),
+            &none
+        ));
+
+        // Installed binaries, whether Studio runs from an AppImage or not.
+        for installed in [
+            "/usr/bin/orender",
+            "/home/u/.local/bin/orender",
+            "/home/u/src/omniphony-renderer/target/release/orender",
+            // A component that merely looks alike, away from the temp dir.
+            "/home/u/.mount_backup/orender",
+            "/tmp/backup/.mount_x/orender",
+        ] {
+            for env in [&none, &running, &moved_tmp] {
+                assert!(
+                    !inside_appimage_mount(Path::new(installed), env),
+                    "{installed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_shipped_but_disabled_unit_is_not_installed() {
+        let show = |load: &str, file: &str, active: &str| {
+            systemd_service_state(&format!(
+                "LoadState={load}\nUnitFileState={file}\nActiveState={active}\n"
+            ))
+        };
+        // The unit the deb or the AUR package ships, before the user enables it.
+        assert_eq!(show("loaded", "disabled", "inactive"), (false, false));
+        // Installed by Studio, or enabled by hand, and running or not.
+        assert_eq!(show("loaded", "enabled", "inactive"), (true, false));
+        assert_eq!(show("loaded", "enabled", "active"), (true, true));
+        assert_eq!(show("loaded", "linked", "inactive"), (true, false));
+        // Started without being enabled: it runs, so it is Studio's to stop.
+        assert_eq!(show("loaded", "disabled", "active"), (true, true));
+        // No unit at all.
+        assert_eq!(show("not-found", "", "inactive"), (false, false));
+        assert_eq!(systemd_service_state(""), (false, false));
+    }
 
     #[test]
     fn the_repo_root_is_the_checkout_that_holds_this_crate() {

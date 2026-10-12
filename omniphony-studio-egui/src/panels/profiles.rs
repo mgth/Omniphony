@@ -21,11 +21,13 @@ pub struct ProfilePanel {
     name: String,
     focus_name: bool,
     delete_confirm: Option<String>,
+    /// A switch held back because the renderer has unsaved edits.
+    switch_confirm: Option<String>,
 }
 
 impl StudioSpike {
     pub(crate) fn profiles_row(&mut self, ui: &mut Ui) {
-        let snapshot = cmd::Snapshot::of(&self.host.read().app);
+        let snapshot = cmd::Snapshot::read(&self.host);
         if let Some(action) = self.profiles.show(ui, &snapshot) {
             cmd::apply(&self.host, action);
         }
@@ -36,7 +38,11 @@ impl ProfilePanel {
     /// Draw from a snapshot and return at most one user intent. The core checks
     /// it against current state before sending commands; drawing never owns I/O.
     pub fn show(&mut self, ui: &mut Ui, snapshot: &cmd::Snapshot) -> Option<cmd::Action> {
-        let cmd::Snapshot { active, names } = snapshot;
+        let cmd::Snapshot {
+            active,
+            names,
+            unsaved,
+        } = snapshot;
         let mut action = None;
         let has_active = active.as_deref().is_some_and(|a| !a.is_empty());
         // The three buttons are placed first, right to left, and the list takes
@@ -90,14 +96,71 @@ impl ProfilePanel {
                         .response
                         .on_hover_text(t("help.profiles"));
                 });
+                // A switch drops the unsaved edits: ask first when there are
+                // some (docs/persistence-policy.md).
                 if let Some(name) = picked {
-                    action = Some(cmd::Action::Switch(name));
+                    if *unsaved {
+                        self.switch_confirm = Some(name);
+                    } else {
+                        action = Some(cmd::Action::Switch(name));
+                    }
                 }
             });
         });
         self.name_editor(ui, &mut action);
         self.delete_modal(ui, names, &mut action);
+        self.switch_modal(ui, active.as_deref(), names, &mut action);
         action
+    }
+
+    /// Switching with unsaved edits: save them into the outgoing profile,
+    /// drop them, or stay.
+    fn switch_modal(
+        &mut self,
+        ui: &mut Ui,
+        active: Option<&str>,
+        names: &[String],
+        intent: &mut Option<cmd::Action>,
+    ) {
+        let Some(name) = self.switch_confirm.clone() else {
+            return;
+        };
+        if !names.contains(&name) {
+            self.switch_confirm = None;
+            return;
+        }
+        let from = active.unwrap_or_default();
+        let modal = egui::Modal::new(egui::Id::new("profile-switch-confirm"))
+            .frame(widgets::modal_frame())
+            .show(ui.ctx(), |ui| {
+                ui.set_max_width(360.0);
+                ui.label(
+                    egui::RichText::new(t("profiles.switchUnsavedTitle"))
+                        .size(theme::FONT_SIZE)
+                        .color(theme::TEXT_STRONG),
+                );
+                ui.label(tf(
+                    "profiles.switchUnsavedBody",
+                    &[("from", from), ("to", &name)],
+                ));
+                ui.add_space(theme::PANEL_GAP);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(t("profiles.saveAndSwitch")).clicked() {
+                        *intent = Some(cmd::Action::SaveAndSwitch(name.clone()));
+                        self.switch_confirm = None;
+                    }
+                    if ui.button(t("profiles.switchWithoutSaving")).clicked() {
+                        *intent = Some(cmd::Action::Switch(name.clone()));
+                        self.switch_confirm = None;
+                    }
+                    if ui.button(t("common.cancel")).clicked() {
+                        self.switch_confirm = None;
+                    }
+                });
+            });
+        if modal.should_close() {
+            self.switch_confirm = None;
+        }
     }
 
     /// `#profileNameRow`: hidden until create or rename opens it.
@@ -282,10 +345,12 @@ mod tests {
             name: "Draft".into(),
             focus_name: true,
             delete_confirm: Some("Removed".into()),
+            switch_confirm: None,
         };
         let snapshot = cmd::Snapshot {
             active: Some("A".into()),
             names: vec!["A".into(), "B".into()],
+            ..Default::default()
         };
         assert!(frame(&ctx, &mut panel, &snapshot, vec![]).is_none());
         assert!(panel.delete_confirm.is_none());

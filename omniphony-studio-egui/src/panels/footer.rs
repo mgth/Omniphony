@@ -34,10 +34,11 @@ impl StudioSpike {
     /// has drifted from its configuration file will come back as the file after
     /// a restart, and nothing else on screen says so.
     pub(crate) fn save_footer(&mut self, ctx: &egui::Context) {
+        let connected = self.osc_stats.connection_state() == crate::osc::ConnectionState::Connected;
         let (saved, error, pending) = {
             let live = self.host.read();
             (
-                live.app.config_saved.unwrap_or(0) != 0,
+                live.app.config_saved,
                 live.app.save_error.clone(),
                 live.save_requested,
             )
@@ -52,19 +53,32 @@ impl StudioSpike {
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            // What a renderer said about its file stops
+                            // meaning anything once it is gone.
+                            let saved = if connected { saved } else { None };
                             self.save_indicator(ui, saved, error.as_deref(), pending);
-                            if ui.button(t("config.save")).clicked() {
+                            let has_error = error.as_ref().is_some_and(|e| !e.trim().is_empty());
+                            let can_save = connected && !pending && (saved != Some(1) || has_error);
+                            if ui
+                                .add_enabled(can_save, egui::Button::new(t("config.save")))
+                                .clicked()
+                            {
                                 crate::host::commands::engine::request_save_config(&self.host);
                             }
-                            if ui.button(t("config.reload")).clicked() {
-                                crate::host::commands::engine::control_reload_config(&self.host);
+                            if ui
+                                .add_enabled(connected, egui::Button::new(t("config.reload")))
+                                .clicked()
+                            {
+                                self.request_reload();
                             }
                         });
                     });
             });
     }
 
-    fn save_indicator(&self, ui: &mut Ui, saved: bool, error: Option<&str>, pending: bool) {
+    /// `saved` is the renderer's last word on its file: `None` when there is
+    /// no connected renderer, or none has answered yet.
+    fn save_indicator(&self, ui: &mut Ui, saved: Option<u8>, error: Option<&str>, pending: bool) {
         // An error outranks everything: it means the renderer tried and could
         // not, which is the one state a "Modified" label would hide.
         if let Some(error) = error.filter(|e| !e.trim().is_empty()) {
@@ -77,9 +91,10 @@ impl StudioSpike {
             return;
         }
         let (text, colour) = match (pending, saved) {
+            (_, None) => ("—", theme::TEXT_MUTED),
             (true, _) => ("…", theme::TEXT_MUTED),
-            (false, true) => (t("config.saved"), theme::OK),
-            (false, false) => (t("config.modified"), theme::WARN),
+            (false, Some(1)) => (t("config.saved"), theme::OK),
+            (false, Some(_)) => (t("config.modified"), theme::WARN),
         };
         ui.label(
             egui::RichText::new(text)

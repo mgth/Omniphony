@@ -1,9 +1,12 @@
 use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
-use crate::spatial_vbap::Gains;
+use super::{
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, foreign_scratch,
+    normalize_to_unit_energy,
+};
 use crate::speaker_layout::SpeakerLayout;
+use omniphony_geometry::f32::vec3::distance as euclidean_distance;
 
 pub struct ExperimentalDistanceBackend {
     speaker_positions: Vec<[f32; 3]>,
@@ -17,6 +20,14 @@ struct ExperimentalSpeakerCandidate {
     index: usize,
     transformed_position: [f32; 3],
     distance: f32,
+}
+
+impl ExperimentalSpeakerCandidate {
+    const EMPTY: Self = Self {
+        index: 0,
+        transformed_position: [0.0; 3],
+        distance: 0.0,
+    };
 }
 
 impl ExperimentalDistanceBackend {
@@ -34,7 +45,32 @@ impl ExperimentalDistanceBackend {
         self.speaker_positions.len()
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    /// The working memory of one caller: a candidate per speaker.
+    pub fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(vec![
+            ExperimentalSpeakerCandidate::EMPTY;
+            self.speaker_positions.len()
+        ])
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        // Sized for the layout when the scratch was made: this runs per
+        // object per frame when the backend is evaluated directly, so no heap
+        // allocation here.
+        let speaker_count = self.speaker_positions.len();
+        let candidates = scratch
+            .state::<Vec<ExperimentalSpeakerCandidate>>()
+            .and_then(|candidates| candidates.get_mut(..speaker_count));
+        let Some(candidates) = candidates else {
+            return foreign_scratch(out);
+        };
+        debug_assert_eq!(out.len(), speaker_count, "one gain per speaker");
+        if out.len() != speaker_count {
+            return out.fill(0.0);
+        }
+        let gains = out;
+        gains.fill(0.0);
+
         let target = room_scaled_position(
             req.adm_position.map(|v| v as f32),
             req.room_ratio,
@@ -43,9 +79,14 @@ impl ExperimentalDistanceBackend {
             req.room_ratio_center_blend,
         );
 
-        let mut candidates = Vec::with_capacity(self.speaker_positions.len());
         let mut nearest = None::<(usize, f32)>;
-        for (index, speaker) in self.speaker_positions.iter().copied().enumerate() {
+        for ((index, speaker), candidate) in self
+            .speaker_positions
+            .iter()
+            .copied()
+            .enumerate()
+            .zip(candidates.iter_mut())
+        {
             let transformed_position = room_scaled_position(
                 speaker,
                 req.room_ratio,
@@ -58,35 +99,27 @@ impl ExperimentalDistanceBackend {
                 Some((_, best_distance)) if distance >= best_distance => {}
                 _ => nearest = Some((index, distance)),
             }
-            candidates.push(ExperimentalSpeakerCandidate {
+            *candidate = ExperimentalSpeakerCandidate {
                 index,
                 transformed_position,
                 distance,
-            });
+            };
         }
 
-        let mut gains = Gains::zeroed(self.speaker_positions.len());
         let Some((nearest_index, nearest_distance)) = nearest else {
-            return RenderResponse { gains };
+            return;
         };
 
         if nearest_distance <= f32::EPSILON {
-            gains.set(nearest_index, 1.0);
-            return RenderResponse { gains };
+            gains[nearest_index] = 1.0;
+            return;
         }
 
         candidates.sort_unstable_by(|a, b| a.distance.total_cmp(&b.distance));
-        let active_count = select_experimental_active_count(target, &candidates, &self.params);
+        let active_count = select_experimental_active_count(target, candidates, &self.params);
         let energy =
-            write_experimental_subset_gains(&mut gains, &candidates[..active_count], &self.params);
-        if energy > 1e-12 {
-            let norm = energy.sqrt();
-            for gain in gains.iter_mut() {
-                *gain /= norm;
-            }
-        }
-
-        RenderResponse { gains }
+            write_experimental_subset_gains(gains, &candidates[..active_count], &self.params);
+        normalize_to_unit_energy(gains, energy);
     }
 
     pub fn save_to_file(
@@ -128,21 +161,17 @@ impl GainModel for ExperimentalDistanceBackend {
         ExperimentalDistanceBackend::speaker_count(self)
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        ExperimentalDistanceBackend::compute_gains(self, req)
+    fn new_scratch(&self) -> GainScratch {
+        ExperimentalDistanceBackend::new_scratch(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        ExperimentalDistanceBackend::compute_gains(self, req, scratch, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         ExperimentalDistanceBackend::save_to_file(self, path, speaker_layout)
     }
-}
-
-#[inline]
-fn euclidean_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 #[inline]
@@ -152,7 +181,7 @@ fn experimental_distance_weight(distance: f32) -> f32 {
 }
 
 fn write_experimental_subset_gains(
-    gains: &mut Gains,
+    gains: &mut [f32],
     candidates: &[ExperimentalSpeakerCandidate],
     params: &crate::live_params::ExperimentalDistanceLiveParams,
 ) -> f32 {
@@ -160,7 +189,7 @@ fn write_experimental_subset_gains(
     for candidate in candidates {
         let weight =
             experimental_distance_weight(candidate.distance.max(params.distance_floor.max(0.0)));
-        gains.set(candidate.index, weight);
+        gains[candidate.index] = weight;
         energy += weight * weight;
     }
     energy

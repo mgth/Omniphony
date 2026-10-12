@@ -1,7 +1,9 @@
 use anyhow::Result;
 
-use super::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
-use crate::spatial_vbap::{DistanceMetric, Gains};
+use super::{
+    BackendCapabilities, GainModel, GainScratch, NeighbourHint, RenderRequest, foreign_scratch,
+};
+use crate::spatial_vbap::DistanceMetric;
 use crate::speaker_layout::SpeakerLayout;
 
 /// Decorator that applies distance-based mirrored diffuse blending to the gains
@@ -24,6 +26,13 @@ use crate::speaker_layout::SpeakerLayout;
 pub struct DistanceDiffuseModel {
     inner: Box<dyn GainModel>,
     metric: DistanceMetric,
+}
+
+/// What a caller of [`DistanceDiffuseModel`] holds: the mirror image's gains
+/// while they are blended into the source's, and the inner model's scratch.
+struct DistanceDiffuseScratch {
+    mirror: Vec<f32>,
+    inner: GainScratch,
 }
 
 impl DistanceDiffuseModel {
@@ -52,15 +61,62 @@ impl GainModel for DistanceDiffuseModel {
         self.inner.speaker_count()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(DistanceDiffuseScratch {
+            mirror: vec![0.0; self.inner.speaker_count()],
+            inner: self.inner.new_scratch(),
+        })
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        self.evaluate(req, scratch, out, |inner_req, inner_scratch, gains| {
+            self.inner.compute_gains(inner_req, inner_scratch, gains)
+        })
+    }
+
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+    ) {
+        // The source and its mirror image each walk their own row of
+        // neighbours, and claim their slots in this order at every cell.
+        self.evaluate(req, scratch, out, |inner_req, inner_scratch, gains| {
+            self.inner
+                .compute_gains_with_hint(inner_req, hint, inner_scratch, gains)
+        })
+    }
+
+    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
+        self.inner.save_to_file(path, speaker_layout)
+    }
+}
+
+impl DistanceDiffuseModel {
+    /// Blend the source with its mirror image into `out`, reaching the inner
+    /// model through `inner_gains` (once for the source, then once for the
+    /// mirror).
+    fn evaluate(
+        &self,
+        req: &RenderRequest,
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+        mut inner_gains: impl FnMut(&RenderRequest, &mut GainScratch, &mut [f32]),
+    ) {
+        let Some(DistanceDiffuseScratch { mirror, inner }) = scratch.state() else {
+            return foreign_scratch(out);
+        };
         // No flip means the mirror is the source itself, so the blend would
         // renormalize straight back to the direct gains: skip both the second
         // evaluation and the mixing.
         if !req.use_distance_diffuse || req.diffuse_mirror_axes.is_identity() {
-            return self.inner.compute_gains(req);
+            return inner_gains(req, inner, out);
         }
 
-        let direct = self.inner.compute_gains(req).gains;
+        // The source's gains, then blended in place.
+        inner_gains(req, inner, out);
 
         // Mirror in ADM space, i.e. on the authored position, before the room
         // scaling the backend applies downstream. Note the warp is only an odd
@@ -71,7 +127,7 @@ impl GainModel for DistanceDiffuseModel {
         // room proportions.
         let mut mirror_req = *req;
         mirror_req.adm_position = req.diffuse_mirror_axes.reflect(req.adm_position);
-        let mirror = self.inner.compute_gains(&mirror_req).gains;
+        inner_gains(&mirror_req, inner, mirror);
 
         // Blend weight from the (raw) ADM distance, under the selected metric.
         let adm_dist = self.metric.measure(req.adm_position.map(|v| v as f32));
@@ -82,29 +138,26 @@ impl GainModel for DistanceDiffuseModel {
         let w_direct = alpha.sqrt();
         let w_mirror = (1.0 - alpha).sqrt();
 
-        let n = direct.len().min(mirror.len());
-        let mut blended = Gains::zeroed(self.inner.speaker_count());
+        // One gain per speaker on both sides; a buffer of another width
+        // than the scratch leaves the speakers they do not share silent.
+        let n = out.len().min(mirror.len());
+        out[n..].fill(0.0);
         let mut energy_direct = 0.0f32;
         let mut energy_blended = 0.0f32;
-        for i in 0..n {
-            let g = w_direct * direct[i] + w_mirror * mirror[i];
-            blended.set(i, g);
-            energy_direct += direct[i] * direct[i];
+        for (gain, &mirror) in out.iter_mut().zip(mirror.iter()) {
+            let direct = *gain;
+            let g = w_direct * direct + w_mirror * mirror;
+            *gain = g;
+            energy_direct += direct * direct;
             energy_blended += g * g;
         }
 
         if energy_blended > 1e-12 {
             let scale = (energy_direct / energy_blended).sqrt();
-            for g in blended.iter_mut() {
+            for g in out.iter_mut() {
                 *g *= scale;
             }
         }
-
-        RenderResponse { gains: blended }
-    }
-
-    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
-        self.inner.save_to_file(path, speaker_layout)
     }
 }
 
@@ -169,11 +222,9 @@ mod tests {
         fn speaker_count(&self) -> usize {
             2
         }
-        fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
             self.seen.lock().unwrap().push(req.adm_position);
-            let mut gains = Gains::zeroed(2);
-            gains.set(0, 1.0);
-            RenderResponse { gains }
+            out.copy_from_slice(&[1.0, 0.0]);
         }
         fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> Result<()> {
             Ok(())
@@ -198,8 +249,13 @@ mod tests {
             fn speaker_count(&self) -> usize {
                 self.0.speaker_count()
             }
-            fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-                self.0.compute_gains(req)
+            fn compute_gains(
+                &self,
+                req: &RenderRequest,
+                scratch: &mut GainScratch,
+                out: &mut [f32],
+            ) {
+                self.0.compute_gains(req, scratch, out)
             }
             fn save_to_file(&self, path: &std::path::Path, layout: &SpeakerLayout) -> Result<()> {
                 self.0.save_to_file(path, layout)
@@ -207,7 +263,7 @@ mod tests {
         }
         let model =
             DistanceDiffuseModel::new(Box::new(Shared(inner.clone())), DistanceMetric::Spherical);
-        model.compute_gains(&request_with_axes(position, true, axes));
+        model.gains_at(&request_with_axes(position, true, axes));
         let seen = inner.seen.lock().unwrap().clone();
         seen
     }
@@ -222,10 +278,8 @@ mod tests {
     #[test]
     fn disabled_is_a_noop() {
         let position = [0.4, 0.2, 0.1];
-        let decorated = wrapped().compute_gains(&request(position, false)).gains;
-        let bare = BarycenterBackend::new(speakers(), 0.0)
-            .compute_gains(&request(position, false))
-            .gains;
+        let decorated = wrapped().gains_at(&request(position, false));
+        let bare = BarycenterBackend::new(speakers(), 0.0).gains_at(&request(position, false));
         for (a, b) in decorated.iter().zip(bare.iter()) {
             assert!((a - b).abs() < 1e-6, "{a} vs {b}");
         }
@@ -236,10 +290,8 @@ mod tests {
         // The renorm targets the direct energy, so the blended vector keeps the
         // direct backend's energy regardless of the mirror contribution.
         let position = [0.3, 0.1, 0.2];
-        let blended = wrapped().compute_gains(&request(position, true)).gains;
-        let direct = BarycenterBackend::new(speakers(), 0.0)
-            .compute_gains(&request(position, true))
-            .gains;
+        let blended = wrapped().gains_at(&request(position, true));
+        let direct = BarycenterBackend::new(speakers(), 0.0).gains_at(&request(position, true));
         let energy_blended: f32 = blended.iter().map(|g| g * g).sum();
         let energy_direct: f32 = direct.iter().map(|g| g * g).sum();
         assert!(
@@ -300,12 +352,8 @@ mod tests {
     #[test]
     fn an_identity_axis_set_leaves_the_gains_untouched() {
         let position = [0.4, 0.2, 0.1];
-        let decorated = wrapped()
-            .compute_gains(&request_with_axes(position, true, MirrorAxes::NONE))
-            .gains;
-        let bare = BarycenterBackend::new(speakers(), 0.0)
-            .compute_gains(&request(position, false))
-            .gains;
+        let decorated = wrapped().gains_at(&request_with_axes(position, true, MirrorAxes::NONE));
+        let bare = BarycenterBackend::new(speakers(), 0.0).gains_at(&request(position, false));
         for (a, b) in decorated.iter().zip(bare.iter()) {
             assert!((a - b).abs() < 1e-6, "{a} vs {b}");
         }

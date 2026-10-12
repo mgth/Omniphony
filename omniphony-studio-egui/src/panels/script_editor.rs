@@ -263,10 +263,17 @@ fn highlight(src: &str, language: Option<&str>, wrap_width: f32) -> LayoutJob {
 enum QuitPrompt {
     None,
     Script,
-    AutoTune,
+    /// The renderer holds edits its config file does not.
+    Unsaved,
 }
-fn guard_quit_request(ctx: &egui::Context, script_pending: bool, auto_tune: bool) -> QuitPrompt {
-    if !ctx.input(|i| i.viewport().close_requested()) || (!script_pending && !auto_tune) {
+/// Hold a close back when something would be lost, most local first: the
+/// script being typed, then the renderer's unsaved edits.
+fn guard_quit_request(
+    ctx: &egui::Context,
+    script_pending: bool,
+    engine_unsaved: bool,
+) -> QuitPrompt {
+    if !ctx.input(|i| i.viewport().close_requested()) || (!script_pending && !engine_unsaved) {
         return QuitPrompt::None;
     }
     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -276,26 +283,31 @@ fn guard_quit_request(ctx: &egui::Context, script_pending: bool, auto_tune: bool
     if script_pending {
         QuitPrompt::Script
     } else {
-        QuitPrompt::AutoTune
+        QuitPrompt::Unsaved
     }
 }
 
 impl StudioSpike {
     /// eframe also calls logic while hidden; quit guards must not depend on UI.
     pub(crate) fn guard_unsaved_quit(&mut self, ctx: &egui::Context) {
+        self.advance_unsaved_quit(ctx);
         match guard_quit_request(
             ctx,
             self.script_editor
                 .as_ref()
                 .is_some_and(ScriptEditor::needs_confirmation),
-            self.auto_tune_running(),
+            self.quit_would_lose_edits(),
         ) {
             QuitPrompt::Script => {
                 if let Some(editor) = &mut self.script_editor {
                     editor.confirm = Some(Action::Quit);
                 }
             }
-            QuitPrompt::AutoTune => self.auto_tune_quit_asked = true,
+            QuitPrompt::Unsaved => {
+                if self.unsaved_quit == crate::panels::unsaved_quit::UnsavedQuit::Idle {
+                    self.unsaved_quit = crate::panels::unsaved_quit::UnsavedQuit::Asking;
+                }
+            }
             QuitPrompt::None => {}
         }
     }
@@ -574,11 +586,7 @@ impl StudioSpike {
                 crate::host::services::backend_files::cancel(&self.host);
                 self.script_editor = None;
                 if matches!(action, Action::Quit) {
-                    if self.auto_tune_running() {
-                        self.auto_tune_quit_asked = true;
-                    } else {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
             Action::Open(name) => {
@@ -833,13 +841,13 @@ mod tests {
         let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
         viewport.minimized = Some(true);
         viewport.events.push(egui::ViewportEvent::Close);
-        for (script, tune, expected) in [
+        for (script, unsaved, expected) in [
             (true, false, QuitPrompt::Script),
             (true, true, QuitPrompt::Script),
-            (false, true, QuitPrompt::AutoTune),
+            (false, true, QuitPrompt::Unsaved),
         ] {
             let output = ctx.run_logic(&input, |ctx| {
-                assert_eq!(guard_quit_request(ctx, script, tune), expected)
+                assert_eq!(guard_quit_request(ctx, script, unsaved), expected)
             });
             let commands = &output.viewport_commands[&egui::ViewportId::ROOT];
             assert!(

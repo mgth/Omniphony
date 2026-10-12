@@ -111,47 +111,13 @@ impl OlaFifo {
     }
 }
 
-/// Plain fixed-length delay ring, to keep the channels that bypass the STFT
-/// (LFE, unpositioned) time-aligned with the transformed ones.
-pub(crate) struct DelayLine {
-    buf: Vec<f32>,
-    idx: usize,
-}
-
-impl DelayLine {
-    pub(crate) fn new(delay: usize) -> Self {
-        Self {
-            buf: vec![0.0; delay.max(1)],
-            idx: 0,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn push_pop(&mut self, x: f32) -> f32 {
-        let y = self.buf[self.idx];
-        self.buf[self.idx] = x;
-        self.idx += 1;
-        if self.idx >= self.buf.len() {
-            self.idx = 0;
-        }
-        y
-    }
-}
+// Plain fixed-length delay ring, to keep the channels that bypass the STFT
+// (LFE, unpositioned) time-aligned with the transformed ones.
+pub(crate) use renderer::delay_line::IntegerDelay;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn delay_line_delays_exactly() {
-        let mut dl = DelayLine::new(4);
-        let mut out = Vec::new();
-        for i in 0..10 {
-            out.push(dl.push_pop(i as f32));
-        }
-        assert_eq!(out[..4], [0.0, 0.0, 0.0, 0.0]);
-        assert_eq!(out[4..], [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
-    }
 
     #[test]
     fn ola_fifo_priming_and_underflow() {

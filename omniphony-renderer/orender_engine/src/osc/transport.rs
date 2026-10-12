@@ -1,10 +1,108 @@
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 
-use rosc::{OscMessage, OscPacket, OscType};
+use super::peer::{Delivery, Peer};
+
+use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 use runtime_control::osc::{BroadcastUpdate, BroadcastValue};
 
 use super::client_registry::OscClientRegistry;
 use runtime_control::osc_contract;
+
+/// Send buffer every socket that sends state or replies must have: larger
+/// than any UDP payload, like the listener's receive buffer.
+pub(crate) const TX_DATAGRAM_MAX: usize = 65_536;
+
+/// Make sure `socket` can send the largest datagram the protocol carries.
+///
+/// macOS and the BSDs refuse a UDP send larger than the socket's send buffer
+/// (`EMSGSIZE`), and that buffer starts at `net.inet.udp.maxdgram`: 9,216
+/// bytes, where a state bundle runs to 65,000 and a backend file to 60,000.
+/// The buffer is only ever raised: Linux starts well above this, and setting
+/// it there would shrink it.
+///
+/// A failure is logged and the socket kept, since everything under the old
+/// limit still goes through.
+pub(crate) fn ensure_send_buffer(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+    if socket
+        .send_buffer_size()
+        .is_ok_and(|size| size >= TX_DATAGRAM_MAX)
+    {
+        return;
+    }
+    if let Err(e) = socket.set_send_buffer_size(TX_DATAGRAM_MAX) {
+        log::warn!(
+            "OSC: could not raise the send buffer to {TX_DATAGRAM_MAX} bytes, larger datagrams may be refused: {e}"
+        );
+    }
+}
+
+/// Timetag of every bundle of state: "immediately".
+pub(crate) const STATE_TIMETAG: OscTime = OscTime {
+    seconds: 0,
+    fractional: 1,
+};
+
+/// `/omniphony/state/generation [generation, full, part, parts]` (see
+/// [`osc_contract::STATE_GENERATION`]): after a single update, `full = 0` and
+/// part 0 of 1; in each datagram of a snapshot, `full = 1` with that
+/// datagram's index and the snapshot's datagram count.
+pub(crate) fn state_generation_message(
+    generation: u32,
+    full: bool,
+    part: usize,
+    parts: usize,
+) -> OscPacket {
+    let int = |value: usize| OscType::Int(i32::try_from(value).unwrap_or(i32::MAX));
+    OscPacket::Message(OscMessage {
+        addr: osc_contract::STATE_GENERATION.to_string(),
+        // The wire's int is signed; the count is compared for equality only.
+        args: vec![
+            OscType::Int(generation as i32),
+            OscType::Int(i32::from(full)),
+            int(part),
+            int(parts),
+        ],
+    })
+}
+
+/// Broadcast state updates, versioned: `capture` runs under the publication
+/// lock, and each message it returns goes out in a bundle of its own with the
+/// next state generation, so a client that missed one can tell. One per
+/// datagram, as they went before they were numbered: a recompute's renderer,
+/// layout and speakers together could outgrow a datagram.
+///
+/// For control-plane state only — a telemetry stream sent this way would move
+/// the generation on every reading, and every client would keep asking for
+/// snapshots. A value read on another thread than the one that changed it (a
+/// recompute's result, the overlay, the loudness) is read in `capture`, so it
+/// is never older than a publication that went out before it.
+pub(crate) fn publish_state(
+    socket: &UdpSocket,
+    clients: &OscClientRegistry,
+    capture: impl FnOnce() -> Vec<OscMessage>,
+) {
+    clients.publish(|generation| {
+        for msg in capture() {
+            let bundle = OscPacket::Bundle(OscBundle {
+                timetag: STATE_TIMETAG,
+                content: vec![
+                    OscPacket::Message(msg),
+                    state_generation_message(generation.advance(), false, 0, 1),
+                ],
+            });
+            if let Ok(bytes) = rosc::encoder::encode(&bundle) {
+                send_raw(socket, clients, &bytes);
+            }
+        }
+    });
+}
+
+/// One state update whose value the caller holds already: the thread that
+/// just changed it. See [`publish_state`].
+fn broadcast_state(socket: &UdpSocket, clients: &OscClientRegistry, msg: OscMessage) {
+    publish_state(socket, clients, || vec![msg]);
+}
 
 pub(crate) fn broadcast_float(
     socket: &UdpSocket,
@@ -16,9 +114,7 @@ pub(crate) fn broadcast_float(
         addr: addr.to_string(),
         args: vec![OscType::Float(value)],
     };
-    if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
-    }
+    broadcast_state(socket, clients, msg);
 }
 
 pub(crate) fn broadcast_int(
@@ -31,9 +127,7 @@ pub(crate) fn broadcast_int(
         addr: addr.to_string(),
         args: vec![OscType::Int(value)],
     };
-    if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
-    }
+    broadcast_state(socket, clients, msg);
 }
 
 pub(crate) fn broadcast_fff(
@@ -48,11 +142,11 @@ pub(crate) fn broadcast_fff(
         addr: addr.to_string(),
         args: vec![OscType::Float(a), OscType::Float(b), OscType::Float(c)],
     };
-    if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
-    }
+    broadcast_state(socket, clients, msg);
 }
 
+/// Not versioned, unlike the helpers above: its one user is the head pose,
+/// a ~30 Hz stream.
 pub(crate) fn broadcast_ffff(
     socket: &UdpSocket,
     clients: &OscClientRegistry,
@@ -72,7 +166,7 @@ pub(crate) fn broadcast_ffff(
         ],
     };
     if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        send_raw(socket, clients, &bytes);
+        send_raw_droppable(socket, clients, &bytes);
     }
 }
 
@@ -82,17 +176,16 @@ pub(crate) fn broadcast_string(
     addr: &str,
     value: &str,
 ) {
-    let packet = OscPacket::Message(OscMessage {
+    let msg = OscMessage {
         addr: addr.to_string(),
         args: vec![OscType::String(value.to_string())],
-    });
-    if let Ok(data) = rosc::encoder::encode(&packet) {
-        send_raw(socket, clients, &data);
-    }
+    };
+    broadcast_state(socket, clients, msg);
 }
 
 /// Broadcast a single OSC `blob` arg (raw bytes). For bulk binary payloads such
-/// as the chunked, compressed speaker gain table.
+/// as the chunked, compressed speaker gain table — which has its own versions
+/// and resend, so this one is not versioned.
 pub(crate) fn broadcast_blob(
     socket: &UdpSocket,
     clients: &OscClientRegistry,
@@ -108,7 +201,7 @@ pub(crate) fn broadcast_blob(
     }
 }
 
-pub(crate) fn encode_log_record(record: &sys::live_log::BufferedLogRecord) -> Option<Vec<u8>> {
+pub(crate) fn encode_log_record(record: &live_log::BufferedLogRecord) -> Option<Vec<u8>> {
     let packet = OscPacket::Message(OscMessage {
         addr: osc_contract::LOG.to_string(),
         args: vec![
@@ -121,10 +214,10 @@ pub(crate) fn encode_log_record(record: &sys::live_log::BufferedLogRecord) -> Op
     rosc::encoder::encode(&packet).ok()
 }
 
-pub(crate) fn send_buffered_logs_to_client(socket: &UdpSocket, client: SocketAddr, last_seq: u64) {
-    for record in sys::live_log::records_since(last_seq) {
+pub(crate) fn send_buffered_logs_to_client(socket: &UdpSocket, client: &Peer, last_seq: u64) {
+    for record in live_log::records_since(last_seq) {
         if let Some(bytes) = encode_log_record(&record) {
-            if let Err(e) = socket.send_to(&bytes, client) {
+            if let Err(e) = client.send_with(socket, &bytes, Delivery::Droppable) {
                 log::warn!("Failed to send log record to {}: {}", client, e);
                 break;
             }
@@ -137,13 +230,13 @@ pub(crate) fn flush_pending_logs(
     clients: &OscClientRegistry,
     last_seq: &mut u64,
 ) {
-    let records = sys::live_log::records_since(*last_seq);
+    let records = live_log::records_since(*last_seq);
     if records.is_empty() {
         return;
     }
     for record in &records {
         if let Some(bytes) = encode_log_record(record) {
-            send_raw(socket, clients, &bytes);
+            send_raw_droppable(socket, clients, &bytes);
         }
     }
     if let Some(last) = records.last() {
@@ -163,28 +256,34 @@ pub(crate) fn send_raw_filtered<F>(
 ) where
     F: Fn(&super::client_registry::OscClientState) -> bool,
 {
-    clients.send_filtered(socket, bytes, predicate);
+    clients.send_filtered(socket, bytes, Delivery::Reliable, predicate);
 }
 
-pub(crate) fn send_metering_state(socket: &UdpSocket, client: SocketAddr, enabled: bool) {
+/// Telemetry to every client: a stream client too slow to take it loses it,
+/// as a datagram client would (see [`Delivery`]).
+pub(crate) fn send_raw_droppable(socket: &UdpSocket, clients: &OscClientRegistry, bytes: &[u8]) {
+    clients.send_filtered(socket, bytes, Delivery::Droppable, |_| true);
+}
+
+pub(crate) fn send_metering_state(socket: &UdpSocket, client: &Peer, enabled: bool) {
     let packet = OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_OSC_METERING.to_string(),
         args: vec![OscType::Int(if enabled { 1 } else { 0 })],
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send metering state to {}: {}", client, e);
         }
     }
 }
 
-pub(crate) fn send_diag_state(socket: &UdpSocket, client: SocketAddr, enabled: bool) {
+pub(crate) fn send_diag_state(socket: &UdpSocket, client: &Peer, enabled: bool) {
     let packet = OscPacket::Message(OscMessage {
         addr: osc_contract::STATE_OSC_DIAG.to_string(),
         args: vec![OscType::Int(if enabled { 1 } else { 0 })],
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send diag state to {}: {}", client, e);
         }
     }
@@ -193,11 +292,7 @@ pub(crate) fn send_diag_state(socket: &UdpSocket, client: SocketAddr, enabled: b
 /// Send a single [`BroadcastUpdate`] to one specific client (unicast), bypassing
 /// the registry fan-out. Used to push the gain table only to the subscriber(s)
 /// that asked for it.
-pub(crate) fn send_update_to_client(
-    socket: &UdpSocket,
-    client: SocketAddr,
-    update: &BroadcastUpdate,
-) {
+pub(crate) fn send_update_to_client(socket: &UdpSocket, client: &Peer, update: &BroadcastUpdate) {
     let args = match &update.value {
         BroadcastValue::Int(i) => vec![OscType::Int(*i)],
         BroadcastValue::Float(f) => vec![OscType::Float(*f)],
@@ -212,7 +307,7 @@ pub(crate) fn send_update_to_client(
         args,
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send {} to {}: {}", update.addr, client, e);
         }
     }
@@ -224,7 +319,7 @@ pub(crate) fn send_update_to_client(
 /// editor that asked.
 pub(crate) fn send_message_to_client(
     socket: &UdpSocket,
-    client: SocketAddr,
+    client: &Peer,
     addr: &str,
     args: Vec<OscType>,
 ) {
@@ -233,23 +328,87 @@ pub(crate) fn send_message_to_client(
         args,
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
-        if let Err(e) = socket.send_to(&bytes, client) {
+        if let Err(e) = client.send(socket, &bytes) {
             log::warn!("Failed to send {addr} to {client}: {e}");
         }
     }
 }
 
-pub(crate) fn resolve_register_addr(src: SocketAddr, args: &[OscType]) -> SocketAddr {
+/// `/omniphony/state/control_error [address, code, message]` to the sender of
+/// a control the engine did not apply.
+pub(crate) fn send_control_error(
+    socket: &UdpSocket,
+    client: &Peer,
+    address: &str,
+    code: &str,
+    message: &str,
+) {
+    send_message_to_client(
+        socket,
+        client,
+        osc_contract::STATE_CONTROL_ERROR,
+        vec![
+            OscType::String(address.to_string()),
+            OscType::String(code.to_string()),
+            OscType::String(message.to_string()),
+        ],
+    );
+}
+
+/// The client a register, heartbeat or refresh speaks for: a datagram
+/// client's listening port may differ from its source port and is given as
+/// the first argument. A stream client is its connection, whatever it says.
+pub(crate) fn resolve_register_addr(src: &Peer, args: &[OscType]) -> Peer {
+    let Peer::Udp(src) = src else {
+        return src.clone();
+    };
     if let Some(OscType::Int(port)) = args.first() {
         if let Ok(port) = u16::try_from(*port) {
-            return match src {
+            return Peer::Udp(match *src {
                 SocketAddr::V4(v4) => SocketAddr::V4(SocketAddrV4::new(*v4.ip(), port)),
                 SocketAddr::V6(mut v6) => {
                     v6.set_port(port);
                     SocketAddr::V6(v6)
                 }
-            };
+            });
         }
     }
-    src
+    Peer::Udp(*src)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn send_buffer(socket: &UdpSocket) -> usize {
+        socket2::SockRef::from(socket).send_buffer_size().unwrap()
+    }
+
+    fn socket_with_send_buffer(size: usize) -> UdpSocket {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket2::SockRef::from(&socket)
+            .set_send_buffer_size(size)
+            .unwrap();
+        socket
+    }
+
+    /// "At least", since Linux reports twice what it was asked for.
+    #[test]
+    fn a_small_send_buffer_is_raised() {
+        let socket = socket_with_send_buffer(8_192);
+        assert!(send_buffer(&socket) < TX_DATAGRAM_MAX);
+        ensure_send_buffer(&socket);
+        assert!(send_buffer(&socket) >= TX_DATAGRAM_MAX);
+    }
+
+    /// Asking for the minimum on a socket already past it would shrink it,
+    /// which is what a plain `set` does to the Linux default.
+    #[test]
+    fn a_large_send_buffer_is_left_alone() {
+        let socket = socket_with_send_buffer(2 * TX_DATAGRAM_MAX);
+        let before = send_buffer(&socket);
+        assert!(before > TX_DATAGRAM_MAX);
+        ensure_send_buffer(&socket);
+        assert_eq!(send_buffer(&socket), before);
+    }
 }

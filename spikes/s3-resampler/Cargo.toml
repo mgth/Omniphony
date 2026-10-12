@@ -1,0 +1,17 @@
+[package]
+name = "s3-resampler"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Phase-0 spike S3: variable-ratio resampler for the adaptive output core"
+
+# Standalone: must not join the Omniphony workspace.
+[workspace]
+
+[dependencies]
+rubato = "5.0.1"
+rubato014 = { package = "rubato", version = "0.14.1" }
+
+[profile.release]
+opt-level = 3
+debug = false

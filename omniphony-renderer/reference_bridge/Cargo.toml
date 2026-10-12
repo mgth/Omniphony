@@ -1,10 +1,11 @@
 [package]
 name = "reference_bridge"
-version = "0.1.0"
-edition = "2024"
-license = "GPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Reference decoder bridge: presents a multichannel WAV/PCM file as a channel bed for the orender spatial renderer (no proprietary decoder, no external player)"
-repository = "https://github.com/mgth/Omniphony"
+repository.workspace = true
 
 # cdylib: the loadable .so/.dll/.dylib bridge plugin.
 # rlib: lets the unit tests and the demo generator example link the crate.
@@ -13,9 +14,9 @@ name = "reference_bridge"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bridge_api = { version = "0.4.0", path = "../bridge_api" }
-abi_stable = "0.11"
-log = "0.4"
+bridge_api.workspace = true
+abi_stable.workspace = true
+log.workspace = true
 
 # Deterministic multichannel WAV generator used to produce the committed demo
 # asset (assets/demo/spatial-demo.wav). Self-contained: depends only on std.

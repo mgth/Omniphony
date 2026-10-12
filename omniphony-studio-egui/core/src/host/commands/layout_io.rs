@@ -153,8 +153,10 @@ impl SessionToken {
         {
             return Err("Layout import discarded: renderer session or profile changed".into());
         }
-        if live.app.render_backend_state.frozen_speakers {
-            return Err("Layout import refused: speakers are frozen".into());
+        if live.app.speakers_read_only() {
+            return Err(
+                "Layout import refused: the speakers are frozen or come from the BRIR set".into(),
+            );
         }
         let payload = replace_layout_payload(&layout);
         let base = layout.key.clone();
@@ -229,8 +231,7 @@ pub fn selected_layout(state: &SharedState) -> Option<Layout> {
 }
 
 /// Directory the import picker should open in: the user's last import dir if
-/// known, otherwise the bundled layouts dir (so a first-time user lands right
-/// on the shipped presets).
+/// known, otherwise the presets (so a first-time user lands right on them).
 pub fn import_start_dir(app: &HostPaths, state: &SharedState) -> Option<std::path::PathBuf> {
     if let Some(dir) = state.config.snapshot().last_layout_import_dir {
         let p = std::path::PathBuf::from(dir);
@@ -241,12 +242,22 @@ pub fn import_start_dir(app: &HostPaths, state: &SharedState) -> Option<std::pat
     presets_dir(app)
 }
 
-/// The bundled presets, where the "Presets" picker always opens.
+/// Where the "Presets" picker always opens: the directory this run read its
+/// preset layouts from, else the shipped `layouts/` when only the resources
+/// are known. A checkout build has no resources, only the checkout's copy;
+/// looking for the shipped one alone sent its picker to the desktop. `None`
+/// when neither exists, and the picker opens wherever the platform puts it.
+///
+/// Absolute: a `--layouts-dir` given relative to the working directory is
+/// read fine, but the picker may run in another process (the XDG portal)
+/// that does not share that directory.
 pub fn presets_dir(app: &HostPaths) -> Option<std::path::PathBuf> {
-    app.resource_dir()
-        .ok()
-        .map(|d| d.join("layouts"))
-        .filter(|p| p.is_dir())
+    app.layouts_dir
+        .iter()
+        .cloned()
+        .chain(app.resource_dir.iter().map(|dir| dir.join("layouts")))
+        .find(|dir| dir.is_dir())
+        .map(|dir| std::path::absolute(&dir).unwrap_or(dir))
 }
 
 /// Remember where the user imported from, for the next import.
@@ -439,7 +450,7 @@ mod tests {
                     state.inner.lock().unwrap().layout_context_generation += 1;
                 }
                 _ => {
-                    super::super::profiles::control_profile_switch(&state, "another".into());
+                    super::super::profiles::control_profile_switch(&state, "another".into(), false);
                 }
             }
             assert!(!request.is_current(&state) || change == 3);
@@ -510,6 +521,73 @@ mod tests {
         assert_eq!(live.app.selected_layout_key.as_deref(), Some("test-1"));
         assert_eq!(live.app.vbap_recomputing, Some(true));
     }
+    #[test]
+    fn the_presets_picker_opens_where_the_presets_were_read_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("checkout").join("layouts");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let shipped = dir.path().join("shipped");
+        std::fs::create_dir_all(shipped.join("layouts")).unwrap();
+        // A checkout build: no resources, the checkout's own copy.
+        let paths = HostPaths {
+            layouts_dir: Some(checkout.clone()),
+            ..Default::default()
+        };
+        assert_eq!(presets_dir(&paths), Some(checkout));
+        // A shipped Studio reads the copy it ships with.
+        let paths = HostPaths {
+            resource_dir: Some(shipped.clone()),
+            layouts_dir: Some(shipped.join("layouts")),
+            ..Default::default()
+        };
+        assert_eq!(presets_dir(&paths), Some(shipped.join("layouts")));
+        // Only the resources known: the shipped copy.
+        let paths = HostPaths {
+            resource_dir: Some(shipped.clone()),
+            ..Default::default()
+        };
+        assert_eq!(presets_dir(&paths), Some(shipped.join("layouts")));
+        // A directory that is gone is not offered; the shipped copy is next.
+        let paths = HostPaths {
+            resource_dir: Some(shipped.clone()),
+            layouts_dir: Some(dir.path().join("gone")),
+            ..Default::default()
+        };
+        assert_eq!(presets_dir(&paths), Some(shipped.join("layouts")));
+        // Nothing known: the picker is left to the platform.
+        assert_eq!(presets_dir(&HostPaths::default()), None);
+        // A relative `--layouts-dir` is read relative to the working
+        // directory; the picker, in another process, gets it absolute.
+        let paths = HostPaths {
+            resource_dir: Some(shipped.clone()),
+            layouts_dir: Some(std::path::PathBuf::from(".")),
+            ..Default::default()
+        };
+        let here = std::env::current_dir().unwrap();
+        assert!(here.is_absolute());
+        assert_eq!(presets_dir(&paths), Some(here));
+    }
+
+    #[test]
+    fn an_import_starts_at_the_presets_until_the_user_has_been_elsewhere() {
+        let state = super::super::tests::state();
+        let dir = tempfile::tempdir().unwrap();
+        let presets = dir.path().join("layouts");
+        std::fs::create_dir_all(&presets).unwrap();
+        let paths = HostPaths {
+            layouts_dir: Some(presets.clone()),
+            ..Default::default()
+        };
+        assert_eq!(import_start_dir(&paths, &state), Some(presets.clone()));
+        let elsewhere = dir.path().join("mine");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        remember_import_dir(&state, &elsewhere);
+        assert_eq!(import_start_dir(&paths, &state), Some(elsewhere));
+        // A remembered directory that vanished falls back to the presets.
+        remember_import_dir(&state, &dir.path().join("gone"));
+        assert_eq!(import_start_dir(&paths, &state), Some(presets));
+    }
+
     #[test]
     fn file_jobs_round_trip_without_mutating_the_model() {
         let state = std::sync::Arc::new(super::super::tests::state());

@@ -1,0 +1,16 @@
+[package]
+name = "s2-output-timestamps"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone: must not join the omniphony-renderer workspace.
+[workspace]
+
+[dependencies]
+# Same version/feature as omniphony-renderer/Cargo.toml.
+pipewire = { version = "0.9.2", features = ["v0_3_49"] }
+libc = "0.2"
+
+[profile.release]
+debug = true

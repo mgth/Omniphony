@@ -20,10 +20,10 @@ use crate::RChannelLabel;
 /// with both is pinned by tests here and in the consuming crates
 /// (`renderer::speaker_layout` keeps the legacy-alias parity net).
 ///
-/// The `orender_engine` virtual-bed planner keeps a context-dependent matcher
-/// (5.1 vs 7.1 bed shape); its unconditional spellings must stay within this
-/// table, so names it accepts in user beds also resolve through
-/// [`label_for_name`] and reach Studio via the fixed-channel catalogue.
+/// The `orender_engine` virtual-bed planner matches bed entries through this
+/// table too ([`name_matches`]), plus one context-dependent rule of its own:
+/// a 4.x/5.x source's surround pair falls back to a back entry when the bed
+/// has no surround one.
 const ALIASES: &[(RChannelLabel, &[&str])] = &[
     (RChannelLabel::L, &["FL", "L", "FRONTLEFT", "LEFTFRONT"]),
     (RChannelLabel::R, &["FR", "R", "FRONTRIGHT", "RIGHTFRONT"]),
@@ -285,11 +285,23 @@ pub fn label_for_name(name: &str) -> RChannelLabel {
     RChannelLabel::Unknown
 }
 
+/// Whether `name` is one of the spellings of `label` — the same answer as
+/// `label_for_name(name) == label` (the alias table is unambiguous), without
+/// allocating the normalised name, so a matcher can run it per entry.
+pub fn name_matches(name: &str, label: RChannelLabel) -> bool {
+    aliases_for(label)
+        .iter()
+        .any(|alias| normalised_chars(name).eq(alias.chars()))
+}
+
 fn normalise(name: &str) -> String {
+    normalised_chars(name).collect()
+}
+
+fn normalised_chars(name: &str) -> impl Iterator<Item = char> + '_ {
     name.chars()
         .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
         .flat_map(|c| c.to_uppercase())
-        .collect()
 }
 
 #[cfg(test)]
@@ -317,6 +329,36 @@ mod tests {
                     panic!("alias {alias:?} claimed by both {prev:?} and {label:?}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn name_matches_agrees_with_label_for_name() {
+        let names = [
+            "Top Front Left",
+            "top_front_left",
+            "HL",
+            "hr",
+            "Lfe-1",
+            "SideLeft",
+            "BL",
+            "Rear Right",
+            "Object",
+            "",
+            "spk-12",
+        ];
+        let spellings = ALIASES
+            .iter()
+            .flat_map(|(_, aliases)| aliases.iter().copied());
+        for name in names.into_iter().chain(spellings) {
+            for (label, _) in ALIASES {
+                assert_eq!(
+                    name_matches(name, *label),
+                    label_for_name(name) == *label,
+                    "{name:?} vs {label:?}"
+                );
+            }
+            assert!(!name_matches(name, Unknown) && !name_matches(name, Object));
         }
     }
 

@@ -1,17 +1,21 @@
 [package]
 name = "host_audio"
-version = "0.1.0"
-edition = "2024"
-license = "GPL-3.0-or-later"
-description = "Host audio layer (output/input device I/O + their OSC control) layered above the orender engine; never a dependency of the engine or liborender"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "OSC control surface for the host-owned audio output/input, layered above the orender engine; never a dependency of the engine or liborender"
 
 [dependencies]
-runtime_control = { path = "../runtime_control" }
-audio_output = { path = "../audio_output" }
-audio_input = { path = "../audio_input" }
-renderer = { path = "../renderer" }
-rosc = "0.11"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
-anyhow = "1.0"
-log = "0.4"
+runtime_control.workspace = true
+audio_output.workspace = true
+audio_input.workspace = true
+log.workspace = true
+renderer.workspace = true
+rosc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Shared renderer fixtures (`renderer::test_support`).
+renderer = { workspace = true, features = ["test-support"] }

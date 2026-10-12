@@ -21,7 +21,8 @@ use crate::view::gizmos::EditMode;
 use super::row_glyphs::Filter;
 
 /// Which tab of the editor is showing (`body.speaker-tab-test`).
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SpeakerTab {
     #[default]
     Edit,
@@ -133,7 +134,7 @@ impl StudioSpike {
             (
                 speaker,
                 speakers.len(),
-                live.app.render_backend_state.frozen_speakers,
+                live.app.speakers_read_only(),
                 live.app.room_ratio.scale_m.max(0.001),
             )
         };
@@ -751,7 +752,7 @@ impl StudioSpike {
             let live = self.host.read();
             (
                 live.selected_speakers().to_vec(),
-                live.app.render_backend_state.frozen_speakers,
+                live.app.speakers_read_only(),
                 live.app.room_ratio.scale_m.max(0.01),
             )
         };

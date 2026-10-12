@@ -214,16 +214,50 @@ impl std::str::FromStr for MirrorAxes {
     }
 }
 
+/// Amplitude factor applied to an object's gains at `distance` (layout units:
+/// the speakers sit at about 1). Never above 1: distance only attenuates.
 pub fn calculate_distance_attenuation(distance: f32, model: DistanceModel) -> f32 {
     match model {
         DistanceModel::None => 1.0,
         DistanceModel::Linear => 1.0 / (1.0 + distance),
         DistanceModel::Quadratic => 1.0 / (1.0 + distance * distance),
-        DistanceModel::InverseSquare => {
-            const MIN_DISTANCE: f32 = 0.1;
-            let clamped = distance.max(MIN_DISTANCE);
-            1.0 / (clamped * clamped)
+        // The inverse-square law holds for intensity; the gains are
+        // amplitudes, so it is 1/d here (−6 dB per doubling), referenced to
+        // the speakers: unity inside them, where panning carries the position.
+        DistanceModel::InverseSquare => 1.0 / distance.max(1.0),
+    }
+}
+
+#[cfg(test)]
+mod attenuation_tests {
+    use super::{DistanceModel, calculate_distance_attenuation};
+
+    #[test]
+    fn no_model_ever_raises_the_level() {
+        for model in [
+            DistanceModel::None,
+            DistanceModel::Linear,
+            DistanceModel::Quadratic,
+            DistanceModel::InverseSquare,
+        ] {
+            for d in [0.0f32, 0.05, 0.1, 0.5, 0.99, 1.0, 2.0, 10.0] {
+                let g = calculate_distance_attenuation(d, model);
+                assert!((0.0..=1.0).contains(&g), "{model} at {d}: {g}");
+            }
         }
+    }
+
+    #[test]
+    fn inverse_square_is_the_amplitude_law_beyond_the_speakers() {
+        let at = |d| calculate_distance_attenuation(d, DistanceModel::InverseSquare);
+        // Unity from the centre out to the speakers.
+        assert_eq!(at(0.0), 1.0);
+        assert_eq!(at(0.5), 1.0);
+        assert_eq!(at(1.0), 1.0);
+        // −6.02 dB per doubling of distance (intensity falls as 1/d²).
+        assert!((at(2.0) - 0.5).abs() < 1e-6);
+        assert!((at(4.0) - 0.25).abs() < 1e-6);
+        assert!((20.0 * at(2.0).log10() + 6.0206).abs() < 1e-3);
     }
 }
 

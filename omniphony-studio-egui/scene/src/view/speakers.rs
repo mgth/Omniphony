@@ -5,18 +5,57 @@
 use glam::{Mat4, Quat, Vec3};
 
 use crate::model::app_state::RoomRatio;
+use crate::model::binaural::RenderPath;
 use crate::model::layouts::crossover_cutoffs;
 use crate::osc::dispatch::Live;
 use crate::render::{
-    FrameData, MeshInstance, MeshItem, MeshKind, hex_linear, lerp_rgb, with_alpha,
+    FrameData, LineVertex, MeshInstance, MeshItem, MeshKind, hex_linear, lerp_rgb, with_alpha,
 };
 
 use super::objects::hsl_to_rgb;
-use super::{ViewSettings, dbfs_to_scale, scene_position};
+use super::room::MEASURED_ROOM_COLOR;
+use super::{ViewSettings, dbfs_to_scale, scene_point, scene_position};
 
 /// `setSpeakersGhosted`: how much of a speaker is left when the renderer is
 /// not feeding speakers at all.
 const GHOST: f32 = 0.18;
+
+/// A wireframe's edges read thin: the alpha a solid cube would have, lifted.
+const WIRE_ALPHA_GAIN: f32 = 1.4;
+
+/// What kind of thing a speaker is on the path in force, said by its shape:
+/// colour, opacity and size already carry other meanings (the crossover
+/// band, the selection and the selected object's feed, the level).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpeakerLook {
+    /// A loudspeaker the speaker stage feeds: a solid cube.
+    Real,
+    /// A virtual speaker of the headphone room, what the cascade convolves:
+    /// a wireframe cube in the band colour.
+    Virtual,
+    /// A loudspeaker of a measured room (BRIR): a wireframe cube in the
+    /// measured room's colour, the set carrying no crossover band.
+    Measured,
+    /// The layout kept in view on the direct path, where nothing feeds it:
+    /// ghosted, a reference for where the objects are.
+    Reference,
+}
+
+impl SpeakerLook {
+    pub fn of(path: RenderPath) -> Self {
+        match path {
+            RenderPath::Speakers => SpeakerLook::Real,
+            RenderPath::VirtualRoom => SpeakerLook::Virtual,
+            RenderPath::MeasuredRoom => SpeakerLook::Measured,
+            RenderPath::Direct => SpeakerLook::Reference,
+        }
+    }
+
+    /// Drawn as edges rather than a solid.
+    pub fn is_wire(self) -> bool {
+        matches!(self, SpeakerLook::Virtual | SpeakerLook::Measured)
+    }
+}
 
 /// The driver disc's radius as a fraction of the cube's side (`materials.js`:
 /// `CircleGeometry(0.08 × 0.36)` against a 0.08 cube).
@@ -44,11 +83,10 @@ pub struct SpeakerVisual {
     pub scale: f32,
     pub color: [f32; 3],
     pub opacity: f32,
+    /// What kind of speaker this is on the path in force.
+    pub look: SpeakerLook,
     /// The crossover band this speaker belongs to, and how many there are:
     /// the gauge's lit segment takes its colour from the pair.
-    /// The renderer is in binaural output, so the speakers are only a
-    /// reference: their labels dim with them.
-    pub ghosted: bool,
     pub band: (usize, usize),
     /// The pass-band in hertz, zero where the layout does not cut.
     pub pass_band: (f32, f32),
@@ -110,15 +148,22 @@ pub fn collect(
     edges.push(f64::INFINITY);
     let band_count = edges.len() - 1;
     let selected_gains = selected_object.and_then(|id| live.app.object_speaker_gains.get(id));
-    // Binaural output means nothing is going to these speakers; they are drawn
-    // as a reference for where the objects are, not as things being fed.
-    let ghosted = live
-        .app
-        .binaural
-        .as_ref()
-        .and_then(|b| b.get("outputMode"))
-        .and_then(|m| m.as_str())
-        == Some("binaural");
+    let look = SpeakerLook::of(live.app.render_path());
+    // A measured room's loudspeakers stand where they were measured, in
+    // metres at the room's scale — the frame the objects are warped into
+    // (`AppState::display_room`), so they sit among the loudspeakers as
+    // the render pans them; the LFE bus the layout appends has no
+    // measurement and keeps the layout's place.
+    let measured: Option<Vec<Vec3>> = (look == SpeakerLook::Measured)
+        .then(|| live.app.brir_geometry())
+        .flatten()
+        .map(|g| {
+            let unit = g.metres_per_unit();
+            g.emitters_m
+                .iter()
+                .map(|e| scene_point([e[0] / unit, e[1] / unit, e[2] / unit]))
+                .collect()
+        });
     let size_scale = settings.speaker_size.clamp(0.04, 0.2) / SPEAKER_BASE_SIZE;
 
     speakers
@@ -127,7 +172,11 @@ pub fn collect(
         .map(|(index, s)| {
             let key = index.to_string();
             let spatialize = s.spatialize != 0;
-            let base_color = band_color(speaker_band_index(s.freq_low, &edges), band_count);
+            let base_color = if look == SpeakerLook::Measured {
+                hex_linear(MEASURED_ROOM_COLOR)
+            } else {
+                band_color(speaker_band_index(s.freq_low, &edges), band_count)
+            };
             let base_opacity: f32 = if spatialize { 0.65 } else { 0.3 };
             // Already decayed on the model (`maintain_meters`), the same
             // number the speaker list shows.
@@ -161,7 +210,11 @@ pub fn collect(
             // writes the base opacity back on the next selection or gains
             // update and so loses the ghosting until the next mode change;
             // taking it last is the same rule stated once, and it holds.
-            let opacity = if ghosted { opacity * GHOST } else { opacity };
+            let opacity = if look == SpeakerLook::Reference {
+                opacity * GHOST
+            } else {
+                opacity
+            };
 
             SpeakerVisual {
                 index,
@@ -169,7 +222,10 @@ pub fn collect(
                 scene_pos: pinned_position(
                     settings.speaker_edit_pin,
                     index,
-                    scene_position([s.x, s.y, s.z], room),
+                    measured
+                        .as_ref()
+                        .and_then(|m| m.get(index).copied())
+                        .unwrap_or_else(|| scene_position([s.x, s.y, s.z], room)),
                 ),
                 spatialize,
                 muted: live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
@@ -177,7 +233,7 @@ pub fn collect(
                 scale,
                 color,
                 opacity,
-                ghosted,
+                look,
                 band: (speaker_band_index(s.freq_low, &edges), band_count),
                 pass_band: (s.freq_low.unwrap_or(0.0), s.freq_high.unwrap_or(0.0)),
             }
@@ -195,8 +251,45 @@ pub fn pinned_position(pin: Option<(usize, Vec3)>, index: usize, from_state: Vec
     }
 }
 
-/// Cube with `MeshStandardMaterial` look: depth-written even though blended
-/// (three.js keeps `depthWrite` on for the speaker material).
+impl SpeakerVisual {
+    /// Only a reference: its label dims with it.
+    pub fn ghosted(&self) -> bool {
+        self.look == SpeakerLook::Reference
+    }
+}
+
+/// The twelve edges of the unit cube `[-0.5, 0.5]³` under `model`, as a
+/// depth-tested line list: the wireframe a virtual or measured speaker is
+/// drawn as.
+pub fn wire_cube(model: Mat4, color: [f32; 4], out: &mut Vec<LineVertex>) {
+    let corner = |i: usize| {
+        model.transform_point3(Vec3::new(
+            if i & 1 == 0 { -0.5 } else { 0.5 },
+            if i & 2 == 0 { -0.5 } else { 0.5 },
+            if i & 4 == 0 { -0.5 } else { 0.5 },
+        ))
+    };
+    for a in 0..8usize {
+        for bit in [1usize, 2, 4] {
+            let b = a | bit;
+            if b == a {
+                continue;
+            }
+            out.push(LineVertex {
+                pos: corner(a).to_array(),
+                color,
+            });
+            out.push(LineVertex {
+                pos: corner(b).to_array(),
+                color,
+            });
+        }
+    }
+}
+
+/// A solid cube with the `MeshStandardMaterial` look, depth-written even
+/// though blended (three.js keeps `depthWrite` on for the speaker material);
+/// a wireframe for the virtual and measured kinds (`SpeakerLook`).
 pub fn emit(sp: &SpeakerVisual, settings: &ViewSettings, frame: &mut FrameData) {
     let side = SPEAKER_BASE_SIZE * sp.scale;
     let rotation = if settings.speaker_face_listener_enabled {
@@ -205,18 +298,26 @@ pub fn emit(sp: &SpeakerVisual, settings: &ViewSettings, frame: &mut FrameData) 
         Quat::IDENTITY
     };
     let model = Mat4::from_scale_rotation_translation(Vec3::splat(side), rotation, sp.scene_pos);
-    let e = hex_linear(SPEAKER_EMISSIVE);
-    frame.meshes.push(MeshItem {
-        kind: MeshKind::Cube,
-        instance: MeshInstance::new(
+    if sp.look.is_wire() {
+        wire_cube(
             model,
-            with_alpha(sp.color, sp.opacity),
-            [e[0], e[1], e[2], 0.15],
-        ),
-        blend: false,
-        depth_test: true,
-        order: 0,
-    });
+            with_alpha(sp.color, (sp.opacity * WIRE_ALPHA_GAIN).min(1.0)),
+            &mut frame.lines,
+        );
+    } else {
+        let e = hex_linear(SPEAKER_EMISSIVE);
+        frame.meshes.push(MeshItem {
+            kind: MeshKind::Cube,
+            instance: MeshInstance::new(
+                model,
+                with_alpha(sp.color, sp.opacity),
+                [e[0], e[1], e[2], 0.15],
+            ),
+            blend: false,
+            depth_test: true,
+            order: 0,
+        });
+    }
     // The driver: a dark disc on the face that is aimed at the listener, so
     // which way a speaker points is visible rather than inferred. It only
     // means anything when the cubes are oriented, and the web shows it only
@@ -276,6 +377,52 @@ mod tests {
             // No roll: the local X axis stays horizontal.
             let right = rotation * Vec3::X;
             assert!(right.y.abs() < 1e-4, "the cube is rolled at {p:?}");
+        }
+    }
+
+    /// Each kind of speaker has its shape, from the path in force: solid
+    /// on the loudspeakers, wire on the two headphone rooms, ghosted as a
+    /// reference on the direct path.
+    #[test]
+    fn the_look_follows_the_render_path() {
+        assert_eq!(SpeakerLook::of(RenderPath::Speakers), SpeakerLook::Real);
+        assert_eq!(
+            SpeakerLook::of(RenderPath::VirtualRoom),
+            SpeakerLook::Virtual
+        );
+        assert_eq!(
+            SpeakerLook::of(RenderPath::MeasuredRoom),
+            SpeakerLook::Measured
+        );
+        assert_eq!(SpeakerLook::of(RenderPath::Direct), SpeakerLook::Reference);
+        assert!(SpeakerLook::Virtual.is_wire() && SpeakerLook::Measured.is_wire());
+        assert!(!SpeakerLook::Real.is_wire() && !SpeakerLook::Reference.is_wire());
+    }
+
+    /// A wire cube is twelve edges, each joining two corners of the cube
+    /// the model places, one unit apart along one axis.
+    #[test]
+    fn a_wire_cube_is_twelve_edges_of_the_placed_cube() {
+        let mut out = Vec::new();
+        let model = Mat4::from_scale_rotation_translation(
+            Vec3::splat(0.2),
+            Quat::IDENTITY,
+            Vec3::new(1.0, 2.0, 3.0),
+        );
+        wire_cube(model, [1.0; 4], &mut out);
+        assert_eq!(out.len(), 24);
+        for pair in out.chunks(2) {
+            let (a, b) = (Vec3::from_array(pair[0].pos), Vec3::from_array(pair[1].pos));
+            let d = (b - a).abs();
+            let axes = [d.x, d.y, d.z].iter().filter(|v| **v > 1e-6).count();
+            assert_eq!(axes, 1, "an edge runs along one axis: {a:?} → {b:?}");
+            assert!(
+                (d.max_element() - 0.2).abs() < 1e-6,
+                "an edge is one side long"
+            );
+            for p in [a, b] {
+                assert!((p - Vec3::new(1.0, 2.0, 3.0)).abs().max_element() <= 0.1 + 1e-6);
+            }
         }
     }
 

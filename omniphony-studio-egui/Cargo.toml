@@ -6,7 +6,7 @@ members = [".", "core", "scene"]
 
 [workspace.package]
 # Shared, so the core's `CARGO_PKG_VERSION` (the About box) is the app's.
-version = "0.6.0"
+version = "0.7.0"
 
 [package]
 name = "omniphony-studio-egui"
@@ -23,12 +23,106 @@ publish = false
 name = "omniphony-studio-egui"
 path = "src/main.rs"
 
+# Installers of the native Studio (#677), built by cargo-packager in
+# release.yml: deb and AppImage on Linux, NSIS (.exe) and WiX (.msi) on
+# Windows, the .app on macOS (release.yml signs it ad hoc and makes the .dmg
+# itself). `scripts/package.sh` builds the current platform's installers; the
+# version is the workspace's.
+#
+# Everything an installer ships is laid out so `core/src/host/bundle.rs` finds
+# it: the Studio and `orender` side by side (`orender` is looked for next to
+# the executable), and `layouts/`, `assets/` and `engine/` in the resource
+# directory: the executable's own directory on Windows,
+# `/usr/lib/omniphony-studio-egui/` in a deb or AppImage, `Contents/Resources/`
+# in the .app.
+#
+# Two inputs are not this crate's build and are staged into `target/release/`
+# first (release.yml does it): `orender[.exe]`, the renderer built from the
+# same commit, and `engine/`, the engine library (`liborender.so.<ABI major>`,
+# `liborender.dylib` or `orender.dll`) the Studio deploys for mpv on startup
+# (`core/src/host/engine_deploy.rs`).
+[package.metadata.packager]
+product-name = "Omniphony Studio (native)"
+identifier = "fr.omniphony.studio.native"
+description = "Control and 3D visualization UI for the orender spatial audio engine"
+long-description = "Omniphony Studio drives the orender spatial audio renderer: speaker layout, binaural output, placement and live object positions in a 3D view. This package ships the renderer (orender) and its engine library, which the Studio installs for the Omniphony mpv player on first start."
+homepage = "https://github.com/mgth/Omniphony"
+authors = ["Mathieu Grenet <mathieu@mgth.fr>"]
+publisher = "Omniphony"
+license-file = "../LICENSE"
+category = "Music"
+out-dir = "target/packages"
+icons = [
+    "assets/icons/32x32.png",
+    "assets/icons/64x64.png",
+    "assets/icons/128x128.png",
+    "assets/icons/icon.png",
+    "assets/icons/icon.icns",
+    "assets/icons/icon.ico",
+]
+binaries = [
+    { path = "omniphony-studio-egui", main = true },
+    { path = "orender", main = false },
+]
+resources = [
+    { src = "../layouts/*.yaml", target = "layouts" },
+    { src = "../layouts/legacy/*.yaml", target = "layouts/legacy" },
+    { src = "assets/la_dame_de_brassempouy_centered.glb", target = "assets/la_dame_de_brassempouy_centered.glb" },
+    { src = "target/release/engine", target = "engine" },
+]
+
+[package.metadata.packager.deb]
+# What `orender` links (PipeWire) and what the Studio dlopens at runtime
+# (Vulkan through wgpu, Wayland or X11 through winit). PipeWire >= 0.3.65 is
+# pipewire-rs 0.9's floor; Ubuntu 22.04's own 0.3.48 is too old.
+depends = [
+    "libpipewire-0.3-0 (>= 0.3.65)",
+    "libvulkan1",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+    "libwayland-client0",
+    "libx11-6",
+    "libxcursor1",
+    "libxi6",
+    "libxrandr2",
+]
+# The renderer as a systemd user service, installed but not enabled: the user
+# runs `systemctl --user enable --now omniphony-renderer`. The same text
+# Studio's "Install service" writes for /usr/bin/orender, where this package
+# puts it (a test in core/src/host/commands/orender.rs keeps them equal). The
+# source is relative to this directory, where package.sh runs the packager.
+files = { "../packaging/systemd/omniphony-renderer.service" = "/usr/lib/systemd/user/omniphony-renderer.service" }
+
+[package.metadata.packager.appimage]
+# The host's own copies, never bundled: PipeWire's client library must match
+# the SPA plugins and the server it talks to, Vulkan and the display stack are
+# the driver's, and libstdc++/libgcc_s must be at least as new as what the
+# host's GPU driver links. The same exclusions as mpv-omniphony's AppImage.
+excluded-libraries = [
+    "libpipewire-0.3*",
+    "libvulkan*",
+    "libwayland-*",
+    "libxkbcommon*",
+    "libX*",
+    "libxcb*",
+    "libasound*",
+    "libstdc++*",
+    "libgcc_s*",
+]
+
+[package.metadata.packager.nsis]
+# Per user or per machine, the user's choice, as the Tauri installer offered.
+installer-mode = "both"
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
 [dependencies]
 # Protocol, state and behaviour. Everything below it is for drawing.
 omniphony-studio-core = { path = "core" }
 omniphony-studio-scene = { path = "scene" }
 # Canonical coordinate math shared with the renderer; dependency-free by design.
-omniphony-geometry = { path = "../omniphony-renderer/omniphony-geometry" }
+omniphony_geometry = { path = "../omniphony-renderer/omniphony_geometry" }
 
 # UI + windowing. wgpu is the only backend the spike supports: the whole point
 # is the wgpu paint callback that hosts the 3D viewport.

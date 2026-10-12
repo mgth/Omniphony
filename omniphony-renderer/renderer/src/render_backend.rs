@@ -1,22 +1,27 @@
+mod band_gains;
 mod barycenter_backend;
 mod degenerate_vbap_backend;
 mod distance_attenuation;
 mod distance_diffuse;
 mod evaluation_artifact;
 mod experimental_distance_backend;
+mod gain_scratch;
 mod hybrid_backend;
+mod neighbour_hint;
 mod room_transform;
 pub mod size_to_spread;
 mod vbap_backend;
+mod volumetric_backend;
 
-use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical, spherical_to_adm};
+use crate::spatial_vbap::{DistanceModel, adm_to_spherical, spherical_to_adm};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use rayon::prelude::*;
 use serde::Serialize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+pub use band_gains::BandGains;
 pub use barycenter_backend::BarycenterBackend;
 pub use degenerate_vbap_backend::DegenerateVbapBackend;
 use distance_attenuation::DistanceAttenuatedModel;
@@ -25,10 +30,15 @@ pub use evaluation_artifact::{
     BackendRestoreSnapshot, SerializedEvaluationMode, build_backend_restore_snapshot,
 };
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
+pub use gain_scratch::{GainScratch, foreign_scratch};
 pub use hybrid_backend::{BlendCurve, HybridBackend};
+pub use neighbour_hint::{HintSlot, NeighbourHint};
 pub use room_transform::room_scaled_position;
 pub use size_to_spread::{SizeToSpreadMode, reduce_size_to_spread};
 pub use vbap_backend::{VbapBackend, VbapSpreadParams};
+pub use volumetric_backend::{
+    CentralDistribution, LoudspeakerSurface, VolumetricBackend, VolumetricParams,
+};
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct BackendCapabilities {
@@ -55,6 +65,7 @@ pub struct BackendCapabilities {
 pub fn canonical_builtin_backend_id(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "vbap" => Some("vbap"),
+        "volumetric" => Some("volumetric"),
         "barycenter" | "barycentre" => Some("barycenter"),
         "experimental_distance" | "distance" | "distance_based" => Some("experimental_distance"),
         "hybrid" => Some("hybrid"),
@@ -107,10 +118,6 @@ pub struct RenderRequest {
     pub distance_model: DistanceModel,
 }
 
-pub struct RenderResponse {
-    pub gains: Gains,
-}
-
 #[derive(Clone, Copy)]
 pub struct CartesianEvaluationConfig {
     pub x_size: usize,
@@ -158,24 +165,118 @@ pub struct EvaluationBuildConfig {
 /// `compute_gains` runs in the realtime audio thread, once per object per band
 /// per frame. To keep that thread glitch-free, an implementation MUST:
 ///
-/// - **not panic** — return a best-effort gain vector instead (e.g. zeroed);
+/// - **not panic** — write a best-effort gain vector instead (e.g. zeros);
 /// - **not allocate** on the heap, lock, or block;
-/// - return exactly [`speaker_count`](GainModel::speaker_count) finite gains.
+/// - write every one of the [`speaker_count`](GainModel::speaker_count) gains
+///   of `out`, all finite. `out` arrives holding whatever the caller last had
+///   there, not zeros: a gain left unwritten is a stale one.
 ///
 /// Do any expensive setup (triangulation, lookup tables, caches) when the model
-/// is built, not here. As a safety net the engine smoke-tests every freshly
-/// built backend on a few reference positions on the build thread: a model that
-/// panics or returns a malformed gain vector is rejected at topology build time
-/// (surfaced to Studio as a recompute error) rather than crashing the audio
-/// thread — but that guard only catches the build-time probe, so honouring the
-/// contract above is still required for correct realtime behaviour.
+/// is built, not here, and size any working memory in
+/// [`new_scratch`](GainModel::new_scratch). As a safety net the engine
+/// smoke-tests every freshly built backend on a few reference positions on the
+/// build thread: a model that panics, leaves a gain unwritten or writes a
+/// non-finite one is rejected at topology build time (surfaced to Studio as a
+/// recompute error) rather than crashing the audio thread — but that guard only
+/// catches the build-time probe, so honouring the contract above is still
+/// required for correct realtime behaviour.
 pub trait GainModel: Send + Sync + 'static {
     fn backend_id(&self) -> &'static str;
     fn backend_label(&self) -> &'static str;
     fn capabilities(&self) -> BackendCapabilities;
     fn speaker_count(&self) -> usize;
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    /// The working memory a caller needs to evaluate this model, sized for
+    /// its layout: see [`GainScratch`]. Called off the render thread, once
+    /// per caller. The default is for a model that needs none.
+    fn new_scratch(&self) -> GainScratch {
+        GainScratch::none()
+    }
+    /// Write the gains for `req` into `out`, one per speaker:
+    /// `out.len() == self.speaker_count()`. `scratch` is one this model made
+    /// ([`new_scratch`](GainModel::new_scratch)).
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]);
+    /// [`compute_gains`](GainModel::compute_gains) for a precomputed table
+    /// build, which evaluates the cells of a row one after the other and hands
+    /// in what the previous cell left in `hint` (see [`NeighbourHint`]).
+    ///
+    /// Optional: the default ignores the hint. A model that uses it must stay a
+    /// pure function of the request and of the hint, so that a table is the
+    /// same on every build. A model that wraps other models forwards the hint to
+    /// them. Never called from the realtime path.
+    fn compute_gains_with_hint(
+        &self,
+        req: &RenderRequest,
+        hint: &mut NeighbourHint,
+        scratch: &mut GainScratch,
+        out: &mut [f32],
+    ) {
+        let _ = hint;
+        self.compute_gains(req, scratch, out)
+    }
+    /// The gains for `req` in a vector of their own, computed on a scratch of
+    /// their own: for tests, tools and one-off queries. It allocates both, so
+    /// never on the render path.
+    fn gains_at(&self, req: &RenderRequest) -> Vec<f32> {
+        let mut gains = vec![0.0; self.speaker_count()];
+        self.compute_gains(req, &mut self.new_scratch(), &mut gains);
+        gains
+    }
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()>;
+}
+
+/// Scale `gains` to unit energy given `energy`, their `Σ g²` (callers usually
+/// accumulate it while filling them): every gain is divided by `√energy`. A
+/// set whose energy is at most `1e-12` is left untouched, so silence stays
+/// silence instead of blowing up.
+#[inline]
+pub fn normalize_to_unit_energy(gains: &mut [f32], energy: f32) {
+    if energy > 1e-12 {
+        let norm = energy.sqrt();
+        for gain in gains.iter_mut() {
+            *gain /= norm;
+        }
+    }
+}
+
+/// Sample `model` over `rows × cells_per_row` positions into a flat
+/// `[row][cell][speaker]` gain table.
+///
+/// Sampling the gain model over the whole grid dominates engine startup, and it
+/// runs once per render backend. Rows are independent and `GainModel` is `Sync`,
+/// so they are evaluated in parallel. Inside a row the cells are evaluated in
+/// order, each handing a [`NeighbourHint`] to the next and the first starting
+/// from an empty one: the table is the same for any number of threads.
+///
+/// The model writes each cell's gains straight into the table.
+fn sample_rows(
+    model: &dyn GainModel,
+    template: RenderRequest,
+    rows: usize,
+    cells_per_row: usize,
+    position: impl Fn(usize, usize) -> [f64; 3] + Sync,
+) -> Vec<f32> {
+    let speaker_count = model.speaker_count();
+    let row_len = cells_per_row * speaker_count;
+    let mut gains = vec![0.0f32; rows * row_len];
+    if row_len == 0 {
+        return gains;
+    }
+    crate::background_pool::install(|| {
+        gains.par_chunks_mut(row_len).enumerate().for_each_init(
+            // One scratch and one hint per worker, not per row.
+            || (model.new_scratch(), NeighbourHint::new()),
+            |(scratch, hint), (row, row_gains)| {
+                hint.begin_row();
+                let mut request = template;
+                for (cell, cell_gains) in row_gains.chunks_mut(speaker_count).enumerate() {
+                    request.adm_position = position(row, cell);
+                    hint.begin_cell();
+                    model.compute_gains_with_hint(&request, hint, scratch, cell_gains);
+                }
+            },
+        )
+    });
+    gains
 }
 
 pub trait EvaluationStrategy {
@@ -215,7 +316,22 @@ pub(crate) struct PolarParts<'a> {
 
 pub trait PreparedEvaluator: Send + Sync {
     fn speaker_count(&self) -> usize;
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    /// The working memory a caller needs to read gains from this evaluator:
+    /// that of the model it evaluates live, none for a sampled table. Same
+    /// contract as [`GainModel::new_scratch`].
+    fn new_scratch(&self) -> GainScratch {
+        GainScratch::none()
+    }
+    /// Write the gains for `req` into `out`, one per speaker. Same contract
+    /// as [`GainModel::compute_gains`].
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]);
+    /// The gains for `req` in a vector of their own, computed on a scratch of
+    /// their own: for tests, tools and one-off queries, never the render path.
+    fn gains_at(&self, req: &RenderRequest) -> Vec<f32> {
+        let mut gains = vec![0.0; self.speaker_count()];
+        self.compute_gains(req, &mut self.new_scratch(), &mut gains);
+        gains
+    }
     /// The decorated gain model this evaluator wraps, when it holds one. Shared
     /// (`Arc`) so a geometry-unchanged recompute can reuse it and rebuild only the
     /// evaluation wrapper (no re-triangulation). Default `None` (e.g. a from-file
@@ -240,7 +356,7 @@ pub trait PreparedEvaluator: Send + Sync {
     }
     /// Borrow the sampled polar table + axes, when this evaluator is a precomputed
     /// polar one. Default `None`. Crate-internal view used to merge bands into a
-    /// polar [`MultiBandTable`].
+    /// polar `MultiBandTable`.
     #[allow(private_interfaces)]
     fn polar_parts(&self) -> Option<PolarParts<'_>> {
         None
@@ -273,8 +389,12 @@ impl PreparedEvaluator for RealtimeEvaluator {
         Some(Arc::clone(&self.model))
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        self.model.compute_gains(req)
+    fn new_scratch(&self) -> GainScratch {
+        self.model.new_scratch()
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        self.model.compute_gains(req, scratch, out)
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -303,6 +423,7 @@ pub struct SampledCartesianEvaluator {
 }
 
 impl SampledCartesianEvaluator {
+    /// Sample `model` over the cartesian grid.
     pub fn new(model: Arc<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
         // Intentionally sample and query the precomputed cartesian evaluator in native
         // ADM coordinates. The backend remains responsible for any room/depth transforms,
@@ -315,30 +436,15 @@ impl SampledCartesianEvaluator {
         let speaker_count = model.speaker_count();
         let (nx, ny, nz) = (x_positions.len(), y_positions.len(), z_positions.len());
         let template = config.request_template;
-        // Sampling the gain model over the full x×y×z volume dominates engine
-        // startup, and it runs once per render backend. Each cell is independent
-        // and GainModel is Sync, so evaluate them in parallel. The flat index
-        // decodes to the SAME z→y→x order the sequential build produced, which
+        // Rows run along x, so the flat table keeps its z→y→x cell order, which
         // the runtime table lookup relies on.
-        let per_cell: Vec<Gains> = (0..nx * ny * nz)
-            .into_par_iter()
-            .map(|idx| {
-                let xi = idx % nx;
-                let yi = (idx / nx) % ny;
-                let zi = idx / (nx * ny);
-                let mut request = template;
-                request.adm_position = [
-                    x_positions[xi] as f64,
-                    y_positions[yi] as f64,
-                    z_positions[zi] as f64,
-                ];
-                model.compute_gains(&request).gains
-            })
-            .collect();
-        let mut gains = Vec::with_capacity(nx * ny * nz * speaker_count);
-        for cell in &per_cell {
-            gains.extend_from_slice(&cell[..]);
-        }
+        let gains = sample_rows(model.as_ref(), template, ny * nz, nx, |row, xi| {
+            [
+                x_positions[xi] as f64,
+                y_positions[row % ny] as f64,
+                z_positions[row / ny] as f64,
+            ]
+        });
         let backend_restore_snapshot = build_backend_restore_snapshot(
             model.backend_id(),
             model.backend_label(),
@@ -365,6 +471,20 @@ impl SampledCartesianEvaluator {
     }
 }
 
+impl SampledCartesianEvaluator {
+    /// The table and its axes, with the interpolation flag as it is now.
+    fn parts(&self) -> CartesianParts<'_> {
+        CartesianParts {
+            gains: &self.gains,
+            speaker_count: self.speaker_count,
+            x: &self.x_lut,
+            y: &self.y_lut,
+            z: &self.z_lut,
+            position_interpolation: self.position_interpolation.load(Ordering::Relaxed),
+        }
+    }
+}
+
 impl PreparedEvaluator for SampledCartesianEvaluator {
     fn speaker_count(&self) -> usize {
         self.speaker_count
@@ -381,29 +501,17 @@ impl PreparedEvaluator for SampledCartesianEvaluator {
 
     #[allow(private_interfaces)]
     fn cartesian_parts(&self) -> Option<CartesianParts<'_>> {
-        Some(CartesianParts {
-            gains: &self.gains,
-            speaker_count: self.speaker_count,
-            x: &self.x_lut,
-            y: &self.y_lut,
-            z: &self.z_lut,
-            position_interpolation: self.position_interpolation.load(Ordering::Relaxed),
-        })
+        Some(self.parts())
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
         // Read the table directly from native ADM coordinates. This avoids a render-time
         // round-trip through spherical/effect-space conversions for the cartesian path.
-        let gains = sample_cartesian_table(
-            &self.gains,
-            self.speaker_count,
-            &self.x_lut,
-            &self.y_lut,
-            &self.z_lut,
+        sample_cartesian_table(
+            self.parts(),
             req.adm_position.map(|value| value as f32),
-            self.position_interpolation.load(Ordering::Relaxed),
+            out,
         );
-        RenderResponse { gains }
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -449,6 +557,7 @@ pub struct SampledPolarEvaluator {
 }
 
 impl SampledPolarEvaluator {
+    /// Sample `model` over the polar grid.
     pub fn new(model: Arc<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
         let azimuth_positions = polar_azimuth_axis(config.polar.azimuth_values.max(2));
         let elevation_positions = polar_elevation_axis(
@@ -461,22 +570,23 @@ impl SampledPolarEvaluator {
             config.polar.distance_max.max(0.01),
         );
         let speaker_count = model.speaker_count();
-        let mut gains = Vec::with_capacity(
-            azimuth_positions.len()
-                * elevation_positions.len()
-                * distance_positions.len()
-                * speaker_count,
+        // Rows run along the azimuth: the flat table keeps its
+        // distance→elevation→azimuth cell order.
+        let elevation_count = elevation_positions.len();
+        let gains = sample_rows(
+            model.as_ref(),
+            config.request_template,
+            distance_positions.len() * elevation_count,
+            azimuth_positions.len(),
+            |row, azimuth_index| {
+                let (x, y, z) = spherical_to_adm(
+                    azimuth_positions[azimuth_index],
+                    elevation_positions[row % elevation_count],
+                    distance_positions[row / elevation_count],
+                );
+                [x as f64, y as f64, z as f64]
+            },
         );
-        let mut request = config.request_template;
-        for &distance in &distance_positions {
-            for &elevation in &elevation_positions {
-                for &azimuth in &azimuth_positions {
-                    let (x, y, z) = spherical_to_adm(azimuth, elevation, distance);
-                    request.adm_position = [x as f64, y as f64, z as f64];
-                    gains.extend_from_slice(&model.compute_gains(&request).gains);
-                }
-            }
-        }
         let backend_restore_snapshot = build_backend_restore_snapshot(
             model.backend_id(),
             model.backend_label(),
@@ -503,6 +613,20 @@ impl SampledPolarEvaluator {
     }
 }
 
+impl SampledPolarEvaluator {
+    /// The table and its axes, with the interpolation flag as it is now.
+    fn parts(&self) -> PolarParts<'_> {
+        PolarParts {
+            gains: &self.gains,
+            speaker_count: self.speaker_count,
+            azimuth: &self.azimuth_lut,
+            elevation: &self.elevation_lut,
+            distance: &self.distance_lut,
+            position_interpolation: self.position_interpolation.load(Ordering::Relaxed),
+        }
+    }
+}
+
 impl PreparedEvaluator for SampledPolarEvaluator {
     fn speaker_count(&self) -> usize {
         self.speaker_count
@@ -519,32 +643,16 @@ impl PreparedEvaluator for SampledPolarEvaluator {
 
     #[allow(private_interfaces)]
     fn polar_parts(&self) -> Option<PolarParts<'_>> {
-        Some(PolarParts {
-            gains: &self.gains,
-            speaker_count: self.speaker_count,
-            azimuth: &self.azimuth_lut,
-            elevation: &self.elevation_lut,
-            distance: &self.distance_lut,
-            position_interpolation: self.position_interpolation.load(Ordering::Relaxed),
-        })
+        Some(self.parts())
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, out: &mut [f32]) {
         let (azimuth, elevation, distance) = adm_to_spherical(
             req.adm_position[0] as f32,
             req.adm_position[1] as f32,
             req.adm_position[2] as f32,
         );
-        let gains = sample_polar_table_lut(
-            &self.gains,
-            self.speaker_count,
-            &self.azimuth_lut,
-            &self.elevation_lut,
-            &self.distance_lut,
-            [azimuth, elevation, distance],
-            self.position_interpolation.load(Ordering::Relaxed),
-        );
-        RenderResponse { gains }
+        sample_polar_table_lut(self.parts(), [azimuth, elevation, distance], out);
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -624,6 +732,14 @@ impl SizeInterpolatingEvaluator {
     }
 }
 
+/// What a caller of [`SizeInterpolatingEvaluator`] holds: the gains of the
+/// upper bracketing table while they are blended into those of the lower one,
+/// and the scratch of every inner evaluator.
+struct SizeInterpolatingScratch {
+    upper: Vec<f32>,
+    inners: Vec<GainScratch>,
+}
+
 impl PreparedEvaluator for SizeInterpolatingEvaluator {
     fn speaker_count(&self) -> usize {
         self.speaker_count
@@ -639,7 +755,24 @@ impl PreparedEvaluator for SizeInterpolatingEvaluator {
         }
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    fn new_scratch(&self) -> GainScratch {
+        GainScratch::new(SizeInterpolatingScratch {
+            upper: vec![0.0; self.speaker_count],
+            inners: self
+                .inners
+                .iter()
+                .map(|inner| inner.new_scratch())
+                .collect(),
+        })
+    }
+
+    fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        let Some(SizeInterpolatingScratch { upper, inners }) = scratch.state() else {
+            return foreign_scratch(out);
+        };
+        if upper.len() != out.len() || inners.len() != self.inners.len() {
+            return foreign_scratch(out);
+        }
         let pos = req.adm_position.map(|value| value as f32);
         let query = reduce_size_to_spread(req.event_size, pos, self.mode).clamp(0.0, 1.0);
         // Bracket the query size. `sizes` is sorted ascending and has >= 2 entries.
@@ -651,16 +784,11 @@ impl PreparedEvaluator for SizeInterpolatingEvaluator {
         let lo = hi - 1;
         let span = (self.sizes[hi] - self.sizes[lo]).max(1e-6);
         let fraction = ((query - self.sizes[lo]) / span).clamp(0.0, 1.0);
-        let gains_lo = self.inners[lo].compute_gains(req).gains;
-        let gains_hi = self.inners[hi].compute_gains(req).gains;
-        let mut gains = Gains::zeroed(self.speaker_count);
-        for index in 0..self.speaker_count {
-            gains.set(
-                index,
-                gains_lo[index] * (1.0 - fraction) + gains_hi[index] * fraction,
-            );
+        self.inners[lo].compute_gains(req, &mut inners[lo], out);
+        self.inners[hi].compute_gains(req, &mut inners[hi], upper);
+        for (gain, &upper) in out.iter_mut().zip(upper.iter()) {
+            *gain = *gain * (1.0 - fraction) + upper * fraction;
         }
-        RenderResponse { gains }
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
@@ -689,6 +817,56 @@ impl EvaluationStrategy for RealtimeStrategy {
     }
 }
 
+/// Largest set of precomputed gain tables one evaluation may build, in bytes.
+///
+/// The default grid (62 × 62 × 15, plus 15 below the horizon) samples about
+/// 11 MB of gains on 24 speakers; this leaves room for grids twenty times
+/// finer, and stops a grid size typed into config.yaml or sent over OSC from
+/// allocating gigabytes at the next rebuild — inside the media player, for
+/// liborender. A build past it fails, and the caller keeps the topology it
+/// has (the recompute reports the error to Studio).
+pub const MAX_EVALUATION_TABLE_BYTES: usize = 256 << 20;
+
+/// Refuse a precomputed build whose `tables` tables of `cells` cells, each
+/// holding `speakers` gains, would exceed [`MAX_EVALUATION_TABLE_BYTES`].
+/// Checked before anything is allocated: the axes alone are as long as the
+/// sizes asked for.
+pub(crate) fn check_table_budget(
+    grid: &str,
+    cells: &[usize],
+    speakers: usize,
+    tables: usize,
+) -> Result<()> {
+    let bytes = cells
+        .iter()
+        .try_fold(1usize, |acc, &n| acc.checked_mul(n))
+        .and_then(|n| n.checked_mul(speakers.max(1)))
+        .and_then(|n| n.checked_mul(tables.max(1)))
+        .and_then(|n| n.checked_mul(std::mem::size_of::<f32>()));
+    match bytes {
+        Some(bytes) if bytes <= MAX_EVALUATION_TABLE_BYTES => Ok(()),
+        _ => anyhow::bail!(
+            "the {grid} evaluation grid {cells:?} × {speakers} speakers × {tables} table(s) \
+             would need {} of gains, over the {} MiB budget; use a coarser grid",
+            bytes.map_or_else(
+                || "more than the address space".to_string(),
+                |b| format!("{} MiB", b >> 20)
+            ),
+            MAX_EVALUATION_TABLE_BYTES >> 20
+        ),
+    }
+}
+
+/// How many tables a precomputed strategy builds for `config`: one per
+/// object-size step when the model honours object size, else one.
+fn table_count(model: &dyn GainModel, config: &EvaluationBuildConfig) -> usize {
+    if config.object_size_intervals > 0 && model.capabilities().supports_event_size {
+        config.object_size_intervals.saturating_add(1)
+    } else {
+        1
+    }
+}
+
 pub struct PrecomputedCartesianStrategy;
 
 impl EvaluationStrategy for PrecomputedCartesianStrategy {
@@ -701,6 +879,17 @@ impl EvaluationStrategy for PrecomputedCartesianStrategy {
         model: Arc<dyn GainModel>,
         config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>> {
+        let c = &config.cartesian;
+        check_table_budget(
+            "cartesian",
+            &[
+                c.x_size.max(2),
+                c.y_size.max(2),
+                c.z_size.max(2).saturating_add(c.z_neg_size),
+            ],
+            model.speaker_count(),
+            table_count(model.as_ref(), config),
+        )?;
         if config.object_size_intervals > 0 && model.capabilities().supports_event_size {
             Ok(Box::new(SizeInterpolatingEvaluator::new(
                 model,
@@ -728,6 +917,17 @@ impl EvaluationStrategy for PrecomputedPolarStrategy {
         model: Arc<dyn GainModel>,
         config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>> {
+        let p = &config.polar;
+        check_table_budget(
+            "polar",
+            &[
+                p.azimuth_values.max(2),
+                p.elevation_values.max(2),
+                p.distance_values.max(2),
+            ],
+            model.speaker_count(),
+            table_count(model.as_ref(), config),
+        )?;
         if config.object_size_intervals > 0 && model.capabilities().supports_event_size {
             Ok(Box::new(SizeInterpolatingEvaluator::new(
                 model,
@@ -750,6 +950,10 @@ pub struct PreparedRenderEngine {
     evaluation_mode: EffectiveEvaluationMode,
     backend_restore_snapshot: Option<BackendRestoreSnapshot>,
     evaluator: Box<dyn PreparedEvaluator>,
+    /// Whether `evaluator` reads a sampled table. `false` for a realtime
+    /// engine, and for one built by [`wrap_unsampled_engine`], which reports a
+    /// precomputed `evaluation_mode` without sampling anything.
+    sampled: bool,
 }
 
 impl PreparedRenderEngine {
@@ -768,6 +972,7 @@ impl PreparedRenderEngine {
             evaluation_mode,
             backend_restore_snapshot,
             evaluator,
+            sampled: evaluation_mode != EffectiveEvaluationMode::Realtime,
         }
     }
 
@@ -787,6 +992,14 @@ impl PreparedRenderEngine {
         self.evaluation_mode
     }
 
+    /// Whether this engine's gains are read from a table sampled when it was
+    /// built. `false` for a realtime engine and for a published topology's
+    /// engine ([`wrap_unsampled_engine`]), whose `evaluation_mode` is the one
+    /// the speaker stage's band engines sample in.
+    pub fn has_sampled_table(&self) -> bool {
+        self.sampled
+    }
+
     pub fn has_backend_restore_snapshot(&self) -> bool {
         self.backend_restore_snapshot.is_some()
     }
@@ -799,8 +1012,24 @@ impl PreparedRenderEngine {
         self.evaluator.speaker_count()
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        self.evaluator.compute_gains(req)
+    /// The working memory a caller needs to read gains from this engine,
+    /// made once per caller and off the render thread: see [`GainScratch`].
+    pub fn new_scratch(&self) -> GainScratch {
+        self.evaluator.new_scratch()
+    }
+
+    /// Write the gains for `req` into `out`, one per speaker
+    /// (`out.len() == self.speaker_count()`), on a scratch this engine made.
+    pub fn compute_gains(&self, req: &RenderRequest, scratch: &mut GainScratch, out: &mut [f32]) {
+        self.evaluator.compute_gains(req, scratch, out)
+    }
+
+    /// The gains for `req` in a vector of their own, computed on a scratch of
+    /// their own: for tests, tools and one-off queries, never the render path.
+    pub fn gains_at(&self, req: &RenderRequest) -> Vec<f32> {
+        let mut gains = vec![0.0; self.speaker_count()];
+        self.compute_gains(req, &mut self.new_scratch(), &mut gains);
+        gains
     }
 
     /// Update the read-time `position_interpolation` flag on the underlying
@@ -893,6 +1122,34 @@ pub fn wrap_prepared_engine(
     ))
 }
 
+/// Wrap an already-decorated gain model for a published topology: the
+/// backend's identity, capabilities and decorated model, tagged with
+/// `evaluation_mode`, but no table sampled whatever that mode is.
+///
+/// Nothing renders audio through a published topology's engine: every
+/// crossover band of the speaker stage, including the single band of a layout
+/// without crossover, builds and samples its own engine from the topology's
+/// layout. The topology's engine only names the backend and the effective mode
+/// (the state snapshot), carries the model a geometry-unchanged recompute
+/// reuses, and runs the build's smoke test, which here queries the model
+/// directly. Sampling a table for it cost a whole extra table build (on a
+/// hybrid layout, as much as a band) at every start-up and recompute.
+pub fn wrap_unsampled_engine(
+    model: Arc<dyn GainModel>,
+    evaluation_mode: EffectiveEvaluationMode,
+) -> PreparedRenderEngine {
+    let mut engine = PreparedRenderEngine::new(
+        model.backend_id(),
+        model.backend_label(),
+        model.capabilities(),
+        evaluation_mode,
+        None,
+        Box::new(RealtimeEvaluator::new(model)),
+    );
+    engine.sampled = false;
+    engine
+}
+
 pub fn build_prepared_render_engine(
     model: Box<dyn GainModel>,
     evaluation_mode: EffectiveEvaluationMode,
@@ -912,7 +1169,7 @@ struct AxisSample {
     fraction: f32,
 }
 
-// The cartesian table's axis geometry lives in `omniphony-geometry`, shared
+// The cartesian table's axis geometry lives in `omniphony_geometry`, shared
 // with the Studio: its snap-to-grid has to land on the same nodes the table is
 // sampled at, and re-deriving them from the published interval counts is what
 // made that fragile.
@@ -1012,6 +1269,7 @@ impl AxisLut {
 
     /// Bracket within an evenly-spaced region of `len` points, given the
     /// position already expressed in cell units (`f = (pos - min) * inv_step`).
+    #[inline]
     fn bracket_uniform(f: f32, len: usize, interpolate: bool) -> AxisSample {
         let f = f.clamp(0.0, (len - 1) as f32);
         if !interpolate {
@@ -1030,6 +1288,9 @@ impl AxisLut {
         }
     }
 
+    // Inlined into the table lookups: the bracket then stays in registers
+    // instead of being returned through memory and reloaded.
+    #[inline(always)]
     fn sample(&self, position: f32, interpolate: bool) -> AxisSample {
         match self {
             Self::Uniform { min, inv_step, len } => {
@@ -1100,6 +1361,7 @@ impl AzimuthLut {
         }
     }
 
+    #[inline]
     fn sample(&self, position: f32, interpolate: bool) -> AxisSample {
         match self {
             Self::WrappedUniform { min, inv_step, len } => {
@@ -1132,24 +1394,127 @@ impl AzimuthLut {
     }
 }
 
+/// Trilinear weights of the eight corners of a cell, in the order the blend
+/// visits them: `z` (or distance) slowest, `x` (or azimuth) fastest, the lower
+/// index first on every axis.
+///
+/// A corner the position does not reach weighs exactly zero: its row is still
+/// read by [`blend_corner_rows`], and adds a zero to a sum that started at
+/// `+0.0` — the same bits as leaving it out, for any finite table value.
+#[inline(always)]
+fn corner_weights(x: &AxisSample, y: &AxisSample, z: &AxisSample) -> [f32; 8] {
+    let mut weights = [0.0f32; 8];
+    let mut corner = 0;
+    for wz in [1.0 - z.fraction, z.fraction] {
+        for wy in [1.0 - y.fraction, y.fraction] {
+            for wx in [1.0 - x.fraction, x.fraction] {
+                let weight = wx * wy * wz;
+                // Not `max(0.0)`: that would turn a NaN weight into zero.
+                weights[corner] = if weight <= 0.0 { 0.0 } else { weight };
+                corner += 1;
+            }
+        }
+    }
+    weights
+}
+
+/// Flat cell indices of the eight corners, in [`corner_weights`] order.
+#[inline(always)]
+fn corner_cells(
+    x: &AxisSample,
+    y: &AxisSample,
+    z: &AxisSample,
+    x_len: usize,
+    y_len: usize,
+) -> [usize; 8] {
+    let mut cells = [0usize; 8];
+    let mut corner = 0;
+    for iz in [z.lower, z.upper] {
+        for iy in [y.lower, y.upper] {
+            for ix in [x.lower, x.upper] {
+                cells[corner] = ((iz * y_len) + iy) * x_len + ix;
+                corner += 1;
+            }
+        }
+    }
+    cells
+}
+
+/// Blend eight corner rows into `out` in one pass:
+/// `out[i] = 0 + rows[0][i]·w[0] + … + rows[7][i]·w[7]`, added in that order.
+///
+/// One pass rather than one per corner: every element is summed in a register
+/// and stored once, instead of being loaded and stored eight times. The order
+/// of the additions per element is the per-corner order, so the result is the
+/// same bits. Rows shorter than `out` silence it: `out` is the caller's
+/// buffer, and what it held is not this position's gains.
+#[inline(always)]
+fn blend_corner_rows(rows: [&[f32]; 8], weights: [f32; 8], out: &mut [f32]) {
+    let n = out.len();
+    let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
+    let (Some(r0), Some(r1), Some(r2), Some(r3)) =
+        (r0.get(..n), r1.get(..n), r2.get(..n), r3.get(..n))
+    else {
+        return out.fill(0.0);
+    };
+    let (Some(r4), Some(r5), Some(r6), Some(r7)) =
+        (r4.get(..n), r5.get(..n), r6.get(..n), r7.get(..n))
+    else {
+        return out.fill(0.0);
+    };
+    let [w0, w1, w2, w3, w4, w5, w6, w7] = weights;
+    for i in 0..n {
+        let mut acc = 0.0f32;
+        acc += r0[i] * w0;
+        acc += r1[i] * w1;
+        acc += r2[i] * w2;
+        acc += r3[i] * w3;
+        acc += r4[i] * w4;
+        acc += r5[i] * w5;
+        acc += r6[i] * w6;
+        acc += r7[i] * w7;
+        out[i] = acc;
+    }
+}
+
+/// Trilinear read of a flat `[cell][speaker]` table whose cell order has the
+/// `x` axis fastest: the eight corner rows of the bracketed cell, blended in one
+/// pass.
+#[inline(always)]
+fn blend_flat_sample(
+    table: &[f32],
+    speaker_count: usize,
+    x_len: usize,
+    y_len: usize,
+    x: &AxisSample,
+    y: &AxisSample,
+    z: &AxisSample,
+    gains: &mut [f32],
+) {
+    let rows = corner_cells(x, y, z, x_len, y_len).map(|cell| {
+        let offset = cell * speaker_count;
+        table.get(offset..offset + speaker_count).unwrap_or(&[])
+    });
+    blend_corner_rows(rows, corner_weights(x, y, z), &mut gains[..speaker_count]);
+}
+
 /// Division-free twin of [`sample_polar_table`]: same flat `[dist][el][az]` table
 /// and trilinear/nearest accumulation, but the per-axis brackets come from the
 /// precomputed [`AzimuthLut`]/[`AxisLut`] instead of per-call scans/divisions.
-pub(crate) fn sample_polar_table_lut(
-    table: &[f32],
-    speaker_count: usize,
-    azimuth: &AzimuthLut,
-    elevation: &AxisLut,
-    distance: &AxisLut,
-    position: [f32; 3],
-    interpolate: bool,
-) -> Gains {
+pub(crate) fn sample_polar_table_lut(table: PolarParts<'_>, position: [f32; 3], gains: &mut [f32]) {
+    let PolarParts {
+        gains: table,
+        speaker_count,
+        azimuth,
+        elevation,
+        distance,
+        position_interpolation: interpolate,
+    } = table;
     let a = azimuth.sample(position[0], interpolate);
     let e = elevation.sample(position[1], interpolate);
     let d = distance.sample(position[2], interpolate);
     let az_len = azimuth.len();
     let el_len = elevation.len();
-    let mut gains = Gains::zeroed(speaker_count);
     if !interpolate {
         write_flat_sample(
             table,
@@ -1159,49 +1524,31 @@ pub(crate) fn sample_polar_table_lut(
             a.lower,
             e.lower,
             d.lower,
-            &mut gains,
+            gains,
         );
-        return gains;
+        return;
     }
-    for (id, wd) in [(d.lower, 1.0 - d.fraction), (d.upper, d.fraction)] {
-        for (ie, we) in [(e.lower, 1.0 - e.fraction), (e.upper, e.fraction)] {
-            for (ia, wa) in [(a.lower, 1.0 - a.fraction), (a.upper, a.fraction)] {
-                let weight = wa * we * wd;
-                if weight <= 0.0 {
-                    continue;
-                }
-                accumulate_flat_sample(
-                    table,
-                    speaker_count,
-                    az_len,
-                    el_len,
-                    ia,
-                    ie,
-                    id,
-                    weight,
-                    &mut gains,
-                );
-            }
-        }
-    }
-    gains
+    blend_flat_sample(table, speaker_count, az_len, el_len, &a, &e, &d, gains);
 }
 
 pub(crate) fn sample_cartesian_table(
-    table: &[f32],
-    speaker_count: usize,
-    x_axis: &AxisLut,
-    y_axis: &AxisLut,
-    z_axis: &AxisLut,
+    table: CartesianParts<'_>,
     position: [f32; 3],
-    interpolate: bool,
-) -> Gains {
+    gains: &mut [f32],
+) {
+    let CartesianParts {
+        gains: table,
+        speaker_count,
+        x: x_axis,
+        y: y_axis,
+        z: z_axis,
+        position_interpolation: interpolate,
+    } = table;
     let x = x_axis.sample(position[0].clamp(-1.0, 1.0), interpolate);
     let y = y_axis.sample(position[1].clamp(-1.0, 1.0), interpolate);
     let z = z_axis.sample(position[2].clamp(-1.0, 1.0), interpolate);
     let x_len = x_axis.len();
     let y_len = y_axis.len();
-    let mut gains = Gains::zeroed(speaker_count);
     if !interpolate {
         write_flat_sample(
             table,
@@ -1211,33 +1558,11 @@ pub(crate) fn sample_cartesian_table(
             x.lower,
             y.lower,
             z.lower,
-            &mut gains,
+            gains,
         );
-        return gains;
+        return;
     }
-
-    for (iz, wz) in [(z.lower, 1.0 - z.fraction), (z.upper, z.fraction)] {
-        for (iy, wy) in [(y.lower, 1.0 - y.fraction), (y.upper, y.fraction)] {
-            for (ix, wx) in [(x.lower, 1.0 - x.fraction), (x.upper, x.fraction)] {
-                let weight = wx * wy * wz;
-                if weight <= 0.0 {
-                    continue;
-                }
-                accumulate_flat_sample(
-                    table,
-                    speaker_count,
-                    x_len,
-                    y_len,
-                    ix,
-                    iy,
-                    iz,
-                    weight,
-                    &mut gains,
-                );
-            }
-        }
-    }
-    gains
+    blend_flat_sample(table, speaker_count, x_len, y_len, &x, &y, &z, gains);
 }
 
 /// One grid axis of a [`MultiBandTable`], dispatching to the right precomputed
@@ -1310,6 +1635,50 @@ pub(crate) struct MultiBandTable {
     /// Read-time only (nearest cell vs trilinear); interior-mutable so the live
     /// toggle updates it without rebuilding the merged table.
     position_interpolation: AtomicBool,
+    /// Unique per built table, never zero: what a [`CornerCache`] checks before
+    /// trusting the rows it holds, so no rebuild can leave a stale one valid.
+    id: u64,
+    /// Whether [`Self::sample_cached`] takes its AVX2 build, resolved once
+    /// here so the per-sample read never queries the CPU.
+    #[cfg(target_arch = "x86_64")]
+    blend_avx2: bool,
+}
+
+/// Source of [`MultiBandTable::id`]. Starts at 1: zero marks an empty cache.
+static NEXT_MULTI_BAND_TABLE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// One object's copy of the eight corner rows of the [`MultiBandTable`] cell it
+/// sits in, for [`MultiBandTable::sample_cached`].
+///
+/// A moving object is read once per sample and stays in a cell for many
+/// samples, while the table is megabytes wide and the eight rows of a cell lie
+/// in four separate regions of it. Copying them here on a cell change turns
+/// every other read into a blend over a few hundred contiguous bytes that stay
+/// in the first-level cache.
+///
+/// Owned by the render thread, one per input channel. Its storage is sized on
+/// the first read of a table and reused afterwards, so a steady-state read
+/// allocates nothing.
+#[derive(Default)]
+pub(crate) struct CornerCache {
+    /// [`MultiBandTable::id`] of the table the rows were copied from; zero
+    /// when the cache holds nothing.
+    table_id: u64,
+    /// Flat cell indices of the lowest and highest corner. Together they name
+    /// all eight, including the degenerate brackets where an axis has
+    /// `lower == upper`.
+    low_cell: usize,
+    high_cell: usize,
+    /// The eight corner rows back to back, each `[band][speaker]`, in
+    /// [`corner_weights`] order.
+    rows: Vec<f32>,
+}
+
+impl CornerCache {
+    /// Forget the cached cell, keeping the storage.
+    pub(crate) fn invalidate(&mut self) {
+        self.table_id = 0;
+    }
 }
 
 impl MultiBandTable {
@@ -1398,6 +1767,9 @@ impl MultiBandTable {
             n_bands,
             num_speakers,
             position_interpolation: AtomicBool::new(position_interpolation),
+            id: NEXT_MULTI_BAND_TABLE_ID.fetch_add(1, Ordering::Relaxed),
+            #[cfg(target_arch = "x86_64")]
+            blend_avx2: std::arch::is_x86_feature_detected!("avx2"),
         })
     }
 
@@ -1407,50 +1779,187 @@ impl MultiBandTable {
             .store(interpolate, Ordering::Relaxed);
     }
 
-    /// Trilinear lookup for all bands at `position`. Fills `out` with `n_bands`
-    /// full-size `Gains` (one localisation, contiguous per-cell accumulation).
-    pub(crate) fn sample_into(&self, position: [f32; 3], out: &mut Vec<Gains>) {
-        let interp = self.position_interpolation.load(Ordering::Relaxed);
+    /// Bracket `position` on the three grid axes.
+    #[inline(always)]
+    fn locate(&self, position: [f32; 3], interpolate: bool) -> [AxisSample; 3] {
         let p = self.coord.to_grid(position);
-        let x = self.axes[0].sample(p[0], interp);
-        let y = self.axes[1].sample(p[1], interp);
-        let z = self.axes[2].sample(p[2], interp);
-        let x_len = self.axes[0].len();
-        let y_len = self.axes[1].len();
-        let band_stride = self.num_speakers;
+        [
+            self.axes[0].sample(p[0], interpolate),
+            self.axes[1].sample(p[1], interpolate),
+            self.axes[2].sample(p[2], interpolate),
+        ]
+    }
+
+    /// Nearest-cell lookup: the cell's row, one band after the other.
+    fn copy_nearest(&self, cell: usize, out: &mut BandGains) {
         let cell_stride = self.n_bands * self.num_speakers;
-
-        out.clear();
-        out.resize(self.n_bands, Gains::zeroed(self.num_speakers));
-
-        let table = &self.gains;
-        let mut accumulate = |ix: usize, iy: usize, iz: usize, weight: f32| {
-            let cell_base = (((iz * y_len) + iy) * x_len + ix) * cell_stride;
-            for (b, g) in out.iter_mut().enumerate() {
-                let base = cell_base + b * band_stride;
-                let src = &table[base..base + band_stride];
-                for (d, &s) in g[..band_stride].iter_mut().zip(src) {
-                    *d += s * weight;
-                }
-            }
-        };
-
-        if !interp {
-            accumulate(x.lower, y.lower, z.lower, 1.0);
+        let base = cell * cell_stride;
+        let (Some(src), Some(dst)) = (
+            self.gains.get(base..base + cell_stride),
+            out.as_mut_slice().get_mut(..cell_stride),
+        ) else {
             return;
-        }
-        for (iz, wz) in [(z.lower, 1.0 - z.fraction), (z.upper, z.fraction)] {
-            for (iy, wy) in [(y.lower, 1.0 - y.fraction), (y.upper, y.fraction)] {
-                for (ix, wx) in [(x.lower, 1.0 - x.fraction), (x.upper, x.fraction)] {
-                    let weight = wx * wy * wz;
-                    if weight <= 0.0 {
-                        continue;
-                    }
-                    accumulate(ix, iy, iz, weight);
-                }
-            }
+        };
+        for (d, &s) in dst.iter_mut().zip(src) {
+            // `0.0 +` reads a `-0.0` table value back as `+0.0`, as the
+            // trilinear blend does.
+            *d = 0.0 + s;
         }
     }
+
+    /// Trilinear lookup for all bands at `position`. Shapes `out` to `n_bands`
+    /// full-size gain sets and fills them (one localisation, the eight corner
+    /// rows blended in one pass straight from the table). The lookup for a
+    /// caller with no per-object state; an object read every sample goes
+    /// through [`Self::sample_cached`].
+    pub(crate) fn sample_into(&self, position: [f32; 3], out: &mut BandGains) {
+        let interp = self.position_interpolation.load(Ordering::Relaxed);
+        let [x, y, z] = self.locate(position, interp);
+        let x_len = self.axes[0].len();
+        let y_len = self.axes[1].len();
+        out.shape(self.n_bands, self.num_speakers);
+        if !interp {
+            self.copy_nearest(((z.lower * y_len) + y.lower) * x_len + x.lower, out);
+            return;
+        }
+        let band_stride = self.num_speakers;
+        let cell_stride = self.n_bands * band_stride;
+        let cells = corner_cells(&x, &y, &z, x_len, y_len);
+        let weights = corner_weights(&x, &y, &z);
+        for (b, g) in out.bands_mut().enumerate() {
+            let rows = cells.map(|cell| {
+                let base = cell * cell_stride + b * band_stride;
+                self.gains.get(base..base + band_stride).unwrap_or(&[])
+            });
+            blend_corner_rows(rows, weights, g);
+        }
+    }
+
+    /// [`Self::sample_into`] for an object that owns a [`CornerCache`]: the
+    /// eight corner rows are copied out of the table only when the object
+    /// enters another cell, and every read blends the cached copy. Same
+    /// arithmetic in the same order, so the same gains bit for bit.
+    ///
+    /// Nearest-cell lookups read a single row and bypass the cache; it stays
+    /// valid for the cell it holds, since its key names all eight corners.
+    pub(crate) fn sample_cached(
+        &self,
+        cache: &mut CornerCache,
+        position: [f32; 3],
+        out: &mut BandGains,
+    ) {
+        #[cfg(target_arch = "x86_64")]
+        if self.blend_avx2 {
+            // SAFETY: `blend_avx2` is only set after the running CPU reported
+            // AVX2, the one feature `sample_cached_avx2` is compiled with
+            // beyond the baseline.
+            unsafe { self.sample_cached_avx2(cache, position, out) };
+            return;
+        }
+        self.sample_cached_body(cache, position, out);
+    }
+
+    /// [`Self::sample_cached_body`] compiled for AVX2: the blend over the
+    /// cached rows (`[band][speaker]`, 56 floats for four bands of fourteen
+    /// speakers) runs on eight lanes instead of the baseline's four. Same
+    /// operations in the same order per element, no FMA, so the same bits.
+    /// Measured alone, the blend goes 24 → 15 ns per read; AVX-512 would
+    /// take it to 14.7 ns, not worth a third build.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    fn sample_cached_avx2(&self, cache: &mut CornerCache, position: [f32; 3], out: &mut BandGains) {
+        self.sample_cached_body(cache, position, out);
+    }
+
+    /// The read, inlined into each of its builds.
+    #[inline(always)]
+    fn sample_cached_body(&self, cache: &mut CornerCache, position: [f32; 3], out: &mut BandGains) {
+        let interp = self.position_interpolation.load(Ordering::Relaxed);
+        let [x, y, z] = self.locate(position, interp);
+        let x_len = self.axes[0].len();
+        let y_len = self.axes[1].len();
+        out.shape(self.n_bands, self.num_speakers);
+        let low_cell = ((z.lower * y_len) + y.lower) * x_len + x.lower;
+        if !interp {
+            self.copy_nearest(low_cell, out);
+            return;
+        }
+        let cell_stride = self.n_bands * self.num_speakers;
+        if cell_stride == 0 {
+            return;
+        }
+        let high_cell = ((z.upper * y_len) + y.upper) * x_len + x.upper;
+        if cache.table_id != self.id || cache.low_cell != low_cell || cache.high_cell != high_cell {
+            // Sized per table: a no-op from the second cell of a table on.
+            cache.rows.resize(8 * cell_stride, 0.0);
+            let cells = corner_cells(&x, &y, &z, x_len, y_len);
+            for (row, cell) in cache.rows.chunks_exact_mut(cell_stride).zip(cells) {
+                let base = cell * cell_stride;
+                match self.gains.get(base..base + cell_stride) {
+                    Some(src) => row.copy_from_slice(src),
+                    None => row.fill(0.0),
+                }
+            }
+            cache.table_id = self.id;
+            cache.low_cell = low_cell;
+            cache.high_cell = high_cell;
+        }
+
+        // One flat pass over every band, straight into the caller's gains
+        // (`[band][speaker]`, as a cached row is): a single loop leaves one
+        // scalar tail where a loop per band would leave one per band.
+        let mut corner_rows = cache.rows.chunks_exact(cell_stride);
+        let rows: [&[f32]; 8] = std::array::from_fn(|_| corner_rows.next().unwrap_or(&[]));
+        blend_corner_rows(rows, corner_weights(&x, &y, &z), out.as_mut_slice());
+    }
+}
+
+/// [`sample_polar_table_lut`] into gains of its own, for the tests.
+#[cfg(test)]
+fn polar_table_gains(
+    table: &[f32],
+    speaker_count: usize,
+    azimuth: &AzimuthLut,
+    elevation: &AxisLut,
+    distance: &AxisLut,
+    position: [f32; 3],
+    interpolate: bool,
+) -> Vec<f32> {
+    let mut gains = vec![0.0; speaker_count];
+    let table = PolarParts {
+        gains: table,
+        speaker_count,
+        azimuth,
+        elevation,
+        distance,
+        position_interpolation: interpolate,
+    };
+    sample_polar_table_lut(table, position, &mut gains);
+    gains
+}
+
+/// [`sample_cartesian_table`] into gains of its own, for the tests.
+#[cfg(test)]
+fn cartesian_table_gains(
+    table: &[f32],
+    speaker_count: usize,
+    x_axis: &AxisLut,
+    y_axis: &AxisLut,
+    z_axis: &AxisLut,
+    position: [f32; 3],
+    interpolate: bool,
+) -> Vec<f32> {
+    let mut gains = vec![0.0; speaker_count];
+    let table = CartesianParts {
+        gains: table,
+        speaker_count,
+        x: x_axis,
+        y: y_axis,
+        z: z_axis,
+        position_interpolation: interpolate,
+    };
+    sample_cartesian_table(table, position, &mut gains);
+    gains
 }
 
 /// Reference polar lookup over the raw `*_positions` arrays (per-call wrapped
@@ -1465,7 +1974,7 @@ pub(crate) fn sample_polar_table(
     distance_positions: &[f32],
     position: [f32; 3],
     interpolate: bool,
-) -> Gains {
+) -> Vec<f32> {
     let azimuth = sample_wrapped_axis(azimuth_positions, wrap_degrees(position[0]), interpolate);
     let elevation = sample_axis(
         elevation_positions,
@@ -1480,7 +1989,7 @@ pub(crate) fn sample_polar_table(
         position[2].clamp(0.0, *distance_positions.last().unwrap_or(&0.0)),
         interpolate,
     );
-    let mut gains = Gains::zeroed(speaker_count);
+    let mut gains = vec![0.0f32; speaker_count];
     if !interpolate {
         write_flat_sample(
             table,
@@ -1536,13 +2045,16 @@ fn write_flat_sample(
     x_index: usize,
     y_index: usize,
     z_index: usize,
-    gains: &mut Gains,
+    gains: &mut [f32],
 ) {
     let offset = flat_sample_offset(speaker_count, x_len, y_len, x_index, y_index, z_index);
     // Slice both sides up front so the copy is bounds-check-free and vectorizable.
     gains[..speaker_count].copy_from_slice(&table[offset..offset + speaker_count]);
 }
 
+/// The per-corner accumulation the one-pass blend replaced, kept as the
+/// reference the tests compare it against.
+#[cfg(test)]
 fn accumulate_flat_sample(
     table: &[f32],
     speaker_count: usize,
@@ -1552,7 +2064,7 @@ fn accumulate_flat_sample(
     y_index: usize,
     z_index: usize,
     weight: f32,
-    gains: &mut Gains,
+    gains: &mut [f32],
 ) {
     let offset = flat_sample_offset(speaker_count, x_len, y_len, x_index, y_index, z_index);
     // Slice both sides so the weighted accumulation is bounds-check-free and the
@@ -1764,7 +2276,7 @@ mod cartesian_lookup_bench {
         let reps = 300_000;
         let run = |x: &AxisLut, y: &AxisLut, z: &AxisLut| {
             for p in &positions {
-                black_box(sample_cartesian_table(&table, sc, x, y, z, *p, true));
+                black_box(cartesian_table_gains(&table, sc, x, y, z, *p, true));
             }
         };
         run(&fx, &fy, &fz); // warm up
@@ -1855,7 +2367,7 @@ mod polar_lut_tests {
                             [az, el, dist],
                             interpolate,
                         );
-                        let lut = sample_polar_table_lut(
+                        let lut = polar_table_gains(
                             &table,
                             speaker_count,
                             &az_lut,
@@ -1903,6 +2415,483 @@ mod polar_lut_tests {
                 (want - got).abs() < 1e-5,
                 "azimuth seam mismatch at {pos}: want {want} got {got}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod one_pass_blend_tests {
+    //! Bit-identity guards for the one-pass corner blend and the per-object
+    //! [`CornerCache`]: every lookup must return exactly the gains of the
+    //! per-corner accumulation it replaced — one pass over the output per
+    //! corner, a zero-weight corner skipped — which is kept here as the
+    //! reference.
+    use super::*;
+
+    /// Deterministic table value: mostly gains in `[0, 1)`, with exact zeros
+    /// (speakers a band does not feed), negative values and a few `-0.0`, so
+    /// the sign-of-zero cases of the blend are on the table too.
+    fn synth(i: usize) -> f32 {
+        let x = (i as u32).wrapping_mul(2_654_435_761);
+        match (x >> 4) % 11 {
+            0 | 1 | 2 => 0.0,
+            3 => -0.0,
+            4 => -(((x >> 8) & 0xffff) as f32 / 65535.0),
+            _ => ((x >> 8) & 0xffff) as f32 / 65535.0,
+        }
+    }
+
+    fn bits<G: std::ops::Deref<Target = [f32]>>(gains: &[G]) -> Vec<Vec<u32>> {
+        gains
+            .iter()
+            .map(|g| g.iter().map(|v| v.to_bits()).collect())
+            .collect()
+    }
+
+    /// [`bits`] of the sets of a [`BandGains`].
+    fn band_bits(gains: &BandGains) -> Vec<Vec<u32>> {
+        bits(&gains.bands().collect::<Vec<_>>())
+    }
+
+    /// The multi-band lookup as one accumulation pass per corner, into one
+    /// vector per band.
+    fn reference_sample_into(table: &MultiBandTable, position: [f32; 3], out: &mut Vec<Vec<f32>>) {
+        let interp = table.position_interpolation.load(Ordering::Relaxed);
+        let p = table.coord.to_grid(position);
+        let x = table.axes[0].sample(p[0], interp);
+        let y = table.axes[1].sample(p[1], interp);
+        let z = table.axes[2].sample(p[2], interp);
+        let x_len = table.axes[0].len();
+        let y_len = table.axes[1].len();
+        let band_stride = table.num_speakers;
+        let cell_stride = table.n_bands * table.num_speakers;
+
+        out.clear();
+        out.resize(table.n_bands, vec![0.0; table.num_speakers]);
+
+        let gains = &table.gains;
+        let mut accumulate = |ix: usize, iy: usize, iz: usize, weight: f32| {
+            let cell_base = (((iz * y_len) + iy) * x_len + ix) * cell_stride;
+            for (b, g) in out.iter_mut().enumerate() {
+                let base = cell_base + b * band_stride;
+                let src = &gains[base..base + band_stride];
+                for (d, &s) in g[..band_stride].iter_mut().zip(src) {
+                    *d += s * weight;
+                }
+            }
+        };
+
+        if !interp {
+            accumulate(x.lower, y.lower, z.lower, 1.0);
+            return;
+        }
+        for (iz, wz) in [(z.lower, 1.0 - z.fraction), (z.upper, z.fraction)] {
+            for (iy, wy) in [(y.lower, 1.0 - y.fraction), (y.upper, y.fraction)] {
+                for (ix, wx) in [(x.lower, 1.0 - x.fraction), (x.upper, x.fraction)] {
+                    let weight = wx * wy * wz;
+                    if weight <= 0.0 {
+                        continue;
+                    }
+                    accumulate(ix, iy, iz, weight);
+                }
+            }
+        }
+    }
+
+    /// The single-band trilinear read as one accumulation pass per corner.
+    fn reference_flat_sample(
+        table: &[f32],
+        speaker_count: usize,
+        x_len: usize,
+        y_len: usize,
+        [x, y, z]: [AxisSample; 3],
+        interpolate: bool,
+    ) -> Vec<f32> {
+        let mut gains = vec![0.0; speaker_count];
+        if !interpolate {
+            write_flat_sample(
+                table,
+                speaker_count,
+                x_len,
+                y_len,
+                x.lower,
+                y.lower,
+                z.lower,
+                &mut gains,
+            );
+            return gains;
+        }
+        for (iz, wz) in [(z.lower, 1.0 - z.fraction), (z.upper, z.fraction)] {
+            for (iy, wy) in [(y.lower, 1.0 - y.fraction), (y.upper, y.fraction)] {
+                for (ix, wx) in [(x.lower, 1.0 - x.fraction), (x.upper, x.fraction)] {
+                    let weight = wx * wy * wz;
+                    if weight <= 0.0 {
+                        continue;
+                    }
+                    accumulate_flat_sample(
+                        table,
+                        speaker_count,
+                        x_len,
+                        y_len,
+                        ix,
+                        iy,
+                        iz,
+                        weight,
+                        &mut gains,
+                    );
+                }
+            }
+        }
+        gains
+    }
+
+    /// Band-local speaker sets of a three-band, 14-speaker layout.
+    const BANDS: [&[usize]; 3] = [
+        &[0, 1, 2, 5, 12, 13],
+        &[0, 1, 2, 3, 5, 7, 11, 12, 13],
+        &[0, 1, 2, 3, 5, 7, 9, 10, 12, 13],
+    ];
+    const NUM_SPEAKERS: usize = 14;
+
+    fn cartesian_table(seed: usize, irregular: bool) -> MultiBandTable {
+        let xs = evenly_spaced_axis(9, -1.0, 1.0);
+        let ys = evenly_spaced_axis(7, -1.0, 1.0);
+        let zs = cartesian_z_axis(5, 2);
+        let cells = xs.len() * ys.len() * zs.len();
+        let lut = |values: &[f32]| {
+            if irregular {
+                AxisLut::Irregular(values.to_vec())
+            } else {
+                AxisLut::from_values(values)
+            }
+        };
+        let (x, y, z) = (lut(&xs), lut(&ys), lut(&zs));
+        let band_tables: Vec<Vec<f32>> = BANDS
+            .iter()
+            .enumerate()
+            .map(|(b, idx)| {
+                (0..cells * idx.len())
+                    .map(|i| synth(seed + b * 1_000_003 + i))
+                    .collect()
+            })
+            .collect();
+        let parts: Vec<(CartesianParts<'_>, &[usize])> = band_tables
+            .iter()
+            .zip(BANDS)
+            .map(|(gains, idx)| {
+                (
+                    CartesianParts {
+                        gains,
+                        speaker_count: idx.len(),
+                        x: &x,
+                        y: &y,
+                        z: &z,
+                        position_interpolation: true,
+                    },
+                    idx,
+                )
+            })
+            .collect();
+        MultiBandTable::build_cartesian(&parts, NUM_SPEAKERS).expect("cartesian table")
+    }
+
+    fn polar_table(seed: usize) -> MultiBandTable {
+        let az = polar_azimuth_axis(16);
+        let el = polar_elevation_axis(7, true);
+        let dist = evenly_spaced_axis(4, 0.0, 2.0);
+        let cells = az.len() * el.len() * dist.len();
+        let (az_lut, el_lut, dist_lut) = (
+            AzimuthLut::from_values(&az),
+            AxisLut::from_values(&el),
+            AxisLut::from_values(&dist),
+        );
+        let band_tables: Vec<Vec<f32>> = BANDS
+            .iter()
+            .enumerate()
+            .map(|(b, idx)| {
+                (0..cells * idx.len())
+                    .map(|i| synth(seed + b * 1_000_003 + i))
+                    .collect()
+            })
+            .collect();
+        let parts: Vec<(PolarParts<'_>, &[usize])> = band_tables
+            .iter()
+            .zip(BANDS)
+            .map(|(gains, idx)| {
+                (
+                    PolarParts {
+                        gains,
+                        speaker_count: idx.len(),
+                        azimuth: &az_lut,
+                        elevation: &el_lut,
+                        distance: &dist_lut,
+                        position_interpolation: true,
+                    },
+                    idx,
+                )
+            })
+            .collect();
+        MultiBandTable::build_polar(&parts, NUM_SPEAKERS).expect("polar table")
+    }
+
+    /// ADM positions that land on grid nodes (zero-weight corners), inside
+    /// cells, on the cube faces and outside the cube (clamped), in an order
+    /// that both dwells in a cell and jumps between cells.
+    fn sweep() -> Vec<[f32; 3]> {
+        let mut positions = Vec::new();
+        let steps = [
+            -1.3f32, -1.0, -0.75, -0.5, -0.31, 0.0, 0.2, 0.25, 0.5, 0.77, 1.0, 1.2,
+        ];
+        for &z in &[-1.0f32, -0.5, -0.2, 0.0, 0.25, 0.4, 1.0, 1.4] {
+            for &y in &steps {
+                for &x in &steps {
+                    positions.push([x, y, z]);
+                }
+            }
+        }
+        // A slow drift: hundreds of consecutive reads in the same cell, then
+        // the next one, as a moving object does.
+        for i in 0..4000 {
+            let t = i as f32 / 4000.0;
+            positions.push([-0.9 + 1.7 * t, 0.8 - 1.5 * t, -0.4 + 1.1 * t]);
+        }
+        // Back and forth across one cell boundary.
+        for i in 0..64 {
+            let x = if i % 2 == 0 { 0.249 } else { 0.251 };
+            positions.push([x, 0.1, 0.3]);
+        }
+        positions
+    }
+
+    fn assert_lookups_match_reference(table: &MultiBandTable, label: &str) {
+        let mut reference = Vec::new();
+        let mut direct = BandGains::new();
+        let mut cached = BandGains::new();
+        let mut cache = CornerCache::default();
+        for interpolate in [true, false, true] {
+            table.set_position_interpolation(interpolate);
+            for position in sweep() {
+                reference_sample_into(table, position, &mut reference);
+                table.sample_into(position, &mut direct);
+                table.sample_cached(&mut cache, position, &mut cached);
+                assert_eq!(
+                    band_bits(&direct),
+                    bits(&reference),
+                    "{label}: direct lookup at {position:?} (interpolate={interpolate})"
+                );
+                assert_eq!(
+                    band_bits(&cached),
+                    bits(&reference),
+                    "{label}: cached lookup at {position:?} (interpolate={interpolate})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multi_band_cartesian_lookup_is_bit_identical_to_per_corner_accumulation() {
+        assert_lookups_match_reference(&cartesian_table(1, false), "cartesian");
+    }
+
+    /// Irregular axes bracket a position at or below the first node with
+    /// `lower == upper`: the degenerate cells the cache key has to tell apart.
+    #[test]
+    fn multi_band_irregular_axes_lookup_is_bit_identical() {
+        assert_lookups_match_reference(&cartesian_table(2, true), "irregular");
+    }
+
+    #[test]
+    fn multi_band_polar_lookup_is_bit_identical_to_per_corner_accumulation() {
+        assert_lookups_match_reference(&polar_table(3), "polar");
+    }
+
+    /// One cache read against several tables in turn — same grid and other
+    /// values, another coordinate space, another shape — must never hand back
+    /// the rows of the table it was last filled from.
+    #[test]
+    fn corner_cache_never_serves_another_table() {
+        let tables = [
+            cartesian_table(10, false),
+            cartesian_table(11, false),
+            polar_table(12),
+            cartesian_table(10, true),
+        ];
+        let position = [0.3, -0.2, 0.4];
+        let mut cache = CornerCache::default();
+        let mut reference = Vec::new();
+        let mut cached = BandGains::new();
+        for round in 0..3 {
+            for (t, table) in tables.iter().enumerate() {
+                reference_sample_into(table, position, &mut reference);
+                table.sample_cached(&mut cache, position, &mut cached);
+                assert_eq!(
+                    band_bits(&cached),
+                    bits(&reference),
+                    "round {round}, table {t}: cache served a stale cell"
+                );
+            }
+        }
+        // The same grid with a different band count and width.
+        let xs = AxisLut::from_values(&evenly_spaced_axis(9, -1.0, 1.0));
+        let ys = AxisLut::from_values(&evenly_spaced_axis(7, -1.0, 1.0));
+        let zs = AxisLut::from_values(&cartesian_z_axis(5, 2));
+        let cells = xs.len() * ys.len() * zs.len();
+        let narrow: Vec<f32> = (0..cells * 3).map(|i| synth(77 + i)).collect();
+        let part = CartesianParts {
+            gains: &narrow,
+            speaker_count: 3,
+            x: &xs,
+            y: &ys,
+            z: &zs,
+            position_interpolation: true,
+        };
+        let indices: [&[usize]; 2] = [&[0, 1, 2], &[2, 3, 4]];
+        let small =
+            MultiBandTable::build_cartesian(&[(part, indices[0]), (part, indices[1])], 5).unwrap();
+        reference_sample_into(&small, position, &mut reference);
+        small.sample_cached(&mut cache, position, &mut cached);
+        assert_eq!(band_bits(&cached), bits(&reference), "narrower table");
+        assert_eq!((cached.n_bands(), cached.num_speakers()), (2, 5));
+
+        // An emptied cache refills.
+        cache.invalidate();
+        tables[0].sample_cached(&mut cache, position, &mut cached);
+        reference_sample_into(&tables[0], position, &mut reference);
+        assert_eq!(band_bits(&cached), bits(&reference), "after invalidate");
+    }
+
+    #[test]
+    fn single_band_cartesian_lookup_is_bit_identical_to_per_corner_accumulation() {
+        let xs = evenly_spaced_axis(9, -1.0, 1.0);
+        let ys = evenly_spaced_axis(7, -1.0, 1.0);
+        let zs = cartesian_z_axis(5, 2);
+        let speaker_count = 11;
+        let table: Vec<f32> = (0..xs.len() * ys.len() * zs.len() * speaker_count)
+            .map(|i| synth(500 + i))
+            .collect();
+        for irregular in [false, true] {
+            let lut = |values: &[f32]| {
+                if irregular {
+                    AxisLut::Irregular(values.to_vec())
+                } else {
+                    AxisLut::from_values(values)
+                }
+            };
+            let (x, y, z) = (lut(&xs), lut(&ys), lut(&zs));
+            for interpolate in [true, false] {
+                for position in sweep() {
+                    let got = cartesian_table_gains(
+                        &table,
+                        speaker_count,
+                        &x,
+                        &y,
+                        &z,
+                        position,
+                        interpolate,
+                    );
+                    let brackets = [
+                        x.sample(position[0].clamp(-1.0, 1.0), interpolate),
+                        y.sample(position[1].clamp(-1.0, 1.0), interpolate),
+                        z.sample(position[2].clamp(-1.0, 1.0), interpolate),
+                    ];
+                    let want = reference_flat_sample(
+                        &table,
+                        speaker_count,
+                        x.len(),
+                        y.len(),
+                        brackets,
+                        interpolate,
+                    );
+                    assert_eq!(
+                        bits(&[got]),
+                        bits(&[want]),
+                        "cartesian at {position:?} (interpolate={interpolate}, irregular={irregular})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn single_band_polar_lookup_is_bit_identical_to_per_corner_accumulation() {
+        let az = polar_azimuth_axis(16);
+        let el = polar_elevation_axis(7, true);
+        let dist = evenly_spaced_axis(4, 0.0, 2.0);
+        let speaker_count = 11;
+        let table: Vec<f32> = (0..az.len() * el.len() * dist.len() * speaker_count)
+            .map(|i| synth(900 + i))
+            .collect();
+        let (az_lut, el_lut, dist_lut) = (
+            AzimuthLut::from_values(&az),
+            AxisLut::from_values(&el),
+            AxisLut::from_values(&dist),
+        );
+        for interpolate in [true, false] {
+            for position in sweep() {
+                let (a, e, d) = adm_to_spherical(position[0], position[1], position[2]);
+                let got = polar_table_gains(
+                    &table,
+                    speaker_count,
+                    &az_lut,
+                    &el_lut,
+                    &dist_lut,
+                    [a, e, d],
+                    interpolate,
+                );
+                let brackets = [
+                    az_lut.sample(a, interpolate),
+                    el_lut.sample(e, interpolate),
+                    dist_lut.sample(d, interpolate),
+                ];
+                let want = reference_flat_sample(
+                    &table,
+                    speaker_count,
+                    az_lut.len(),
+                    el_lut.len(),
+                    brackets,
+                    interpolate,
+                );
+                assert_eq!(
+                    bits(&[got]),
+                    bits(&[want]),
+                    "polar at {position:?} (interpolate={interpolate})"
+                );
+            }
+        }
+    }
+
+    /// The premise the blend rests on, checked rather than assumed: adding a
+    /// zero-weight corner leaves a running sum that started at `+0.0` with the
+    /// bits it had, whatever the sign of the table value or of the sum.
+    #[test]
+    fn a_zero_weight_corner_adds_nothing() {
+        let sums = [
+            0.0f32,
+            1.0e-30,
+            -1.0e-30,
+            0.37,
+            -0.37,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+        ];
+        let values = [
+            0.0f32,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0e-38,
+            -1.0e-38,
+            f32::MAX,
+            f32::MIN,
+        ];
+        for &sum in &sums {
+            for &value in &values {
+                assert_eq!(
+                    (sum + value * 0.0).to_bits(),
+                    sum.to_bits(),
+                    "{sum:e} + {value:e} * 0"
+                );
+            }
         }
     }
 }
@@ -1978,7 +2967,7 @@ mod size_interval_tests {
             .expect("engine builds")
     }
 
-    fn assert_close(a: &Gains, b: &Gains, eps: f32) {
+    fn assert_close(a: &[f32], b: &[f32], eps: f32) {
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(b.iter()) {
             assert!((x - y).abs() < eps, "{x} vs {y}");
@@ -1999,8 +2988,8 @@ mod size_interval_tests {
             ([-0.6, 0.2, -1.0], [-0.6, 0.2, 0.0]),
             ([0.0, 0.0, -1.0], [0.0, 0.0, 0.0]),
         ] {
-            let below_gains = table.compute_gains(&request(below, [0.0; 3])).gains;
-            let plane_gains = table.compute_gains(&request(at_plane, [0.0; 3])).gains;
+            let below_gains = table.gains_at(&request(below, [0.0; 3]));
+            let plane_gains = table.gains_at(&request(at_plane, [0.0; 3]));
             for g in below_gains.iter() {
                 assert!(g.is_finite(), "non-finite gain for {below:?}");
             }
@@ -2008,9 +2997,7 @@ mod size_interval_tests {
         }
 
         let realtime = engine(EffectiveEvaluationMode::Realtime, 0, [0.0; 3]);
-        let gains = realtime
-            .compute_gains(&request([0.3, 0.1, -0.4], [0.0; 3]))
-            .gains;
+        let gains = realtime.gains_at(&request([0.3, 0.1, -0.4], [0.0; 3]));
         let energy: f32 = gains.iter().map(|g| g * g).sum::<f32>().sqrt();
         for g in gains.iter() {
             assert!(g.is_finite(), "non-finite realtime gain below the horizon");
@@ -2029,18 +3016,10 @@ mod size_interval_tests {
         let small = engine(mode, 0, [0.0; 3]);
         let large = engine(mode, 0, [1.0; 3]);
 
-        let at_small = intervals.compute_gains(&request(pos, [0.0; 3])).gains;
-        let at_large = intervals.compute_gains(&request(pos, [1.0; 3])).gains;
-        assert_close(
-            &at_small,
-            &small.compute_gains(&request(pos, [0.0; 3])).gains,
-            1e-6,
-        );
-        assert_close(
-            &at_large,
-            &large.compute_gains(&request(pos, [1.0; 3])).gains,
-            1e-6,
-        );
+        let at_small = intervals.gains_at(&request(pos, [0.0; 3]));
+        let at_large = intervals.gains_at(&request(pos, [1.0; 3]));
+        assert_close(&at_small, &small.gains_at(&request(pos, [0.0; 3])), 1e-6);
+        assert_close(&at_large, &large.gains_at(&request(pos, [1.0; 3])), 1e-6);
 
         let max_diff = at_small
             .iter()
@@ -2069,9 +3048,9 @@ mod size_interval_tests {
         let small = engine(EffectiveEvaluationMode::PrecomputedCartesian, 0, [0.0; 3]);
         let large = engine(EffectiveEvaluationMode::PrecomputedCartesian, 0, [1.0; 3]);
 
-        let mid = intervals.compute_gains(&request(pos, [0.5; 3])).gains;
-        let s = small.compute_gains(&request(pos, [0.0; 3])).gains;
-        let l = large.compute_gains(&request(pos, [1.0; 3])).gains;
+        let mid = intervals.gains_at(&request(pos, [0.5; 3]));
+        let s = small.gains_at(&request(pos, [0.0; 3]));
+        let l = large.gains_at(&request(pos, [1.0; 3]));
         for i in 0..mid.len() {
             let expected = 0.5 * s[i] + 0.5 * l[i];
             assert!(
@@ -2088,8 +3067,60 @@ mod size_interval_tests {
     fn intervals_zero_freezes_object_size() {
         let pos = [0.3, 0.1, 0.2];
         let engine = engine(EffectiveEvaluationMode::PrecomputedCartesian, 0, [0.0; 3]);
-        let g0 = engine.compute_gains(&request(pos, [0.0; 3])).gains;
-        let g1 = engine.compute_gains(&request(pos, [1.0; 3])).gains;
+        let g0 = engine.gains_at(&request(pos, [0.0; 3]));
+        let g1 = engine.gains_at(&request(pos, [1.0; 3]));
         assert_close(&g0, &g1, 1e-9);
+    }
+
+    /// The table budget: the default grid fits with room to spare, a grid size
+    /// typed by hand is refused before anything is allocated, and the object
+    /// size steps multiply the tables they need.
+    #[test]
+    fn an_oversized_grid_is_refused_before_it_is_allocated() {
+        let model: Arc<dyn GainModel> = Arc::from(make_model());
+        // Every table counts: a grid that fits once is refused four times over.
+        let cells = [128, 128, 128];
+        let one = 128 * 128 * 128 * 12 * 4;
+        assert!(one < MAX_EVALUATION_TABLE_BYTES && 4 * one > MAX_EVALUATION_TABLE_BYTES);
+        check_table_budget("cartesian", &cells, 12, 1).expect("one band fits");
+        assert!(
+            check_table_budget("cartesian", &cells, 12, 4).is_err(),
+            "four do not"
+        );
+        // The default grid on 24 speakers, eight size steps: well inside.
+        check_table_budget("cartesian", &[62, 62, 30], 24, 9).expect("the default grid fits");
+
+        let mut huge = config(0, [0.0; 3]);
+        huge.cartesian.x_size = 1_000_000_000;
+        let err = PrecomputedCartesianStrategy
+            .prepare(Arc::clone(&model), &huge)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("budget") && err.contains("cartesian"), "{err}");
+
+        let mut huge = config(0, [0.0; 3]);
+        huge.polar.distance_values = usize::MAX;
+        let err = PrecomputedPolarStrategy
+            .prepare(Arc::clone(&model), &huge)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(
+            err.contains("address space"),
+            "a size that overflows: {err}"
+        );
+
+        // A grid that fits as one table, not as a million size steps.
+        let steps = config(1_000_000, [0.0; 3]);
+        assert!(
+            PrecomputedCartesianStrategy
+                .prepare(Arc::clone(&model), &steps)
+                .is_err()
+        );
+        // And the grids of this module's tests still build.
+        PrecomputedCartesianStrategy
+            .prepare(Arc::clone(&model), &config(4, [0.0; 3]))
+            .expect("a small grid");
     }
 }

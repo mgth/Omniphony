@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Omniphony Studio (native)
+Name=Omniphony Studio
 Comment=Control and 3D visualization UI for the orender spatial audio engine
 Exec=omniphony-studio-egui
 Icon=omniphony-studio-egui

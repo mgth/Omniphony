@@ -1,0 +1,18 @@
+[package]
+name = "omniphony_geometry"
+# The release version, spelled out rather than inherited (see below);
+# `scripts/release_version.py set` moves it with the workspace's.
+version = "0.7.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Canonical coordinate, angle and room-geometry math shared by the Omniphony renderer and Studio"
+repository = "https://github.com/mgth/Omniphony"
+rust-version = "1.88"
+
+# Deliberately dependency-free.
+#
+# This crate is consumed from OUTSIDE the renderer workspace (the Studio,
+# `omniphony-studio-egui/`, which is its own cargo workspace). Anything pulled
+# in here lands in the Studio build too, so the renderer's DSP dependencies
+# (realfft, rayon, sys) must never reach this crate. Keep it std-only.
+[dependencies]

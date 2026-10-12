@@ -14,74 +14,122 @@ use crate::live_params::{
 };
 use crate::render_backend::{
     DegenerateVbapBackend, EffectiveEvaluationMode, GainModel, RenderRequest, VbapBackend,
-    build_prepared_render_engine,
+    build_decorated_model, wrap_unsampled_engine,
 };
 use crate::spatial_vbap::{DistanceModel, VbapPanner, VbapTableMode};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use std::sync::Arc;
 
+/// Everything [`SpatialRenderer::new`] builds a renderer from. Named fields
+/// rather than positional arguments: most are `f32` or `bool`, so a swapped
+/// pair would compile.
+///
+/// The values a host takes from the config are the resolved ones (the
+/// config's value or its declared default); the constructor declares no
+/// default of its own.
+pub struct RendererSpec {
+    pub speaker_layout: SpeakerLayout,
+    /// Sample rate in Hz (ramp timing, crossover design).
+    pub sample_rate: u32,
+    /// Azimuth step of the backend's direction grid and of the polar table,
+    /// in degrees.
+    pub az_res_deg: i32,
+    /// Elevation step, in degrees.
+    pub el_res_deg: i32,
+    /// Distance step of the polar table (`distance_max` / the distance cell
+    /// count); `0.0` falls back to 0.25.
+    pub spread_resolution: f32,
+    /// Farthest distance the polar table covers.
+    pub distance_max: f32,
+    /// The precomputed table the topology is first evaluated with.
+    pub table_mode: VbapTableMode,
+    /// Whether directions below the listener are rendered (the elevation grid
+    /// then spans 180° instead of 90°).
+    pub allow_negative_z: bool,
+    /// Interpolate between neighbouring table cells instead of taking the
+    /// nearest one.
+    pub vbap_position_interpolation: bool,
+    pub distance_model: DistanceModel,
+    /// Derive an object's spread from its distance instead of its metadata.
+    pub spread_from_distance: bool,
+    /// Distance at which the distance-derived spread reaches 0.
+    pub spread_distance_range: f32,
+    /// Curve exponent of the distance-derived spread.
+    pub spread_distance_curve: f32,
+    pub spread_min: f32,
+    pub spread_max: f32,
+    /// Log every object's position (debug).
+    pub log_object_positions: bool,
+    /// Room proportions `[width, length, height]` ADM positions are scaled by.
+    pub room_ratio: [f32; 3],
+    /// Depth ratio behind the listener.
+    pub room_ratio_rear: f32,
+    /// Height ratio below the listener.
+    pub room_ratio_lower: f32,
+    pub room_ratio_center_blend: f32,
+    /// Master gain, in dB (the live param is linear).
+    pub master_gain_db: f32,
+    pub auto_gain: bool,
+    /// Apply the stream's loudness metadata.
+    pub use_loudness: bool,
+    /// Distance-based antipodal diffuse blending.
+    pub distance_diffuse: bool,
+    /// Distance at which the diffuse blend reaches 100 % direct.
+    pub distance_diffuse_threshold: f32,
+    /// Curve exponent of the diffuse blend.
+    pub distance_diffuse_curve: f32,
+    /// The evaluation mode the bridge prefers (what `auto` resolves to).
+    pub preferred_evaluation_mode: PreferredEvaluationMode,
+    /// The live evaluation selection the renderer starts with.
+    pub initial_evaluation_mode: LiveEvaluationMode,
+    /// Cartesian table size per axis (each floored at 1, `z_neg` at 0).
+    pub cartesian_default_x_size: usize,
+    pub cartesian_default_y_size: usize,
+    pub cartesian_default_z_size: usize,
+    pub cartesian_default_z_neg_size: usize,
+}
+
 impl SpatialRenderer {
-    /// Create a new spatial renderer
-    ///
-    /// # Arguments
-    ///
-    /// * `speaker_layout` - Speaker configuration
-    /// * `sample_rate` - Sample rate in Hz (for ramp timing)
-    /// * `az_res_deg` - Azimuth resolution in degrees (1-10)
-    /// * `el_res_deg` - Elevation resolution in degrees (1-10)
-    /// * `spread_resolution` - Spread table resolution (0.0 = single table with spread=0, >0 = dynamic spread)
-    /// * `distance_model` - Distance attenuation model
-    /// * `spread_from_distance` - Calculate spread from distance instead of object spread metadata
-    /// * `spread_distance_range` - Distance at which spread reaches 0.0
-    /// * `spread_distance_curve` - Curve exponent for distance-based spread
-    /// * `spread_min` - Minimum effective spread
-    /// * `spread_max` - Maximum effective spread
-    /// * `log_object_positions` - Enable detailed logging of object positions
-    /// * `room_ratio` - Room proportions [width, length, height] for scaling ADM coordinates
-    /// * `master_gain_db` - Master gain in dB (applied to final output)
-    /// * `auto_gain` - Enable automatic gain reduction to prevent clipping
-    /// * `use_loudness` - Apply loudness metadata correction gain from stream metadata
-    /// * `distance_diffuse` - Enable distance-based antipodal diffuse blending
-    /// * `distance_diffuse_threshold` - ADM distance at which blend reaches 100% direct
-    /// * `distance_diffuse_curve` - Curve exponent for the blend weight
-    ///
-    /// **Note:** This method requires the `saf_vbap` feature to generate VBAP tables.
-    /// Without saf_vbap, use `from_vbap_file()` to load pre-generated tables.
-    pub fn new(
-        speaker_layout: SpeakerLayout,
-        sample_rate: u32,
-        az_res_deg: i32,
-        el_res_deg: i32,
-        spread_resolution: f32,
-        distance_max: f32,
-        table_mode: VbapTableMode,
-        allow_negative_z: bool,
-        vbap_position_interpolation: bool,
-        distance_model: DistanceModel,
-        spread_from_distance: bool,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-        spread_min: f32,
-        spread_max: f32,
-        log_object_positions: bool,
-        room_ratio: [f32; 3],
-        room_ratio_rear: f32,
-        room_ratio_lower: f32,
-        room_ratio_center_blend: f32,
-        master_gain_db: f32,
-        auto_gain: bool,
-        use_loudness: bool,
-        distance_diffuse: bool,
-        distance_diffuse_threshold: f32,
-        distance_diffuse_curve: f32,
-        preferred_evaluation_mode: PreferredEvaluationMode,
-        initial_evaluation_mode: LiveEvaluationMode,
-        cartesian_default_x_size: usize,
-        cartesian_default_y_size: usize,
-        cartesian_default_z_size: usize,
-        cartesian_default_z_neg_size: usize,
-    ) -> Result<Self> {
+    /// Create a spatial renderer: a VBAP backend triangulated over the
+    /// layout's spatializable speakers (or, when the geometry cannot be
+    /// triangulated, the directional fallback), wrapped in the evaluation
+    /// layer [`RendererSpec`] describes, and the live params it starts with.
+    pub fn new(spec: RendererSpec) -> Result<Self> {
+        let RendererSpec {
+            speaker_layout,
+            sample_rate,
+            az_res_deg,
+            el_res_deg,
+            spread_resolution,
+            distance_max,
+            table_mode,
+            allow_negative_z,
+            vbap_position_interpolation,
+            distance_model,
+            spread_from_distance,
+            spread_distance_range,
+            spread_distance_curve,
+            spread_min,
+            spread_max,
+            log_object_positions,
+            room_ratio,
+            room_ratio_rear,
+            room_ratio_lower,
+            room_ratio_center_blend,
+            master_gain_db,
+            auto_gain,
+            use_loudness,
+            distance_diffuse,
+            distance_diffuse_threshold,
+            distance_diffuse_curve,
+            preferred_evaluation_mode,
+            initial_evaluation_mode,
+            cartesian_default_x_size,
+            cartesian_default_y_size,
+            cartesian_default_z_size,
+            cartesian_default_z_neg_size,
+        } = spec;
         let num_speakers = speaker_layout.num_speakers();
         let spatializable_positions = speaker_layout
             .spatializable_positions_for_room(
@@ -104,96 +152,136 @@ impl SpatialRenderer {
         // loudly rather than failing the whole engine (which would leave the host
         // with no audio at all). The warning surfaces on stderr and in Studio's log
         // panel.
-        let (model, vbap_triangles): (Box<dyn GainModel>, usize) = match VbapPanner::new(
-            &spatializable_positions,
-            az_res_deg,
-            el_res_deg,
-            0.0,
-            Default::default(),
-        ) {
-            Ok(panner) => {
-                let panner = panner.with_negative_z(allow_negative_z);
-                let triangles = panner.num_triangles();
-                (
-                    Box::new(VbapBackend::new(
-                        panner,
-                        crate::render_backend::VbapSpreadParams {
-                            spread_min,
-                            spread_max,
-                            spread_from_distance,
-                            spread_distance_range,
-                            spread_distance_curve,
-                            size_to_spread_mode: Default::default(),
-                        },
-                    )),
-                    triangles,
-                )
-            }
-            Err(e) => {
-                let names: Vec<&str> = speaker_layout
-                    .speakers
-                    .iter()
-                    .filter(|s| s.spatialize)
-                    .map(|s| s.name.as_str())
-                    .collect();
-                log::warn!(
-                    "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
+        let (model, vbap_triangles, vbap_centres): (Box<dyn GainModel>, usize, usize) =
+            match VbapPanner::new(
+                &spatializable_positions,
+                az_res_deg,
+                el_res_deg,
+                0.0,
+                Default::default(),
+            ) {
+                Ok(panner) => {
+                    let panner = panner.with_negative_z(allow_negative_z);
+                    let triangles = panner.num_triangles();
+                    let centres = panner.num_virtual_centres();
+                    (
+                        Box::new(VbapBackend::new(
+                            panner,
+                            crate::render_backend::VbapSpreadParams {
+                                spread_min,
+                                spread_max,
+                                spread_from_distance,
+                                spread_distance_range,
+                                spread_distance_curve,
+                                size_to_spread_mode: Default::default(),
+                            },
+                        )),
+                        triangles,
+                        centres,
+                    )
+                }
+                Err(e) => {
+                    let names: Vec<&str> = speaker_layout
+                        .speakers
+                        .iter()
+                        .filter(|s| s.spatialize)
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    log::warn!(
+                        "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
                          Falling back to degenerate directional pan (no triangulation) — audio \
                          continues, but this layout cannot use full VBAP. Check the speaker \
                          geometry (collinear/coplanar speakers, or one placed at the listener).",
-                    num_vbap_speakers,
-                    names,
-                    e
-                );
-                (
-                    Box::new(DegenerateVbapBackend::with_omni(
-                        spatializable_positions.clone(),
-                        crate::backend_registry::collect_omni_mask(&speaker_layout),
-                    )),
-                    0,
-                )
-            }
+                        num_vbap_speakers,
+                        names,
+                        e
+                    );
+                    (
+                        Box::new(DegenerateVbapBackend::with_omni(
+                            spatializable_positions.clone(),
+                            crate::backend_registry::collect_omni_mask(&speaker_layout),
+                        )),
+                        0,
+                        0,
+                    )
+                }
+            };
+        // The published topology's engine samples no table: the speaker
+        // stage's band engines do, on the first frame (see
+        // `wrap_unsampled_engine`).
+        let room = crate::live_params::RoomRatios {
+            ratio: room_ratio,
+            rear: room_ratio_rear,
+            lower: room_ratio_lower,
+            center_blend: room_ratio_center_blend,
         };
         let topology = RenderTopology::new(
-            Arc::new(build_prepared_render_engine(
-                model,
+            Arc::new(wrap_unsampled_engine(
+                build_decorated_model(
+                    model,
+                    &evaluation_build_config(
+                        RenderRequest {
+                            adm_position: [0.0, 0.0, 0.0],
+                            event_size: [0.0, 0.0, 0.0],
+                            room_ratio,
+                            room_ratio_rear,
+                            room_ratio_lower,
+                            room_ratio_center_blend,
+                            use_distance_diffuse: distance_diffuse,
+                            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+                            distance_diffuse_threshold,
+                            distance_diffuse_curve,
+                            distance_model,
+                        },
+                        vbap_position_interpolation,
+                        table_mode,
+                        az_res_deg,
+                        el_res_deg,
+                        distance_step,
+                        distance_max,
+                        allow_negative_z,
+                    ),
+                ),
                 match table_mode {
                     VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
                     VbapTableMode::Cartesian { .. } => {
                         EffectiveEvaluationMode::PrecomputedCartesian
                     }
                 },
-                &evaluation_build_config(
-                    RenderRequest {
-                        adm_position: [0.0, 0.0, 0.0],
-                        event_size: [0.0, 0.0, 0.0],
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                        use_distance_diffuse: distance_diffuse,
-                        diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        distance_model,
-                    },
-                    vbap_position_interpolation,
-                    table_mode,
-                    az_res_deg,
-                    el_res_deg,
-                    distance_step,
-                    distance_max,
-                    allow_negative_z,
-                ),
-            )?),
+            )),
             speaker_layout,
-        )?;
+        )?
+        // The initial live backend (`backend_id: "vbap"` below) at generation 0,
+        // so an evaluation-only rebuild can re-wrap this model.
+        .with_model_origin(0, "vbap")
+        // The room the speakers were placed in above, which the objects
+        // pan in.
+        .with_room(room)
+        // The grid the live params below describe, so a grid request can
+        // take this topology back as it is (`crate::evaluation_grid`).
+        .with_grid(
+            Some(crate::evaluation_grid::EvaluationGrid {
+                mode: match table_mode {
+                    VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
+                    VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
+                },
+                cartesian: CartesianEvaluationParams {
+                    x_size: cartesian_default_x_size.max(1),
+                    y_size: cartesian_default_y_size.max(1),
+                    z_size: cartesian_default_z_size.max(1),
+                    z_neg_size: cartesian_default_z_neg_size,
+                },
+                allow_negative_z,
+            }),
+            0,
+        );
 
         log::info!(
-            "Created spatial renderer: {} total speakers, {} spatializable, {} triangles, spread_res={}, table_mode={:?}, distance_model={}",
+            "Created spatial renderer: {} total speakers, {} spatializable, {} triangles ({} virtual face centres), spread_res={}, table_mode={:?}, distance_model={}",
             num_speakers,
             num_vbap_speakers,
             vbap_triangles,
+            vbap_centres,
             spread_resolution,
             table_mode,
             distance_model
@@ -225,7 +313,10 @@ impl SpatialRenderer {
             spread_from_distance,
             spread_distance_range,
             spread_distance_curve,
-            RampMode::Sample,
+            // The declared default. Every host seeds the mode before
+            // rendering, so this only decides what a bare construction
+            // (tests, fixtures) starts with.
+            crate::options::defaults::ramp_mode,
             use_loudness,
             distance_model,
             room_ratio,
@@ -269,21 +360,8 @@ impl SpatialRenderer {
         )?)
     }
 
-    /// Create a new spatial renderer from a pre-loaded VBAP evaluation file
-    ///
-    /// This uses a serialized evaluation table directly, without constructing a VBAP backend.
-    /// The loaded file becomes the active evaluator, which preserves the original lookup data
-    /// and keeps the file-loading path independent from backend implementations.
-    ///
-    /// # Arguments
-    ///
-    /// * `loaded_file` - Pre-loaded VBAP evaluation file
-    /// * `speaker_layout` - Speaker configuration (must match the VBAP table)
-    /// * `sample_rate` - Sample rate in Hz (for ramp timing)
     /// Build `LiveParams` from common constructor arguments and emit the shared log lines.
     ///
-    /// Called by both `new` and `from_vbap` after each constructor has logged its own
-    /// format-specific header (VBAP table size, triangle count, …).
     #[allow(clippy::too_many_arguments)]
     fn build_live_params_and_log(
         speaker_layout: &SpeakerLayout,
@@ -348,7 +426,7 @@ impl SpatialRenderer {
                 "disabled (nearest-cell lookup)"
             }
         );
-        let master_gain = 10.0_f32.powf(master_gain_db / 20.0);
+        let master_gain = crate::dsp::db::db_to_linear(master_gain_db);
         log::info!(
             "Master gain: {:.1} dB (linear: {:.4}), auto-gain: {}",
             master_gain_db,
@@ -368,6 +446,14 @@ impl SpatialRenderer {
             object_test_clip: None,
             object_test_rotation: Default::default(),
             speaker_test_idle_feed_gen: 0,
+            // The declared options at their declared defaults, but for the
+            // two the spec carries; the hosts seed the rest from the config.
+            options: crate::options::DeclaredOptions {
+                auto_gain,
+                use_loudness,
+                ramp_mode,
+                ..Default::default()
+            },
             objects: std::collections::HashMap::new(),
             spread_min,
             spread_max,
@@ -375,7 +461,6 @@ impl SpatialRenderer {
             spread_distance_range,
             spread_distance_curve,
             size_to_spread_mode: Default::default(),
-            ramp_mode,
             backend_id: "vbap".to_string(),
             evaluation: EvaluationLiveParams {
                 mode: initial_evaluation_mode,
@@ -395,10 +480,14 @@ impl SpatialRenderer {
                     distance_max: distance_max.max(0.01),
                 },
                 object_size_intervals: 0,
+                allow_negative_z,
+                // The declared default. A host's build says where the grid
+                // comes from, and gives the bridge's hint
+                // (`orender_engine::renderer_build`).
+                source: Default::default(),
+                bridge_hint: None,
+                bridge_index: None,
             },
-            use_loudness,
-            auto_gain,
-            auto_gain_ceiling_db: crate::config_fields::auto_gain_ceiling_db::DEFAULT,
             distance_model,
             distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),
             distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
@@ -412,8 +501,6 @@ impl SpatialRenderer {
             distance_diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
             distance_diffuse_threshold,
             distance_diffuse_curve,
-            drc_mode: "Off".to_string(),
-            drc_weight: 1.0,
             hybrid: crate::live_params::HybridLiveParams::default(),
             binaural: crate::live_params::BinauralLiveParams::default(),
             // Seeded to the default (Spatial); the CLI bootstrap and the
@@ -421,39 +508,17 @@ impl SpatialRenderer {
             // Internal host/CLI override; persistent user config is normalized
             // to the spatial policy by the option/config migration layer.
             channel_render_mode: crate::live_params::ChannelRenderMode::default(),
-            // Seeded to the default (Side); the CLI bootstrap and the embedded
-            // mpv host override it from `render.surround_placement`.
-            surround_placement: crate::live_params::SurroundPlacement::default(),
-            // Seeded to the default (ByIndex); the CLI bootstrap and the embedded
-            // mpv host override it from `render.output_channel_mapping`.
-            output_channel_mapping: crate::live_params::OutputChannelMapping::default(),
-            // Seeded to the default (Lr4); the CLI bootstrap and the embedded
-            // mpv host override it from `render.crossover_type`.
-            crossover_type: crate::live_params::CrossoverType::default(),
-            crossover_fir_transition_ratio:
-                crate::config_fields::crossover_fir_transition_ratio::DEFAULT,
             // Seeded from `render.placement` by the same bootstrap; the
             // default is every family at its built-in mode with no entries
             // (LFE direct, the rest virtualized at the catalogue pose).
             placement: crate::placement::PlacementState::default(),
-            // Off by default; selects the bed→height object generator (2D upmix)
-            // for channel content. Empty / "none" = disabled.
-            object_generator_id: String::new(),
-            // Empty = each generator uses its declared param defaults.
-            object_generator_params: std::collections::HashMap::new(),
-            // Renderer-synthesized objects and phantom extraction are both off
-            // by default; their selections remain independent so the master can
-            // temporarily bypass processing without losing setup.
-            synthetic_objects_enabled: false,
-            phantom_extract_mode: crate::live_params::PhantomExtractMode::Off,
-            phantom_params: std::collections::HashMap::new(),
         }
     }
 
     /// Assemble the `SpatialRenderer` struct from fully resolved components.
     ///
-    /// Called by both `new` and `from_vbap` after each constructor has built its
-    /// VBAP panner and `RendererControl`.
+    /// Called by `new` once it has built its VBAP panner and
+    /// `RendererControl`.
     #[allow(clippy::too_many_arguments)]
     fn finish_construction(
         num_speakers: usize,
@@ -463,15 +528,15 @@ impl SpatialRenderer {
         log_object_positions: bool,
         control: Arc<RendererControl>,
     ) -> Result<Self> {
-        let active_topology = control.active_topology();
-        let topology_identity = std::sync::Arc::as_ptr(&active_topology) as usize;
-        let speaker_stage = super::SpeakerRenderStage::new(
+        // Band engines are built by the first frame (or an explicit
+        // `prepare_speaker_stage`), after the host's config seed: see
+        // `SpeakerRenderStage::unbuilt`.
+        let speaker_stage = super::SpeakerRenderStage::unbuilt(
             &control,
-            &active_topology.speaker_layout,
-            topology_identity,
+            &control.active_topology().speaker_layout,
             num_speakers,
             sample_rate,
-        )?;
+        );
 
         // Read before the struct literal: the guard's temporary would otherwise
         // outlive the borrow and block moving `control` into the struct below.
@@ -483,30 +548,19 @@ impl SpatialRenderer {
             .store(sample_rate, std::sync::atomic::Ordering::Relaxed);
 
         let initial_output_mode = control.live.read().binaural.output_mode;
+        // A BRIR set's layout must fit the stage's width (`brir_layout`).
+        control.set_speaker_stage_width(num_speakers);
 
-        // The binaural stage reports each HRIR build to the control, where
-        // the state snapshot picks it up; the bump gets it broadcast.
-        let binaural = {
-            let status_control = std::sync::Arc::clone(&control);
-            crate::binaural::BinauralRenderer::with_status_sink(
-                sample_rate,
-                std::sync::Arc::new(move |status| {
-                    status_control
-                        .binaural_hrir_status
-                        .store(std::sync::Arc::new(status));
-                    status_control.bump_live_state();
-                }),
-            )
-        };
+        let binaural = Self::build_binaural_stage(&control, sample_rate);
+        let brir = Self::build_brir_stage(&control, sample_rate);
+        let layout_follower = super::layout_follower::LayoutFollower::spawn(Arc::clone(&control));
 
         Ok(Self {
             num_speakers,
             active_output_mode: initial_output_mode,
             mode_fade: None,
             has_rendered_frame: false,
-            // 5 ms: long enough to bury the step between two DSP chains, short
-            // enough that the switch still feels immediate.
-            mode_fade_samples: ((sample_rate as f32) * 0.005).round().max(1.0) as usize,
+            mode_fade_samples: mode_fade_samples(sample_rate),
             spread_resolution,
             channel_routing: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
             first_render: std::sync::atomic::AtomicBool::new(true),
@@ -522,6 +576,7 @@ impl SpatialRenderer {
             auto_gain_triggered: std::sync::atomic::AtomicBool::new(false),
             control,
             speaker_stage,
+            speaker_stage_builds: 0,
             object_params_buf: Vec::new(),
             speaker_params_buf: vec![
                 crate::live_params::SpeakerLiveParams::default();
@@ -531,6 +586,9 @@ impl SpatialRenderer {
             speaker_params_generation_seen: 0,
             ramp_strategy_override: None,
             binaural,
+            brir,
+            layout_follower,
+            synchronous_stage_builds: false,
             cascade: None,
             last_mix_num_speakers: 0,
             last_output_latency: 0,
@@ -541,4 +599,78 @@ impl SpatialRenderer {
             object_test_source: Default::default(),
         })
     }
+
+    /// The binaural stage for `sample_rate`. It reports each HRIR build to the
+    /// control, where the state snapshot picks it up; the bump gets it
+    /// broadcast.
+    fn build_binaural_stage(
+        control: &Arc<RendererControl>,
+        sample_rate: u32,
+    ) -> crate::binaural::BinauralRenderer {
+        let status_control = Arc::clone(control);
+        crate::binaural::BinauralRenderer::with_status_sink(
+            sample_rate,
+            Arc::new(move |status| {
+                status_control.binaural_hrir_status.store(Arc::new(status));
+                status_control.bump_live_state();
+            }),
+        )
+    }
+
+    /// The BRIR stage of the cascaded path for `sample_rate`, reporting each
+    /// set load the same way.
+    fn build_brir_stage(
+        control: &Arc<RendererControl>,
+        sample_rate: u32,
+    ) -> crate::binaural::BrirStage {
+        let status_control = Arc::clone(control);
+        crate::binaural::BrirStage::with_status_sink(
+            sample_rate,
+            Arc::new(move |status| status_control.set_binaural_brir_status(status)),
+        )
+    }
+
+    /// Re-target the renderer to another sample rate: the one the frames it is
+    /// given actually run at. Everything timed in samples is rebuilt for it —
+    /// crossover filters, speaker delay lines, gain slews, the output-mode
+    /// fade, the binaural and BRIR stages — and the per-object ramp state
+    /// starts over; live params and the topology stay. A host that builds the
+    /// renderer before it has seen the stream calls this when the stream's
+    /// rate turns out to differ. A no-op at the current rate (and for 0).
+    ///
+    /// Not a per-frame operation: the stages are rebuilt from scratch.
+    pub fn set_sample_rate(&mut self, sample_rate: u32) -> Result<()> {
+        if sample_rate == 0 || sample_rate == self.sample_rate {
+            return Ok(());
+        }
+        // Rebuilt by the next frame, at the new rate; its band engines, which
+        // do not depend on the rate, are taken over rather than sampled again.
+        self.speaker_stage = super::SpeakerRenderStage::unbuilt_replacing(
+            &mut self.speaker_stage,
+            &self.control,
+            &self.control.active_topology().speaker_layout,
+            sample_rate,
+        );
+        self.binaural = Self::build_binaural_stage(&self.control, sample_rate);
+        self.brir = Self::build_brir_stage(&self.control, sample_rate);
+        self.set_synchronous_stage_builds(self.synchronous_stage_builds);
+        // Re-derived on the next cascaded frame against the new stages.
+        self.cascade = None;
+        self.last_mix_num_speakers = 0;
+        self.mode_fade = None;
+        self.mode_fade_samples = mode_fade_samples(sample_rate);
+        self.last_output_latency = 0;
+        self.sample_rate = sample_rate;
+        self.control
+            .sample_rate
+            .store(sample_rate, std::sync::atomic::Ordering::Relaxed);
+        self.reset_runtime_state();
+        Ok(())
+    }
+}
+
+/// Length of the output-mode cross-fade: 5 ms, long enough to bury the step
+/// between two DSP chains, short enough that the switch still feels immediate.
+fn mode_fade_samples(sample_rate: u32) -> usize {
+    ((sample_rate as f32) * 0.005).round().max(1.0) as usize
 }

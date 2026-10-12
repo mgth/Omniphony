@@ -1,8 +1,11 @@
 //! Host audio layer for the orender renderer.
 //!
-//! This crate owns audio **output** and **input** (device I/O, the adaptive
-//! resampler, the pacer) and the OSC control surface for them
-//! (`/omniphony/control/audio/*` and `/omniphony/control/input/*`). It sits
+//! This crate is the OSC control surface for audio **output** and **input**
+//! (`/omniphony/control/audio/*` and `/omniphony/control/input/*`): it applies
+//! those messages to the shared [`audio_output::AudioControl`] and
+//! [`audio_input::InputControl`] and publishes their state. The device I/O
+//! itself (the backends, the loop that holds the latency) lives in the
+//! `audio_output` and `audio_sync` crates and is driven by the host. It sits
 //! *above* the engine: it depends on `runtime_control` (the audio-free core),
 //! `audio_output` and `audio_input` — never the other way around.
 //!
@@ -12,55 +15,28 @@
 //! `liborender`) registers nothing, so the core stays audio-free and
 //! cross-compiles without cpal/pipewire/asio.
 
-use std::path::PathBuf;
+#[cfg(test)]
+mod doc_tables;
+pub mod options;
+
 use std::sync::Arc;
 
-use audio_input::{
-    InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
-};
+use audio_input::{InputControl, InputMode};
 use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
+use renderer::options::{HostBatchApplied, OptionKind, RawOptionValue};
 use rosc::{OscMessage, OscPacket, OscType};
 use runtime_control::HostControlHandler;
+use runtime_control::command_table::{self, Command};
+use runtime_control::live_control::WireValue;
 use runtime_control::osc::{
-    BroadcastUpdate, BroadcastValue, ControlEffects, parse_bool_arg, parse_input_layout_arg,
-    parse_json_string_arg, parse_nonnegative_f32_arg, parse_nonnegative_u32_arg,
-    parse_positive_f32_arg, parse_positive_u32_arg, parse_string_arg,
+    BroadcastUpdate, BroadcastValue, ControlEffects, Notify, parse_json_string_arg,
 };
 use runtime_control::osc_contract;
 use serde::Deserialize;
 use serde_json::json;
 
 // ─── Patch structs (deserialised from /control/config/{audio,input} JSON) ──────
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct AdaptiveResamplingPatch {
-    enabled: Option<bool>,
-    enable_far_mode: Option<bool>,
-    force_silence_in_far_mode: Option<bool>,
-    hard_recover_high_in_far_mode: Option<bool>,
-    hard_recover_low_in_far_mode: Option<bool>,
-    far_mode_return_fade_in_ms: Option<u32>,
-    kp_near: Option<f64>,
-    ki: Option<f64>,
-    integral_discharge_ratio: Option<f64>,
-    max_adjust: Option<f64>,
-    #[serde(alias = "nearFarThresholdMs")]
-    high_recover_entry_margin_ms: Option<u32>,
-    update_interval_callbacks: Option<u32>,
-    low_recover_settle_stable_ms: Option<f32>,
-    low_recover_entry_margin_ms: Option<f32>,
-    low_recover_exit_margin_ms: Option<f32>,
-    low_recover_settle_margin_ms: Option<f32>,
-    low_recover_refill_delta_alpha: Option<f32>,
-    control_smoothing_cutoff_hz: Option<f32>,
-    control_smoothing_order: Option<u32>,
-    paused: Option<bool>,
-    use_pre_bridge_clock: Option<bool>,
-    use_output_pacing: Option<bool>,
-    disable_backpressure: Option<bool>,
-}
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -71,21 +47,15 @@ struct AudioConfigPatch {
     output_file_format: Option<Option<String>>,
     sample_rate: Option<Option<u32>>,
     latency_target_ms: Option<Option<u32>>,
-    adaptive_resampling: Option<AdaptiveResamplingPatch>,
 }
 
+/// The live input's part of `/control/config/input`. A field of an older
+/// client that this host has no option for is ignored.
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct LiveInputPatch {
-    backend: Option<Option<InputBackend>>,
     node: Option<Option<String>>,
     description: Option<Option<String>>,
-    layout: Option<Option<String>>,
-    clock_mode: Option<InputClockMode>,
-    channels: Option<Option<u16>>,
-    sample_rate: Option<Option<u32>>,
-    map: Option<InputMapMode>,
-    lfe_mode: Option<InputLfeMode>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -104,47 +74,6 @@ fn input_mode_name(mode: InputMode) -> &'static str {
     }
 }
 
-fn input_backend_name(backend: InputBackend) -> &'static str {
-    match backend {
-        InputBackend::Pipewire => "pipewire",
-        InputBackend::Asio => "asio",
-    }
-}
-
-fn input_map_mode_name(mode: InputMapMode) -> &'static str {
-    match mode {
-        InputMapMode::SevenOneFixed => "7.1-fixed",
-    }
-}
-
-fn input_lfe_mode_name(mode: InputLfeMode) -> &'static str {
-    match mode {
-        InputLfeMode::Object => "object",
-        InputLfeMode::Direct => "direct",
-        InputLfeMode::Drop => "drop",
-    }
-}
-
-fn input_clock_mode_name(mode: InputClockMode) -> &'static str {
-    match mode {
-        InputClockMode::Dac => "dac",
-        InputClockMode::Pipewire => "pipewire",
-        InputClockMode::Upstream => "upstream",
-    }
-}
-
-/// Trim a patched string value, mapping empty to `None` (= "leave unset").
-fn trim_to_opt(value: Option<String>) -> Option<String> {
-    value.and_then(|v| {
-        let trimmed = v.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
 // ─── JSON / broadcast helpers (raw-enum format used by the live-edit broadcasts)
 
 fn build_audio_state_json(audio: &AudioControl) -> String {
@@ -154,110 +83,74 @@ fn build_audio_state_json(audio: &AudioControl) -> String {
         "outputDevices": audio.available_output_devices(),
         "outputDevice": requested.output_device,
         "outputDeviceEffective": audio.effective_output_device(),
+        // The host the open stream plays through, e.g. "WASAPI (fallback:
+        // no ASIO driver)"; "" when none is open or the backend names none.
+        "outputHost": audio.effective_output_host().unwrap_or_default(),
         "outputBackend": requested.output_backend,
         "outputFile": requested.output_file,
         "outputFileFormat": requested.output_file_format,
         "sampleRate": requested.output_sample_rate_hz,
         "sampleFormat": sample_format,
         "error": audio.audio_error(),
-        "adaptiveResampling": {
-            "enabled": requested.adaptive_enabled,
-            "enableFarMode": requested.adaptive.enable_far_mode,
-            "forceSilenceInFarMode": requested.adaptive.force_silence_in_far_mode,
-            "hardRecoverHighInFarMode": requested.adaptive.hard_recover_high_in_far_mode,
-            "hardRecoverLowInFarMode": requested.adaptive.hard_recover_low_in_far_mode,
-            "farModeReturnFadeInMs": requested.adaptive.far_mode_return_fade_in_ms,
-            "kpNear": requested.adaptive.kp_near,
-            "ki": requested.adaptive.ki,
-            "integralDischargeRatio": requested.adaptive.integral_discharge_ratio,
-            "maxAdjust": requested.adaptive.max_adjust,
-            "updateIntervalCallbacks": requested.adaptive.update_interval_callbacks,
-            "highRecoverEntryMarginMs": requested.adaptive.high_recover_entry_margin_ms,
-            "lowRecoverSettleStableMs": requested.adaptive.low_recover_settle_stable_ms,
-            "lowRecoverEntryMarginMs": requested.adaptive.low_recover_entry_margin_ms,
-            "lowRecoverExitMarginMs": requested.adaptive.low_recover_exit_margin_ms,
-            "lowRecoverSettleMarginMs": requested.adaptive.low_recover_settle_margin_ms,
-            "lowRecoverRefillDeltaAlpha": requested.adaptive.low_recover_refill_delta_alpha,
-            "controlSmoothingCutoffHz": requested.adaptive.control_smoothing_cutoff_hz,
-            "controlSmoothingOrder": requested.adaptive.control_smoothing_order,
-            "paused": requested.adaptive.paused,
-            "usePreBridgeClock": requested.adaptive.use_pre_bridge_clock,
-            "useOutputPacing": requested.adaptive.use_output_pacing,
-            "disableBackpressure": requested.adaptive.disable_backpressure
-        },
-        "latencyTargetMs": requested.latency_target_ms
+        "latencyTargetMs": requested.latency_target_ms,
+        // The latency held instead, when the stream needs more than the
+        // target (the sync engine raises it); null while the target holds.
+        "latencyTargetHeldMs": audio.applied_snapshot().latency_held_ms
     })
     .to_string()
 }
 
-fn build_input_state_json(input: &InputControl) -> String {
-    let requested = input.requested_snapshot();
-    let applied = input.applied_snapshot();
-    json!({
-        "mode": requested.mode,
-        "activeMode": applied.active_mode,
-        "applyPending": input.is_apply_pending(),
-        "requested": {
-            "backend": requested.backend,
-            "node": requested.node_name,
-            "description": requested.node_description,
-            "layout": requested.layout_path.as_ref().map(|path| path.display().to_string()),
-            "clockMode": requested.clock_mode,
-            "channels": requested.channels,
-            "sampleRate": requested.sample_rate_hz,
-            "map": requested.map_mode,
-            "lfeMode": requested.lfe_mode
-        },
-        "applied": {
-            "backend": applied.backend,
-            "channels": applied.channels,
-            "sampleRate": applied.sample_rate_hz,
-            "node": applied.node_name,
-            "description": applied.node_description,
-            "streamFormat": applied.stream_format,
-            "error": applied.input_error
-        }
-    })
-    .to_string()
-}
-
-fn push_audio_domain_broadcasts(
-    effects: &mut ControlEffects,
-    audio: &AudioControl,
-    include_logical_apply: bool,
-) {
-    effects.broadcasts.push(BroadcastUpdate {
-        addr: osc_contract::STATE_AUDIO.to_string(),
-        value: BroadcastValue::String(build_audio_state_json(audio)),
-    });
-    if include_logical_apply {
-        effects.log_message = Some("OSC: audio config staged".to_string());
-    }
-}
-
-fn push_input_domain_broadcasts(
-    effects: &mut ControlEffects,
-    input: &InputControl,
-    include_logical_apply: bool,
-) {
-    effects.broadcasts.push(BroadcastUpdate {
-        addr: osc_contract::STATE_INPUT.to_string(),
-        value: BroadcastValue::String(build_input_state_json(input)),
-    });
-    if include_logical_apply {
-        effects.log_message = Some("OSC: input config staged".to_string());
-    }
-}
-
-// ─── HostAudio: the host-owned audio I/O + OSC control implementation ──────────
+// ─── HostAudio: the OSC control handler for the host-owned audio I/O ──────────
 
 pub struct HostAudio {
     pub renderer: Arc<RendererControl>,
+    /// The output and input the option rows reach (`HostAudio` derefs to
+    /// it, so `host.audio` / `host.input` read through).
+    io: HostIo,
+    /// Bumped by the host when its output state changed on its own (a
+    /// stream opened, a device failed): part of
+    /// [`state_generation`](HostControlHandler::state_generation).
+    output_generation: std::sync::atomic::AtomicU64,
+    /// Whether the live input holds staged values not applied yet: set by a
+    /// write that changes one, cleared by the apply. The `pending` flag of
+    /// the `live_input` group in `/state/host_options`.
+    input_staged: std::sync::atomic::AtomicBool,
+}
+
+/// The audio output and live input a host drives: all its option rows
+/// (`options::HOST_OPTIONS`) reach. Apart from the renderer, so that the
+/// command line can fold option values into a config before any renderer
+/// exists ([`store_host_values`]).
+pub struct HostIo {
     pub audio: Arc<AudioControl>,
     pub input: Arc<InputControl>,
 }
 
+impl Default for HostIo {
+    fn default() -> Self {
+        Self {
+            audio: Arc::new(AudioControl::default()),
+            input: Arc::new(InputControl::default()),
+        }
+    }
+}
+
+impl std::ops::Deref for HostAudio {
+    type Target = HostIo;
+    fn deref(&self) -> &HostIo {
+        &self.io
+    }
+}
+
 impl HostAudio {
+    /// Bring every declared option of this host within its kind (see
+    /// [`renderer::options::bound_host_options`]): for a host whose audio
+    /// output and live input were built straight from config.yaml, before
+    /// anything plays. Returns the keys it changed.
+    pub fn bound_options_to_their_kinds(&self) -> Vec<&'static str> {
+        renderer::options::bound_host_options(&self.io, self.rows())
+    }
+
     pub fn new(
         renderer: Arc<RendererControl>,
         audio: Arc<AudioControl>,
@@ -265,551 +158,236 @@ impl HostAudio {
     ) -> Self {
         Self {
             renderer,
-            audio,
-            input,
+            io: HostIo { audio, input },
+            output_generation: std::sync::atomic::AtomicU64::new(0),
+            input_staged: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The output's applied state changed without a client asking (a stream
+    /// opened, a device failed): the snapshot goes out again.
+    pub fn mark_output_changed(&self) {
+        self.output_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The rows this host declares.
+    fn rows(&self) -> &'static [renderer::options::HostOptionSpec<HostIo>] {
+        options::HOST_OPTIONS
+    }
+}
+
+/// Write client values for this host's options (the command line's) into a
+/// config as a save would: each through its row's `set`, on a blank
+/// [`HostIo`], then its row's `config_store`. Returns the keys that are
+/// unknown or whose value was refused.
+pub fn store_host_values(
+    render: &mut renderer::config::RenderConfig,
+    values: &[(&str, RawOptionValue)],
+) -> Vec<String> {
+    let io = HostIo::default();
+    let mut refused = Vec::new();
+    let mut applied = Vec::new();
+    for (key, raw) in values {
+        match renderer::options::find_host(options::HOST_OPTIONS, key) {
+            Some(spec) if (spec.set)(&io, raw).is_some() => applied.push(spec),
+            _ => refused.push((*key).to_string()),
+        }
+    }
+    for spec in applied {
+        (spec.config_store)(render, &io);
+    }
+    refused
+}
+
+/// The schema of this host's declared options, as a JSON array (what the
+/// host appends to `/state/options_schema`).
+pub fn host_options_schema_json() -> String {
+    serde_json::Value::Array(renderer::options::host_schema_entries(
+        options::HOST_OPTIONS,
+    ))
+    .to_string()
+}
+
+/// A patch field's value, owned until it is borrowed as a raw option value.
+enum PatchValue {
+    Null,
+    Str(String),
+    Number(f64),
+}
+
+impl PatchValue {
+    fn raw(&self) -> RawOptionValue<'_> {
+        match self {
+            Self::Null => RawOptionValue::Null,
+            Self::Str(s) => RawOptionValue::Str(s),
+            Self::Number(n) => RawOptionValue::Number(*n),
         }
     }
 }
 
+/// `Option<Option<T>>` patch field → a pair: absent leaves the option out,
+/// `null` unsets it, a value sets it.
+fn push_nullable<T>(
+    out: &mut Vec<(&'static str, PatchValue)>,
+    key: &'static str,
+    field: Option<Option<T>>,
+    value: impl FnOnce(T) -> PatchValue,
+) {
+    match field {
+        None => {}
+        Some(None) => out.push((key, PatchValue::Null)),
+        Some(Some(v)) => out.push((key, value(v))),
+    }
+}
+
+fn push_some<T>(
+    out: &mut Vec<(&'static str, PatchValue)>,
+    key: &'static str,
+    field: Option<T>,
+    value: impl FnOnce(T) -> PatchValue,
+) {
+    if let Some(v) = field {
+        out.push((key, value(v)));
+    }
+}
+
+/// `/control/config/audio` as a batch of this host's options.
+fn audio_patch_values(patch: AudioConfigPatch) -> Vec<(&'static str, PatchValue)> {
+    let mut out = Vec::new();
+    push_nullable(
+        &mut out,
+        "output_device",
+        patch.output_device,
+        PatchValue::Str,
+    );
+    push_nullable(
+        &mut out,
+        "output_backend",
+        patch.output_backend,
+        PatchValue::Str,
+    );
+    push_nullable(&mut out, "output_file", patch.output_file, PatchValue::Str);
+    push_nullable(
+        &mut out,
+        "output_file_format",
+        patch.output_file_format,
+        PatchValue::Str,
+    );
+    push_nullable(&mut out, "output_sample_rate", patch.sample_rate, |v| {
+        PatchValue::Number(v as f64)
+    });
+    push_nullable(&mut out, "latency_target", patch.latency_target_ms, |v| {
+        PatchValue::Number(v as f64)
+    });
+    out
+}
+
+/// `/control/config/input` as a batch of this host's options.
+fn input_patch_values(patch: InputConfigPatch) -> Vec<(&'static str, PatchValue)> {
+    let mut out = Vec::new();
+    push_some(&mut out, "input_mode", patch.mode, |mode| {
+        PatchValue::Str(input_mode_name(mode).to_string())
+    });
+    if let Some(live) = patch.live_input {
+        push_nullable(&mut out, "live_input_node", live.node, PatchValue::Str);
+        push_nullable(
+            &mut out,
+            "live_input_description",
+            live.description,
+            PatchValue::Str,
+        );
+    }
+    out
+}
+
+/// What a client learns from a write of this host's options: a changed
+/// value is a config edit (Save lights up), an unchanged one is still
+/// published (a clamp must reach the client that typed the value), a
+/// rejected one changes nothing.
+fn batch_effects(batch: &HostBatchApplied, log: String) -> ControlEffects {
+    if batch.changed {
+        let mut effects = ControlEffects::dirty(Notify::Snapshot);
+        effects.log_message = Some(log);
+        effects
+    } else if batch.results.iter().any(Option::is_some) {
+        ControlEffects::transient(Notify::Snapshot)
+    } else {
+        ControlEffects::default()
+    }
+}
+
+impl HostAudio {
+    fn apply_patch(&self, values: &[(&'static str, PatchValue)], log: &str) -> ControlEffects {
+        let items: Vec<(&str, RawOptionValue)> = values
+            .iter()
+            .map(|(key, value)| (*key, value.raw()))
+            .collect();
+        let batch = self.apply_options(&items);
+        batch_effects(&batch, log.to_string())
+    }
+}
+
+/// A handler of [`HOST_COMMANDS`]; `None` passes the message on.
+type HostHandler = fn(&HostAudio, &OscMessage) -> Option<ControlEffects>;
+
+/// This host's control addresses that are not one option's alias (see
+/// `runtime_control::command_table`): the JSON patches and the group
+/// applies (aliases of option batches), the device refresh, the structured
+/// input layout, the resampling hold and reset. The per-option aliases are
+/// looked up after it.
+static HOST_COMMANDS: &[Command<HostHandler>] = &[
+    Command::exact(osc_contract::CONTROL_CONFIG_AUDIO, config_audio),
+    Command::exact(osc_contract::CONTROL_CONFIG_INPUT, config_input),
+    Command::exact(osc_contract::CONTROL_CONFIG_AUDIO_APPLY, config_audio_apply),
+    Command::exact(
+        osc_contract::CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH,
+        audio_output_devices_refresh,
+    ),
+    Command::any(
+        &[
+            osc_contract::CONTROL_CONFIG_INPUT_APPLY,
+            osc_contract::CONTROL_INPUT_APPLY,
+        ],
+        |host, _| host.apply_option_group(options::LIVE_INPUT.key),
+    ),
+];
+
 impl HostControlHandler for HostAudio {
+    fn capabilities(&self) -> runtime_control::HostCapabilities {
+        runtime_control::HostCapabilities { input: true }
+    }
+
     fn handle(&self, addr: &str, msg: &OscMessage) -> Option<ControlEffects> {
-        let audio = &self.audio;
-        let input = &self.input;
-        let mut effects = ControlEffects::default();
-
-        // ── /control/config/audio (batch apply) ──
-        if addr == osc_contract::CONTROL_CONFIG_AUDIO {
-            let patch = parse_json_string_arg::<AudioConfigPatch>(msg.args.first());
-            if let Some(patch) = patch {
-                if let Some(output_device) = patch.output_device {
-                    audio.set_requested_output_device(output_device.and_then(|value| {
-                        let trimmed = value.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    }));
-                }
-                if let Some(output_backend) = patch.output_backend {
-                    audio.set_requested_output_backend(trim_to_opt(output_backend));
-                }
-                if let Some(output_file) = patch.output_file {
-                    audio.set_requested_output_file(trim_to_opt(output_file));
-                }
-                if let Some(output_file_format) = patch.output_file_format {
-                    audio.set_requested_output_file_format(trim_to_opt(output_file_format));
-                }
-                if let Some(sample_rate) = patch.sample_rate {
-                    audio.set_requested_output_sample_rate(sample_rate.filter(|value| *value > 0));
-                }
-                if let Some(latency_target_ms) = patch.latency_target_ms {
-                    audio.set_requested_latency_target_ms(
-                        latency_target_ms.filter(|value| *value > 0),
-                    );
-                }
-                if let Some(adaptive) = patch.adaptive_resampling {
-                    if let Some(enabled) = adaptive.enabled {
-                        audio.set_requested_adaptive_resampling(enabled);
-                    }
-                    if let Some(enabled) = adaptive.enable_far_mode {
-                        audio.set_requested_adaptive_resampling_enable_far_mode(enabled);
-                    }
-                    if let Some(enabled) = adaptive.force_silence_in_far_mode {
-                        audio.set_requested_adaptive_resampling_force_silence_in_far_mode(enabled);
-                    }
-                    if let Some(enabled) = adaptive.hard_recover_high_in_far_mode {
-                        audio.set_requested_adaptive_resampling_hard_recover_high_in_far_mode(
-                            enabled,
-                        );
-                    }
-                    if let Some(enabled) = adaptive.hard_recover_low_in_far_mode {
-                        audio.set_requested_adaptive_resampling_hard_recover_low_in_far_mode(
-                            enabled,
-                        );
-                    }
-                    if let Some(value) = adaptive.far_mode_return_fade_in_ms {
-                        audio.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
-                    }
-                    if let Some(value) = adaptive.kp_near.filter(|value| *value > 0.0) {
-                        audio.set_requested_adaptive_resampling_kp_near(value as f32);
-                    }
-                    if let Some(value) = adaptive.ki.filter(|value| *value >= 0.0) {
-                        audio.set_requested_adaptive_resampling_ki(value as f32);
-                    }
-                    if let Some(value) = adaptive
-                        .integral_discharge_ratio
-                        .map(|value| value.clamp(0.0, 1.0))
-                    {
-                        audio.set_requested_adaptive_resampling_integral_discharge_ratio(
-                            value as f32,
-                        );
-                    }
-                    if let Some(value) = adaptive.max_adjust.filter(|value| *value > 0.0) {
-                        audio.set_requested_adaptive_resampling_max_adjust(value as f32);
-                    }
-                    if let Some(value) = adaptive
-                        .high_recover_entry_margin_ms
-                        .filter(|value| *value > 0)
-                    {
-                        audio.set_requested_adaptive_resampling_high_recover_entry_margin_ms(value);
-                    }
-                    if let Some(value) = adaptive
-                        .update_interval_callbacks
-                        .filter(|value| *value > 0)
-                    {
-                        audio.set_requested_adaptive_resampling_update_interval_callbacks(value);
-                    }
-                    if let Some(value) = adaptive
-                        .low_recover_settle_stable_ms
-                        .filter(|value| value.is_finite() && *value >= 0.0)
-                    {
-                        audio.set_requested_adaptive_resampling_low_recover_settle_stable_ms(value);
-                    }
-                    if let Some(value) = adaptive
-                        .low_recover_entry_margin_ms
-                        .filter(|value| value.is_finite() && *value >= 0.0)
-                    {
-                        audio.set_requested_adaptive_resampling_low_recover_entry_margin_ms(value);
-                    }
-                    if let Some(value) = adaptive
-                        .low_recover_exit_margin_ms
-                        .filter(|value| value.is_finite() && *value >= 0.0)
-                    {
-                        audio.set_requested_adaptive_resampling_low_recover_exit_margin_ms(value);
-                    }
-                    if let Some(value) = adaptive
-                        .low_recover_settle_margin_ms
-                        .filter(|value| value.is_finite() && *value >= 0.0)
-                    {
-                        audio.set_requested_adaptive_resampling_low_recover_settle_margin_ms(value);
-                    }
-                    if let Some(value) = adaptive
-                        .low_recover_refill_delta_alpha
-                        .map(|value| value.clamp(0.0, 1.0))
-                    {
-                        audio.set_requested_adaptive_resampling_low_recover_refill_delta_alpha(
-                            value,
-                        );
-                    }
-                    if let Some(value) = adaptive
-                        .control_smoothing_cutoff_hz
-                        .map(|value| value.clamp(0.001, 1000.0))
-                    {
-                        audio.set_requested_adaptive_resampling_control_smoothing_cutoff_hz(value);
-                    }
-                    if let Some(value) = adaptive.control_smoothing_order {
-                        audio.set_requested_adaptive_resampling_control_smoothing_order(value);
-                    }
-                    if let Some(paused) = adaptive.paused {
-                        audio.set_requested_adaptive_resampling_paused(paused);
-                    }
-                    if let Some(enabled) = adaptive.use_pre_bridge_clock {
-                        audio.set_requested_adaptive_resampling_use_pre_bridge_clock(enabled);
-                    }
-                    if let Some(enabled) = adaptive.use_output_pacing {
-                        audio.set_requested_adaptive_resampling_use_output_pacing(enabled);
-                    }
-                    if let Some(disabled) = adaptive.disable_backpressure {
-                        audio.set_requested_adaptive_resampling_disable_backpressure(disabled);
-                    }
-                }
-                effects.mark_dirty = true;
-                push_audio_domain_broadcasts(&mut effects, audio, true);
-            }
-            return Some(effects);
+        if let Some(run) = command_table::find(HOST_COMMANDS, addr) {
+            return run(self, msg);
         }
 
-        if addr == osc_contract::CONTROL_CONFIG_AUDIO_APPLY {
-            push_audio_domain_broadcasts(&mut effects, audio, false);
-            effects.log_message = Some("OSC: audio config apply".to_string());
+        // ── The dedicated per-option addresses: aliases of the rows ──
+        let key = renderer::options::find_host_by_legacy_addr(self.rows(), addr)
+            .map(|spec| spec.key)
+            .or_else(|| {
+                options::EXTRA_ALIASES
+                    .iter()
+                    .find(|(alias, _)| *alias == addr)
+                    .map(|(_, key)| *key)
+            })?;
+        let effects = ControlEffects::default();
+        let kind = self.option_kind(key).unwrap_or(OptionKind::Str);
+        let Some(args) = msg.args.get(..kind.arity()) else {
+            log::warn!("OSC option {key}: missing value");
+            return Some(effects);
+        };
+        let value = WireValue::from_args(kind, args);
+        let Some(raw) = value.raw() else {
+            log::warn!("OSC option {key}: rejected value");
+            return Some(effects);
+        };
+        if options::legacy_ignores(addr, &raw) {
             return Some(effects);
         }
-
-        if addr == osc_contract::CONTROL_CONFIG_INPUT {
-            let patch = parse_json_string_arg::<InputConfigPatch>(msg.args.first());
-            if let Some(patch) = patch {
-                if let Some(mode) = patch.mode {
-                    input.set_requested_mode(mode);
-                }
-                if let Some(live_input) = patch.live_input {
-                    if let Some(backend) = live_input.backend {
-                        input.set_requested_backend(backend);
-                    }
-                    if let Some(node) = live_input.node {
-                        input.set_requested_node_name(node.and_then(|value| {
-                            let trimmed = value.trim();
-                            if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(trimmed.to_string())
-                            }
-                        }));
-                    }
-                    if let Some(description) = live_input.description {
-                        input.set_requested_node_description(description.and_then(|value| {
-                            let trimmed = value.trim();
-                            if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(trimmed.to_string())
-                            }
-                        }));
-                    }
-                    if let Some(layout) = live_input.layout {
-                        input.set_requested_layout_path(layout.and_then(|value| {
-                            let trimmed = value.trim();
-                            if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(PathBuf::from(trimmed))
-                            }
-                        }));
-                        input.set_requested_current_layout(None);
-                    }
-                    if let Some(clock_mode) = live_input.clock_mode {
-                        input.set_requested_clock_mode(clock_mode);
-                    }
-                    if let Some(channels) = live_input.channels {
-                        input.set_requested_channels(channels.filter(|value| *value > 0));
-                    }
-                    if let Some(sample_rate) = live_input.sample_rate {
-                        input.set_requested_sample_rate_hz(sample_rate.filter(|value| *value > 0));
-                    }
-                    if let Some(map_mode) = live_input.map {
-                        input.set_requested_map_mode(map_mode);
-                    }
-                    if let Some(lfe_mode) = live_input.lfe_mode {
-                        input.set_requested_lfe_mode(lfe_mode);
-                    }
-                }
-                effects.mark_dirty = true;
-                push_input_domain_broadcasts(&mut effects, input, true);
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_CONFIG_INPUT_APPLY {
-            input.request_apply();
-            effects.mark_dirty = true;
-            push_input_domain_broadcasts(&mut effects, input, false);
-            effects.log_message = Some("OSC: input config apply requested".to_string());
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH {
-            if let Some(devices) = audio.refresh_available_output_devices() {
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: osc_contract::STATE_AUDIO.to_string(),
-                    value: BroadcastValue::String(build_audio_state_json(audio)),
-                });
-                effects.log_message = Some(format!(
-                    "OSC: output_devices/refresh → {} device(s)",
-                    devices.len()
-                ));
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_DEVICE {
-            let requested = msg.args.first().and_then(|arg| match arg {
-                OscType::String(s) => {
-                    let trimmed = s.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                }
-                _ => None,
-            });
-            audio.set_requested_output_device(requested);
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_BACKEND {
-            audio.set_requested_output_backend(trim_to_opt(parse_string_arg(msg.args.first())));
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_FILE {
-            audio.set_requested_output_file(trim_to_opt(parse_string_arg(msg.args.first())));
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_FILE_FORMAT {
-            audio.set_requested_output_file_format(trim_to_opt(parse_string_arg(msg.args.first())));
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_MODE {
-            let requested = parse_string_arg(msg.args.first()).and_then(|value| {
-                match value.to_ascii_lowercase().as_str() {
-                    "bridge" | "pipe_bridge" => Some(InputMode::Bridge),
-                    "pipewire" | "pipewire_bridge" | "live" => Some(InputMode::Pipewire),
-                    _ => None,
-                }
-            });
-            if let Some(requested) = requested {
-                input.set_requested_mode(requested);
-                effects.mark_dirty = true;
-                effects.log_message = Some(format!(
-                    "OSC: input mode staged → {}",
-                    input_mode_name(requested)
-                ));
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_BACKEND {
-            let requested = parse_string_arg(msg.args.first()).and_then(|value| {
-                match value.to_ascii_lowercase().as_str() {
-                    "pipewire" => Some(InputBackend::Pipewire),
-                    "asio" => Some(InputBackend::Asio),
-                    _ => None,
-                }
-            });
-            if let Some(requested) = requested {
-                input.set_requested_backend(Some(requested));
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_NODE {
-            let requested = parse_string_arg(msg.args.first());
-            input.set_requested_node_name(requested);
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_DESCRIPTION {
-            let requested = parse_string_arg(msg.args.first());
-            input.set_requested_node_description(requested);
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_LAYOUT {
-            let requested = parse_string_arg(msg.args.first()).map(PathBuf::from);
-            input.set_requested_layout_path(requested);
-            input.set_requested_current_layout(None);
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_LAYOUT_IMPORT {
-            let requested = parse_input_layout_arg(msg.args.first());
-            input.set_requested_current_layout(requested);
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_CHANNELS {
-            let requested = parse_positive_u32_arg(msg.args.first()).map(|v| v as u16);
-            if let Some(requested) = requested {
-                input.set_requested_channels(Some(requested));
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_SAMPLE_RATE {
-            if let Some(requested) = parse_positive_u32_arg(msg.args.first()) {
-                input.set_requested_sample_rate_hz(Some(requested));
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_MAP {
-            let requested = parse_string_arg(msg.args.first()).and_then(|value| {
-                match value.to_ascii_lowercase().as_str() {
-                    "7.1-fixed" => Some(InputMapMode::SevenOneFixed),
-                    _ => None,
-                }
-            });
-            if let Some(requested) = requested {
-                input.set_requested_map_mode(requested);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_LFE_MODE {
-            let requested = parse_string_arg(msg.args.first()).and_then(|value| {
-                match value.to_ascii_lowercase().as_str() {
-                    "object" => Some(InputLfeMode::Object),
-                    "direct" => Some(InputLfeMode::Direct),
-                    "drop" => Some(InputLfeMode::Drop),
-                    _ => None,
-                }
-            });
-            if let Some(requested) = requested {
-                input.set_requested_lfe_mode(requested);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_CLOCK_MODE {
-            let requested = parse_string_arg(msg.args.first()).and_then(|value| {
-                match value.to_ascii_lowercase().as_str() {
-                    "dac" => Some(InputClockMode::Dac),
-                    "pipewire" => Some(InputClockMode::Pipewire),
-                    "upstream" => Some(InputClockMode::Upstream),
-                    _ => None,
-                }
-            });
-            if let Some(requested) = requested {
-                input.set_requested_clock_mode(requested);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_APPLY {
-            input.request_apply();
-            effects.mark_dirty = true;
-            effects.log_message = Some("OSC: input apply requested".to_string());
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_AUDIO_SAMPLE_RATE {
-            let requested_hz = parse_positive_u32_arg(msg.args.first());
-            audio.set_requested_output_sample_rate(requested_hz);
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING {
-            if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling(enabled);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_ENABLE_FAR_MODE {
-            if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_enable_far_mode(enabled);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_FORCE_SILENCE_IN_FAR_MODE {
-            if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_force_silence_in_far_mode(enabled);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_HIGH_IN_FAR_MODE
-            || addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_IN_FAR_MODE
-        {
-            if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_hard_recover_high_in_far_mode(enabled);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_LOW_IN_FAR_MODE {
-            if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_hard_recover_low_in_far_mode(enabled);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_FAR_MODE_RETURN_FADE_IN_MS {
-            if let Some(value) = parse_nonnegative_u32_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_KP_NEAR {
-            if let Some(value) = parse_positive_f32_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_kp_near(value);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_KI {
-            if let Some(value) = parse_nonnegative_f32_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_ki(value);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_INTEGRAL_DISCHARGE_RATIO {
-            if let Some(value) = parse_nonnegative_f32_arg(msg.args.first()).map(|v| v.min(1.0)) {
-                audio.set_requested_adaptive_resampling_integral_discharge_ratio(value);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_MAX_ADJUST {
-            if let Some(value) = parse_positive_f32_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_max_adjust(value);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_UPDATE_INTERVAL_CALLBACKS {
-            if let Some(value) = parse_positive_u32_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_update_interval_callbacks(value);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HIGH_RECOVER_ENTRY_MARGIN_MS
-            || addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_NEAR_FAR_THRESHOLD_MS
-        {
-            if let Some(value) = parse_positive_u32_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_high_recover_entry_margin_ms(value);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_PAUSE {
-            if let Some(paused) = parse_bool_arg(msg.args.first()) {
-                audio.set_requested_adaptive_resampling_paused(paused);
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_RESET_RATIO {
-            audio.request_ratio_reset();
-            effects.mark_dirty = true;
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_LATENCY_TARGET {
-            if let Some(latency_ms) = parse_positive_u32_arg(msg.args.first()) {
-                audio.set_requested_latency_target_ms(Some(latency_ms));
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        // Not ours.
-        None
+        let batch = self.apply_options(&[(key, raw)]);
+        Some(batch_effects(&batch, format!("OSC: {key} staged")))
     }
 
     fn extend_snapshot(&self) -> Vec<OscPacket> {
@@ -817,57 +395,18 @@ impl HostControlHandler for HostAudio {
         let input = &self.input;
         let mut messages = Vec::with_capacity(2);
 
-        // /state/audio: full output-device + adaptive-resampling state.
-        let requested = audio.requested_snapshot();
+        // /state/audio: the output device, its format and the latency target.
         messages.push(OscPacket::Message(OscMessage {
             addr: osc_contract::STATE_AUDIO.to_string(),
-            args: vec![OscType::String(
-                json!({
-                    "outputDevices": audio.available_output_devices(),
-                    "outputDevice": requested.output_device.clone(),
-                    "outputDeviceEffective": audio.effective_output_device(),
-                    "outputBackend": requested.output_backend.clone(),
-                    "outputFile": requested.output_file.clone(),
-                    "outputFileFormat": requested.output_file_format.clone(),
-                    "sampleRate": requested.output_sample_rate_hz,
-                    "sampleFormat": audio.audio_state().1,
-                    "error": audio.audio_error(),
-                    "adaptiveResampling": {
-                        "enabled": requested.adaptive_enabled,
-                        "enableFarMode": requested.adaptive.enable_far_mode,
-                        "forceSilenceInFarMode": requested.adaptive.force_silence_in_far_mode,
-                        "hardRecoverHighInFarMode": requested.adaptive.hard_recover_high_in_far_mode,
-                        "hardRecoverLowInFarMode": requested.adaptive.hard_recover_low_in_far_mode,
-                        "farModeReturnFadeInMs": requested.adaptive.far_mode_return_fade_in_ms,
-                        "kpNear": requested.adaptive.kp_near,
-                        "ki": requested.adaptive.ki,
-                        "integralDischargeRatio": requested.adaptive.integral_discharge_ratio,
-                        "maxAdjust": requested.adaptive.max_adjust,
-                        "updateIntervalCallbacks": requested.adaptive.update_interval_callbacks,
-                        "highRecoverEntryMarginMs": requested.adaptive.high_recover_entry_margin_ms,
-                        "lowRecoverSettleStableMs": requested.adaptive.low_recover_settle_stable_ms,
-                        "lowRecoverEntryMarginMs": requested.adaptive.low_recover_entry_margin_ms,
-                        "lowRecoverExitMarginMs": requested.adaptive.low_recover_exit_margin_ms,
-                        "lowRecoverSettleMarginMs": requested.adaptive.low_recover_settle_margin_ms,
-                        "lowRecoverRefillDeltaAlpha": requested.adaptive.low_recover_refill_delta_alpha,
-                        "controlSmoothingCutoffHz": requested.adaptive.control_smoothing_cutoff_hz,
-                        "controlSmoothingOrder": requested.adaptive.control_smoothing_order,
-                        "paused": requested.adaptive.paused,
-                        "usePreBridgeClock": requested.adaptive.use_pre_bridge_clock,
-                        "useOutputPacing": requested.adaptive.use_output_pacing,
-                        "disableBackpressure": requested.adaptive.disable_backpressure
-                    },
-                    "latencyTargetMs": requested.latency_target_ms
-                })
-                .to_string(),
-            )],
+            args: vec![OscType::String(build_audio_state_json(audio))],
         }));
 
         // /state/input: live-input device state. DRC fields (drcMode/drcWeight/
         // supportedDrcModes) are owned by the core (decode-stage) and emitted by
         // the core's build_live_state_bundle in a separate /state/input message;
-        // studio's Tauri InputDomainState parser merges partial payloads, so two
-        // /state/input messages in one bundle compose cleanly.
+        // Studio's InputDomainState parser (omniphony-studio-core, osc/apply.rs)
+        // merges partial payloads, so two /state/input messages in one bundle
+        // compose cleanly.
         let requested = input.requested_snapshot();
         let applied = input.applied_snapshot();
         messages.push(OscPacket::Message(OscMessage {
@@ -878,18 +417,11 @@ impl HostControlHandler for HostAudio {
                     "activeMode": input_mode_name(applied.active_mode),
                     "applyPending": input.is_apply_pending(),
                     "requested": {
-                        "backend": requested.backend.map(input_backend_name),
                         "node": requested.node_name.clone(),
-                        "description": requested.node_description.clone(),
-                        "layout": requested.layout_path.as_ref().map(|path| path.display().to_string()),
-                        "clockMode": input_clock_mode_name(requested.clock_mode),
-                        "channels": requested.channels,
-                        "sampleRate": requested.sample_rate_hz,
-                        "map": input_map_mode_name(requested.map_mode),
-                        "lfeMode": input_lfe_mode_name(requested.lfe_mode)
+                        "description": requested.node_description.clone()
                     },
                     "applied": {
-                        "backend": applied.backend.map(input_backend_name),
+                        "backend": applied.backend.map(|_| "pipewire"),
                         "channels": applied.channels,
                         "sampleRate": applied.sample_rate_hz,
                         "node": applied.node_name.clone(),
@@ -907,88 +439,377 @@ impl HostControlHandler for HostAudio {
 
     fn state_generation(&self) -> u64 {
         self.input.state_generation()
+            + self
+                .output_generation
+                .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn option_kind(&self, key: &str) -> Option<OptionKind> {
+        renderer::options::find_host(self.rows(), key).map(|spec| spec.kind)
+    }
+
+    fn apply_options(&self, items: &[(&str, RawOptionValue)]) -> HostBatchApplied {
+        let batch = renderer::options::host_apply_batch(&self.io, self.rows(), items);
+        let staged = items.iter().zip(&batch.results).any(|((key, _), result)| {
+            result.as_ref().is_some_and(|applied| applied.changed)
+                && renderer::options::find_host(self.rows(), key)
+                    .and_then(|spec| spec.group)
+                    .is_some_and(|group| std::ptr::eq(group, &options::LIVE_INPUT))
+        });
+        if staged {
+            self.input_staged
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        batch
+    }
+
+    fn apply_option_group(&self, group: &str) -> Option<ControlEffects> {
+        let mut effects = ControlEffects::transient(Notify::Snapshot);
+        if group == options::LIVE_INPUT.key {
+            // Staged: every value requested since the last apply, at once.
+            // An action, not an edit: the writes already lit Save.
+            self.input.request_apply();
+            self.input_staged
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            effects.log_message = Some("OSC: input config apply requested".to_string());
+            return Some(effects);
+        }
+        // Live groups: applied as they were written; acknowledged.
+        options::HOST_GROUPS
+            .iter()
+            .any(|declared| declared.key == group)
+            .then_some(effects)
+    }
+
+    fn options_schema(&self) -> Vec<serde_json::Value> {
+        renderer::options::host_schema_entries(self.rows())
+    }
+
+    fn options_json(&self) -> serde_json::Map<String, serde_json::Value> {
+        renderer::options::host_options_json(&self.io, self.rows())
+    }
+
+    fn options_applied_json(&self) -> serde_json::Map<String, serde_json::Value> {
+        renderer::options::host_applied_json(&self.io, self.rows())
+    }
+
+    fn option_groups_pending(&self) -> Vec<(&'static str, bool)> {
+        vec![(
+            options::LIVE_INPUT.key,
+            self.input_staged.load(std::sync::atomic::Ordering::Relaxed),
+        )]
     }
 
     fn amend_saved_config(&self, render: &mut renderer::config::RenderConfig) {
-        // ── Audio output ──
-        let audio = &self.audio;
-        let requested = audio.requested_snapshot();
-        render.output_device = requested.output_device;
-        render.output_sample_rate = requested.output_sample_rate_hz;
-        renderer::config_fields::enable_adaptive_resampling::store(
-            render,
-            requested.adaptive_enabled,
-        );
-        render.adaptive_resampling_enable_far_mode = Some(requested.adaptive.enable_far_mode);
-        render.adaptive_resampling_force_silence_in_far_mode =
-            Some(requested.adaptive.force_silence_in_far_mode);
-        render.adaptive_resampling_hard_recover_high_in_far_mode =
-            Some(requested.adaptive.hard_recover_high_in_far_mode);
-        render.adaptive_resampling_hard_recover_low_in_far_mode =
-            Some(requested.adaptive.hard_recover_low_in_far_mode);
-        render.adaptive_resampling_far_mode_return_fade_in_ms =
-            Some(requested.adaptive.far_mode_return_fade_in_ms);
-        render.latency_target = requested.latency_target_ms;
-        render.adaptive_resampling_kp_near = Some(requested.adaptive.kp_near as f32);
-        render.adaptive_resampling_ki = Some(requested.adaptive.ki as f32);
-        render.adaptive_resampling_integral_discharge_ratio =
-            Some(requested.adaptive.integral_discharge_ratio as f32);
-        render.adaptive_resampling_max_adjust = Some(requested.adaptive.max_adjust as f32);
-        render.adaptive_resampling_update_interval_callbacks =
-            Some(requested.adaptive.update_interval_callbacks);
-        render.adaptive_resampling_high_recover_entry_margin_ms =
-            Some(requested.adaptive.high_recover_entry_margin_ms);
-        render.adaptive_resampling_low_recover_settle_stable_ms =
-            Some(requested.adaptive.low_recover_settle_stable_ms);
-        render.adaptive_resampling_low_recover_entry_margin_ms =
-            Some(requested.adaptive.low_recover_entry_margin_ms);
-        render.adaptive_resampling_low_recover_exit_margin_ms =
-            Some(requested.adaptive.low_recover_exit_margin_ms);
-        render.adaptive_resampling_low_recover_settle_margin_ms =
-            Some(requested.adaptive.low_recover_settle_margin_ms);
-        render.adaptive_resampling_low_recover_refill_delta_alpha =
-            Some(requested.adaptive.low_recover_refill_delta_alpha);
-        render.adaptive_resampling_control_smoothing_cutoff_hz =
-            Some(requested.adaptive.control_smoothing_cutoff_hz as f32);
-        render.adaptive_resampling_control_smoothing_order =
-            Some(requested.adaptive.control_smoothing_order);
-        render.adaptive_resampling_use_pre_bridge_clock =
-            Some(requested.adaptive.use_pre_bridge_clock);
-        render.adaptive_resampling_use_output_pacing = Some(requested.adaptive.use_output_pacing);
-        render.adaptive_resampling_disable_backpressure =
-            Some(requested.adaptive.disable_backpressure);
+        // Every declared option (audio output, latency loop, live input).
+        renderer::options::host_store_to_config(render, &self.io, self.rows());
+    }
+}
 
-        // ── Live input ──
-        let input = &self.input;
-        let requested = input.requested_snapshot();
-        render.input_mode = Some(match requested.mode {
-            InputMode::Bridge => renderer::config::InputModeConfig::Bridge,
-            InputMode::Pipewire => renderer::config::InputModeConfig::Pipewire,
+/// ── The JSON patches: aliases of a batch of this host's options ──
+fn config_audio(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
+    let effects = ControlEffects::default();
+    let Some(patch) = parse_json_string_arg::<AudioConfigPatch>(msg.args.first()) else {
+        return Some(effects);
+    };
+    let values = audio_patch_values(patch);
+    Some(host.apply_patch(&values, "OSC: audio config staged"))
+}
+
+fn config_input(host: &HostAudio, msg: &OscMessage) -> Option<ControlEffects> {
+    let effects = ControlEffects::default();
+    let Some(patch) = parse_json_string_arg::<InputConfigPatch>(msg.args.first()) else {
+        return Some(effects);
+    };
+    let values = input_patch_values(patch);
+    Some(host.apply_patch(&values, "OSC: input config staged"))
+}
+
+/// ── The per-domain apply addresses: aliases of the group apply ──
+fn config_audio_apply(host: &HostAudio, _msg: &OscMessage) -> Option<ControlEffects> {
+    host.apply_option_group(options::AUDIO_OUTPUT.key)
+}
+
+/// ── Not options ──
+fn audio_output_devices_refresh(host: &HostAudio, _msg: &OscMessage) -> Option<ControlEffects> {
+    let audio = &host.audio;
+    let mut effects = ControlEffects::default();
+    if let Some(devices) = audio.refresh_available_output_devices() {
+        effects.broadcasts.push(BroadcastUpdate {
+            addr: osc_contract::STATE_AUDIO.to_string(),
+            value: BroadcastValue::String(build_audio_state_json(audio)),
         });
-        render.live_input = Some(renderer::config::LiveInputConfig {
-            backend: requested.backend.map(|backend| match backend {
-                InputBackend::Pipewire => renderer::config::InputBackendConfig::Pipewire,
-                InputBackend::Asio => renderer::config::InputBackendConfig::Asio,
+        effects.log_message = Some(format!(
+            "OSC: output_devices/refresh → {} device(s)",
+            devices.len()
+        ));
+    }
+    Some(effects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renderer::options::{GroupMode, LegacyAddr};
+
+    fn fixture_control() -> Arc<RendererControl> {
+        use renderer::live_params::LiveEvaluationMode;
+        use renderer::spatial_renderer::{RendererSpec, SpatialRenderer};
+        use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
+        let layout = renderer::speaker_layout::SpeakerLayout::preset("7.1.4").expect("preset");
+        SpatialRenderer::new(RendererSpec {
+            spread_resolution: 0.25,
+            table_mode: VbapTableMode::Cartesian {
+                x_size: 5,
+                y_size: 5,
+                z_size: 3,
+                z_neg_size: 3,
+            },
+            distance_model: DistanceModel::None,
+            room_ratio: [1.0, 2.0, 1.0],
+            room_ratio_center_blend: 0.5,
+            initial_evaluation_mode: LiveEvaluationMode::Auto,
+            cartesian_default_x_size: 5,
+            cartesian_default_y_size: 5,
+            cartesian_default_z_size: 3,
+            cartesian_default_z_neg_size: 3,
+            ..renderer::test_support::spec(layout)
+        })
+        .expect("fixture renderer")
+        .renderer_control()
+    }
+
+    fn host() -> HostAudio {
+        HostAudio::new(
+            fixture_control(),
+            Arc::new(AudioControl::default()),
+            Arc::new(InputControl::default()),
+        )
+    }
+
+    fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {
+        OscMessage {
+            addr: addr.to_string(),
+            args,
+        }
+    }
+
+    fn s(v: &str) -> OscType {
+        OscType::String(v.into())
+    }
+
+    #[test]
+    fn the_host_table_is_declared_in_the_contract_and_claimed_once() {
+        let core = runtime_control::command_table::core_addresses;
+        let aliases = || -> Vec<&'static str> {
+            options::HOST_OPTIONS
+                .iter()
+                .filter_map(|spec| match spec.legacy_control_addr {
+                    renderer::options::LegacyAddr::Exact(addr) => Some(addr),
+                    _ => None,
+                })
+                .chain(options::EXTRA_ALIASES.iter().map(|(alias, _)| *alias))
+                .collect()
+        };
+        let found = runtime_control::command_table::problems(HOST_COMMANDS, &[&core, &aliases]);
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn every_row_is_declared_once_with_a_catalogued_alias() {
+        let mut keys = std::collections::HashSet::new();
+        for spec in options::HOST_OPTIONS {
+            assert!(keys.insert(spec.key), "duplicate host option {}", spec.key);
+            assert!(
+                renderer::options::find(spec.key).is_none(),
+                "{}: also a core option",
+                spec.key
+            );
+            let group = spec.group.expect("every host option has a group");
+            assert!(options::HOST_GROUPS.iter().any(|g| std::ptr::eq(*g, group)));
+            match spec.legacy_control_addr {
+                LegacyAddr::Exact(addr) => {
+                    assert!(osc_contract::ALL_CONTROL.contains(&addr), "{}", spec.key)
+                }
+                LegacyAddr::None => {}
+                LegacyAddr::Prefixed { .. } => panic!("{}: no prefix family here", spec.key),
+            }
+        }
+        for (alias, key) in options::EXTRA_ALIASES {
+            assert!(osc_contract::ALL_CONTROL.contains(alias));
+            assert!(keys.contains(key));
+        }
+        assert_eq!(options::LIVE_INPUT.mode, GroupMode::Staged);
+    }
+
+    /// The rows are the render host's: the output, the latency loop, and the
+    /// part of the input it reconfigures. What the engine before it tuned
+    /// (the adaptive resampler, the live input's clock and shape) has no row:
+    /// it is not in the schema and a write of it is refused.
+    #[test]
+    fn the_rows_are_the_render_hosts() {
+        let keys: Vec<&str> = options::HOST_OPTIONS.iter().map(|spec| spec.key).collect();
+        assert_eq!(
+            keys,
+            [
+                "output_device",
+                "output_backend",
+                "output_file",
+                "output_file_format",
+                "output_sample_rate",
+                "latency_target",
+                "loop_bandwidth_hz",
+                "source_clock",
+                "realign_threshold_ms",
+                "input_mode",
+                "live_input_node",
+                "live_input_description"
+            ]
+        );
+        let host = host();
+        assert_eq!(host.options_schema().len(), keys.len());
+        assert!(host.capabilities().input);
+        for gone in [
+            "adaptive_resampling_kp_near",
+            "enable_adaptive_resampling",
+            "live_input_clock_mode",
+            "live_input_lfe_mode",
+        ] {
+            assert!(host.option_kind(gone).is_none(), "{gone}");
+            let refused = host.apply_options(&[(gone, RawOptionValue::Number(1.0))]);
+            assert!(refused.results.iter().all(Option::is_none), "{gone}");
+        }
+    }
+
+    /// `/control/config/audio` is a batch of the rows; what an older client
+    /// still sends of the adaptive resampler is ignored, not an error.
+    #[test]
+    fn the_audio_patch_is_a_batch_of_the_rows() {
+        let host = host();
+        let patch = r#"{"outputDevice":" hw:2 ","sampleRate":0,"latencyTargetMs":80,
+            "adaptiveResampling":{"enabled":true,"kpNear":2.0}}"#;
+        let effects = host
+            .handle(osc_contract::CONTROL_CONFIG_AUDIO, &msg("", vec![s(patch)]))
+            .expect("a host address");
+        assert!(effects.mark_dirty, "a changed value lights Save");
+        let requested = host.audio.requested_snapshot();
+        assert_eq!(requested.output_device.as_deref(), Some("hw:2"));
+        assert_eq!(requested.output_sample_rate_hz, None, "0 unsets the rate");
+        assert_eq!(requested.latency_target_ms, Some(80));
+    }
+
+    /// The live input is staged: a patch (with the fields of an older client
+    /// left out) changes what is asked for, and the apply is a command.
+    #[test]
+    fn the_live_input_is_staged_and_applied_on_command() {
+        let host = host();
+        let pending = |host: &HostAudio| {
+            host.option_groups_pending()
+                .into_iter()
+                .any(|(group, pending)| group == options::LIVE_INPUT.key && pending)
+        };
+        let patch = r#"{"mode":"pipewire","liveInput":{"backend":"asio","node":" in ",
+            "clockMode":"dac","channels":2,"sampleRate":null,"lfeMode":"object"}}"#;
+        host.handle(osc_contract::CONTROL_CONFIG_INPUT, &msg("", vec![s(patch)]))
+            .expect("a host address");
+        let requested = host.input.requested_snapshot();
+        assert_eq!(requested.mode, InputMode::Pipewire);
+        assert_eq!(requested.node_name.as_deref(), Some("in"));
+        assert!(pending(&host), "staged values wait for their apply");
+        assert!(!host.input.is_apply_pending());
+
+        host.handle(osc_contract::CONTROL_INPUT_APPLY, &msg("", vec![]))
+            .expect("the apply");
+        assert!(host.input.is_apply_pending());
+        assert!(!pending(&host));
+    }
+
+    /// The dedicated addresses are aliases of the rows, with the rejections
+    /// they always had; an address whose row is gone is not this host's.
+    #[test]
+    fn the_dedicated_addresses_are_aliases_of_the_rows() {
+        let host = host();
+        host.handle(
+            osc_contract::CONTROL_LATENCY_TARGET,
+            &msg("", vec![OscType::Int(120)]),
+        )
+        .expect("a host address");
+        assert_eq!(host.audio.requested_snapshot().latency_target_ms, Some(120));
+        // A non-positive target was ignored by the address, and still is.
+        host.handle(
+            osc_contract::CONTROL_LATENCY_TARGET,
+            &msg("", vec![OscType::Int(0)]),
+        )
+        .expect("a host address");
+        assert_eq!(host.audio.requested_snapshot().latency_target_ms, Some(120));
+
+        host.handle(
+            osc_contract::CONTROL_INPUT_LIVE_NODE,
+            &msg("", vec![s(" den ")]),
+        )
+        .expect("a host address");
+        assert_eq!(
+            host.input.requested_snapshot().node_name.as_deref(),
+            Some("den")
+        );
+        // An address of the regulation this host replaced is not one of its.
+        let retired = osc_contract::CONTROL_LATENCY_TARGET
+            .replace("latency_target", "adaptive_resampling/kp_near");
+        assert!(
+            host.handle(&retired, &msg("", vec![OscType::Float(2.0)]))
+                .is_none()
+        );
+    }
+
+    /// Save writes the rows and leaves the rest of the file alone: the keys
+    /// of the engine before this one are kept as they were read.
+    #[test]
+    fn a_save_writes_the_rows_and_keeps_the_rest() {
+        let host = host();
+        host.apply_options(&[
+            ("latency_target", RawOptionValue::Number(120.0)),
+            ("realign_threshold_ms", RawOptionValue::Number(35.0)),
+            ("input_mode", RawOptionValue::Str("pipewire")),
+            ("live_input_node", RawOptionValue::Str("den")),
+        ]);
+        let mut render = renderer::config::RenderConfig {
+            adaptive_resampling_kp_near: Some(3.5),
+            live_input: Some(renderer::config::LiveInputConfig {
+                clock_mode: Some(renderer::config::InputClockModeConfig::Dac),
+                lfe_mode: Some(renderer::config::InputLfeModeConfig::Drop),
+                ..Default::default()
             }),
-            node: requested.node_name,
-            description: requested.node_description,
-            layout: requested.layout_path,
-            current_layout: requested.current_layout,
-            clock_mode: Some(match requested.clock_mode {
-                InputClockMode::Dac => renderer::config::InputClockModeConfig::Dac,
-                InputClockMode::Pipewire => renderer::config::InputClockModeConfig::Pipewire,
-                InputClockMode::Upstream => renderer::config::InputClockModeConfig::Upstream,
-            }),
-            channels: requested.channels,
-            sample_rate: requested.sample_rate_hz,
-            map: Some(match requested.map_mode {
-                InputMapMode::SevenOneFixed => renderer::config::InputMapModeConfig::SevenOneFixed,
-            }),
-            lfe_mode: Some(match requested.lfe_mode {
-                InputLfeMode::Object => renderer::config::InputLfeModeConfig::Object,
-                InputLfeMode::Direct => renderer::config::InputLfeModeConfig::Direct,
-                InputLfeMode::Drop => renderer::config::InputLfeModeConfig::Drop,
-            }),
-        });
+            ..Default::default()
+        };
+        host.amend_saved_config(&mut render);
+        assert_eq!(render.latency_target, Some(120));
+        assert_eq!(render.realign_threshold_ms, Some(35.0));
+        assert_eq!(
+            render.input_mode,
+            Some(renderer::config::InputModeConfig::Pipewire)
+        );
+        assert_eq!(render.adaptive_resampling_kp_near, Some(3.5));
+        let live = render.live_input.expect("the live input");
+        assert_eq!(live.node.as_deref(), Some("den"));
+        assert!(live.clock_mode.is_some());
+        assert_eq!(
+            live.lfe_mode,
+            Some(renderer::config::InputLfeModeConfig::Drop)
+        );
+    }
+
+    #[test]
+    fn the_schema_carries_every_row_with_its_group() {
+        let schema = host().options_schema();
+        assert_eq!(schema.len(), options::HOST_OPTIONS.len());
+        for (spec, entry) in options::HOST_OPTIONS.iter().zip(&schema) {
+            assert_eq!(entry["key"], spec.key);
+            assert_eq!(entry["group"]["key"], spec.group.unwrap().key);
+        }
+        let node = schema
+            .iter()
+            .find(|e| e["key"] == "live_input_node")
+            .unwrap();
+        assert_eq!(node["group"]["mode"], "staged");
     }
 }

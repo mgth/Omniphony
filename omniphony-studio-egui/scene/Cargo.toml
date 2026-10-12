@@ -12,7 +12,7 @@ publish = false
 # if a toolkit appears in this crate's dependency graph.
 [dependencies]
 omniphony-studio-core = { path = "../core" }
-omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
+omniphony_geometry = { path = "../../omniphony-renderer/omniphony_geometry" }
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 glam = { version = "0.30", features = ["bytemuck"] }

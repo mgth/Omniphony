@@ -256,8 +256,8 @@ mod tests {
     /// not flat anywhere.
     #[test]
     fn equalised_kemar_is_flat_in_the_diffuse_field() {
-        let raw = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
-        let eq = HrirSet::build(&MeasuredHrirData::saf_kemar(), 48_000, true);
+        let raw = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
+        let eq = HrirSet::build(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000, true);
         for (lo, hi) in [
             (300.0f32, 1_000.0f32),
             (1_000.0, 4_000.0),
@@ -284,8 +284,8 @@ mod tests {
     /// that is not the cue, the per-frequency ratio is).
     #[test]
     fn equalisation_preserves_interaural_differences() {
-        let raw = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
-        let eq = HrirSet::build(&MeasuredHrirData::saf_kemar(), 48_000, true);
+        let raw = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
+        let eq = HrirSet::build(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000, true);
         let mag = |h: &[f32], f: f64| -> f64 {
             let (mut c, mut si) = (0.0f64, 0.0f64);
             for (i, &v) in h.iter().enumerate() {
@@ -314,10 +314,11 @@ mod tests {
 
     /// Diagnostic: the designed filter's magnitude against the intended
     /// inverse of the smoothed diffuse-field response, and the result after
-    /// application, at a few frequencies.
+    /// application, at a few frequencies. Run with `-- --ignored --nocapture`.
     #[test]
+    #[ignore = "instrumentation: prints the EQ against its target, asserts nothing"]
     fn diagnostic_eq_magnitude_vs_target() {
-        let raw = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        let raw = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
         let power: Vec<f32> = raw
             .diffuse_field_response()
             .iter()
@@ -343,7 +344,7 @@ mod tests {
             }
             (c * c + si * si).sqrt()
         };
-        let eqd = HrirSet::build(&MeasuredHrirData::saf_kemar(), 48_000, true);
+        let eqd = HrirSet::build(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000, true);
         let after: Vec<f32> = eqd
             .diffuse_field_response()
             .iter()
@@ -377,8 +378,8 @@ mod tests {
     /// Off by default: `new` is `build` without the equaliser.
     #[test]
     fn new_is_build_without_equalisation() {
-        let a = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
-        let b = HrirSet::build(&MeasuredHrirData::saf_kemar(), 48_000, false);
+        let a = HrirSet::new(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000);
+        let b = HrirSet::build(&*MeasuredHrirData::saf_kemar_shared(48_000), 48_000, false);
         let mut pa = HrirPair {
             left: [0.0; HRIR_LEN],
             right: [0.0; HRIR_LEN],

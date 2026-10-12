@@ -1,9 +1,11 @@
 name: Release
 
 # Triggered by a version tag (v*) or manually.
-# Creates a draft GitHub release with Linux (.deb, .AppImage), Windows (.msi,
-# .exe) and macOS arm64 (.dmg/.app) bundles of the Tauri Studio, plus one
-# archive per platform of the native (egui/wgpu) Studio.
+# Creates a draft GitHub release with the Studio's installers (Linux .deb and
+# .AppImage, Windows .exe and .msi, macOS arm64 .dmg) plus one plain archive of
+# it per platform, one archive per platform of the standalone liborender, and
+# the release's compatibility manifest (#676). The Studio is the native
+# (egui/wgpu) one: the Tauri Studio was removed before 0.7.0 (#677).
 on:
   push:
     tags: ['v*']
@@ -15,7 +17,7 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Tag must be on the release branch
@@ -28,9 +30,44 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME ($GITHUB_SHA) is not on the 'release' branch. Cut release tags from 'release' (merge main->release, then tag)."
             exit 1
           fi
+      # One number names the Studios, orender and liborender (#676): the tag
+      # must be it (or a vX.Y.Z.N polish tag of it), every copy of it in the
+      # tree must agree, and the README's compatibility table must already
+      # carry this release's row — `scripts/release_version.py set` writes all
+      # of that in the version bump PR.
+      - name: Tag must name the release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python3 scripts/release_version.py check --tag "$GITHUB_REF_NAME"
+
+  # The draft every build below attaches its files to, created once before
+  # the three platforms start so none of them races another to create it.
+  # A rerun finds the draft already there and keeps it. A manual dispatch has
+  # no tag and no draft: the workflow artifacts are its output.
+  draft:
+    needs: guard
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `gh release view` finds a draft by its tag name too.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "A release for $GITHUB_REF_NAME already exists; reusing it."
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "Omniphony $GITHUB_REF_NAME" \
+              --notes "Release notes to come."
+          fi
 
   build-studio:
-    needs: guard
+    needs: [guard, draft]
+    # The draft is skipped on a manual dispatch: build anyway.
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.draft.result != 'failure' }}
     permissions:
       contents: write
 
@@ -41,28 +78,20 @@ jobs:
           - platform: ubuntu-22.04
           - platform: windows-latest
           # macOS Apple Silicon: CoreAudio output backend, no extra system deps.
-          # tauri-action emits a .dmg/.app; ad-hoc signed (see
-          # APPLE_SIGNING_IDENTITY below) until real signing secrets are
-          # configured.
+          # The .app is ad-hoc signed (omniphony-studio-egui/scripts/package.sh)
+          # until real signing secrets are configured.
           - platform: macos-14
 
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # ── Toolchains ────────────────────────────────────────────────────────
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 20
-
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         # Caching is an optimization, not a correctness step: a crash of the
         # cache action (e.g. the Node-20 entrypoint forced onto Node 24 dying on
         # the Windows runner) must never fail the build.
@@ -72,8 +101,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-            omniphony-studio/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-studio/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       # ── Platform dependencies ─────────────────────────────────────────────
@@ -84,36 +112,58 @@ jobs:
           # PPA required: ubuntu-22.04 ships PipeWire 0.3.48 but pipewire-rs 0.9.x
           # needs >= 0.3.65. PipeWire 1.0.x (ubuntu-24.04) removed some constants
           # the crate relies on. This PPA provides a compatible 0.3.85+ build.
-          for attempt in 1 2 3; do
-            if sudo add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "Failed to add PipeWire PPA after $attempt attempts" >&2
-              exit 1
-            fi
-            sleep 10
-          done
-          for attempt in 1 2 3; do
+          # The PPA is added by hand, not with add-apt-repository: that tool
+          # fetches the archive's signing key through Launchpad's API, which
+          # answers 500 (GPGKeyTemporarilyNotFoundError) whenever Launchpad
+          # is unwell — as it was on 2026-09-21, for hours. The key is
+          # vendored instead (.github/keys/pipewire-upstream-ppa.asc,
+          # fingerprint FC43B7352BCC0EC8AF2EEB8B25088A0359807596, the one the
+          # API reports for the PPA and the one its InRelease is signed
+          # with), so only the archive host itself is needed.
+          sudo install -d -m 755 /etc/apt/keyrings
+          gpg --dearmor < .github/keys/pipewire-upstream-ppa.asc \
+            | sudo tee /etc/apt/keyrings/pipewire-upstream-ppa.gpg > /dev/null
+          suite="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          echo "deb [signed-by=/etc/apt/keyrings/pipewire-upstream-ppa.gpg] https://ppa.launchpadcontent.net/pipewire-debian/pipewire-upstream/ubuntu $suite main" \
+            | sudo tee /etc/apt/sources.list.d/pipewire-upstream.list > /dev/null
+          # `apt-get update` exits 0 when the PPA answers 503 (it only warns
+          # and keeps the stock index), and the install then picks Ubuntu's
+          # 0.3.48, which libspa refuses long after this step passed. Launchpad
+          # does answer 503 intermittently, so the update is retried until the
+          # candidate version actually comes from the PPA (same as ci.yml).
+          pipewire_candidate() {
+            apt-cache policy libpipewire-0.3-dev | awk '/Candidate:/ { print $2 }'
+          }
+          for attempt in 1 2 3 4 5 6 7 8; do
             if sudo apt-get update; then
-              break
+              candidate="$(pipewire_candidate)"
+              if [ -n "$candidate" ] && dpkg --compare-versions "$candidate" ge 0.3.65; then
+                echo "PipeWire candidate from the PPA: $candidate"
+                break
+              fi
+              echo "PipeWire candidate is '$candidate' (the PPA index was not fetched); retrying" >&2
             fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "apt-get update failed after $attempt attempts" >&2
+            if [ "$attempt" -eq 8 ]; then
+              echo "apt-get update never fetched the PipeWire PPA after $attempt attempts" >&2
               exit 1
             fi
-            sleep 10
+            sleep 20
           done
+          # What the renderer links (PipeWire, ALSA through cpal), the same
+          # list as ci.yml's build-and-test. The Studio links nothing that
+          # needs a -dev package (it dlopens Wayland and xkbcommon).
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
             libpipewire-0.3-dev \
+            libasound2-dev \
             libxkbcommon-dev \
             libwayland-dev \
             pkg-config
+          installed="$(dpkg-query -W -f='${Version}' libpipewire-0.3-dev)"
+          if ! dpkg --compare-versions "$installed" ge 0.3.65; then
+            echo "libpipewire-0.3-dev $installed installed; pipewire-rs 0.9 needs >= 0.3.65" >&2
+            exit 1
+          fi
+          echo "libpipewire-0.3-dev $installed"
 
       # Required to compile cpal with ASIO support on Windows. Licensing rationale
       # and the pinned SDK commit both live in the action.
@@ -123,58 +173,18 @@ jobs:
 
       # ── Build ─────────────────────────────────────────────────────────────
 
-      - name: Install npm dependencies
-        working-directory: omniphony-studio
-        run: npm ci
-
-      # tauri-action runs tauri.conf.json's beforeBuildCommand automatically:
-      #   "npm run build && npm run prepare-sidecar"
-      # prepare-sidecar compiles orender (cargo build --release) and copies
-      # the binary into src-tauri/binaries/ before Tauri packages the app.
-      - name: Build and publish
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # "-" = ad-hoc codesign of the whole .app during bundling (before the
-          # .app.tar.gz/.dmg are packaged and uploaded — signing after this step
-          # would be too late). No Developer ID: Gatekeeper still blocks the
-          # quarantined download, but the bundle gets a coherent seal so a
-          # quarantine-cleared app launches instead of showing the "damaged"
-          # dialog (#201). Replace with a real identity + notarization once
-          # Apple signing secrets exist. Ignored on Linux/Windows.
-          #
-          # Signing every executable also applies tauri.conf.json's macOS
-          # options: hardenedRuntime is disabled there because it turns on
-          # library validation, which forbids the orender sidecar from
-          # dlopen'ing a bridge signed by another team (#260). Do not re-enable
-          # it without a real Developer ID — see Entitlements.plist.
-          APPLE_SIGNING_IDENTITY: '-'
-        with:
-          projectPath: omniphony-studio
-          # Everything after `--` reaches the cargo Tauri runs for src-tauri,
-          # which is otherwise the one build in the repository that still
-          # resolves its dependencies freely. The CLI places these right after
-          # `build`, before its own flags, so nothing this action appends can
-          # displace them.
-          args: -- --locked
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Omniphony ${{ github.ref_name }}'
-          releaseDraft: true
-          prerelease: false
-
-      # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
-      # The same release ships the native Studio as a plain archive per
-      # platform: the binary, the renderer it launches (the sidecar the Tauri
-      # build just prepared, so the same commit), the layouts and the head
-      # model, laid out as `HostPaths::bundled()` and the asset defaults expect
-      # — everything beside the executable. Built after tauri-action so the
-      # draft release exists by the time the archive is attached to it.
+      # ── Studio (egui/wgpu) ────────────────────────────────────────────────
+      # The release ships the Studio as installers and as a plain archive per
+      # platform: the binary, the renderer it launches (built from the same
+      # commit), the layouts and the head model, laid out as
+      # `HostPaths::bundled()` and the asset defaults expect — everything
+      # beside the executable.
       #
       # Its own build tree and toolchain: rust-toolchain.toml in the crate
       # pins a newer rustc than the renderer's, and rustup installs it when
       # cargo runs from inside the directory.
       - name: Cache the native Studio build
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         with:
           path: omniphony-studio-egui/target
@@ -184,6 +194,45 @@ jobs:
       - name: Build the native Studio
         working-directory: omniphony-studio-egui
         run: cargo build --release --locked
+
+      # The renderer the Studio ships and the engine library the installers
+      # and the liborender archive below ship, from the same commit.
+      - name: Build the renderer and the engine library
+        working-directory: omniphony-renderer
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked -p orender_ffi
+
+      # What the archives and installers below ship must start on a Windows
+      # without the Visual C++ Redistributable (static C runtime, each
+      # workspace's .cargo/config.toml); the runner has it installed, so only
+      # the import tables tell.
+      - name: Check the binaries need no Visual C++ runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python scripts/check_windows_crt_imports.py \
+            omniphony-renderer/target/release/orender.exe \
+            omniphony-renderer/target/release/orender.dll \
+            omniphony-studio-egui/target/release/omniphony-studio-egui.exe
+
+      # Installers of the native Studio (#677): deb + AppImage, NSIS + MSI,
+      # .dmg. cargo-packager, configured in omniphony-studio-egui/Cargo.toml;
+      # the script also stages orender and the engine library into the
+      # Studio's target/release, which the archive below reuses.
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
+      - name: Build the native Studio installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          omniphony-studio-egui/scripts/package.sh
+          {
+            echo 'studio_installers<<EOF'
+            cat omniphony-studio-egui/target/packages/list.txt
+            echo EOF
+          } >> "$GITHUB_ENV"
 
       - name: Stage the native Studio archive
         shell: bash
@@ -197,14 +246,16 @@ jobs:
           esac
           name="omniphony-studio-egui-${GITHUB_REF_NAME}-${platform}"
           dir="staging/$name"
-          mkdir -p "$dir/layouts/legacy" "$dir/assets"
+          mkdir -p "$dir/layouts/legacy" "$dir/assets" "$dir/engine"
           cp "omniphony-studio-egui/target/release/omniphony-studio-egui$exe" "$dir/"
-          # The sidecar carries the host triple in its name; the Studio looks
-          # for a plain `orender` next to itself.
-          cp omniphony-studio/src-tauri/binaries/orender-*"$exe" "$dir/orender$exe"
+          # The Studio looks for a plain `orender` next to itself.
+          cp "omniphony-renderer/target/release/orender$exe" "$dir/"
+          # The engine library the Studio deploys for the player on startup,
+          # staged under its loader name by the installers step below.
+          cp omniphony-studio-egui/target/release/engine/* "$dir/engine/"
           cp layouts/*.yaml "$dir/layouts/"
           cp layouts/legacy/*.yaml "$dir/layouts/legacy/"
-          cp omniphony-studio/assets/la_dame_de_brassempouy_centered.glb "$dir/assets/"
+          cp omniphony-studio-egui/assets/la_dame_de_brassempouy_centered.glb "$dir/assets/"
           cp LICENSE "$dir/"
           ls -laR "$dir"
           cd staging
@@ -215,19 +266,105 @@ jobs:
           esac
           echo "archive=staging/$archive" >> "$GITHUB_ENV"
 
+      # ── Standalone liborender ─────────────────────────────────────────────
+      # The engine library built above from this commit, with its C header,
+      # for the player and any other host linking it outside Studio.
+      # It used to be a release of its own under liborender-v* tags, which
+      # drifted from the Studio line and only ever built when tagged by hand;
+      # it now ships with every release, under the release's number (#676).
+      - name: Stage the liborender archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)   platform=linux-x86_64;   lib=liborender.so ;;
+            Windows) platform=windows-x86_64; lib=orender.dll ;;
+            macOS)   platform=macos-arm64;    lib=liborender.dylib ;;
+            *) echo "unexpected runner OS: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          name="liborender-${GITHUB_REF_NAME}-${platform}"
+          mkdir -p "staging/$name"
+          cp "omniphony-renderer/target/release/$lib" \
+            omniphony-renderer/orender_ffi/include/orender.h "staging/$name/"
+          cd "staging/$name"
+          # Flat, as the liborender-v* archives were: the library and the
+          # header at the archive's root.
+          case "$RUNNER_OS" in
+            Windows) 7z a -tzip "../$name.zip" ./* > /dev/null ;;
+            *)       zip -q "../$name.zip" ./* ;;
+          esac
+          echo "liborender_archive=staging/$name.zip" >> "$GITHUB_ENV"
+
+      - name: Upload the liborender archive (workflow artifact)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: liborender-${{ runner.os }}
+          path: ${{ env.liborender_archive }}
+
       - name: Upload the native Studio archive (workflow artifact)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: studio-egui-${{ runner.os }}
           path: ${{ env.archive }}
 
-      # Attached to the draft tauri-action created for this tag. `gh` finds a
-      # draft by its tag name (drafts have no ref yet, so the tag lookup alone
-      # would miss it). A manual dispatch has no tag and no draft: the
-      # workflow artifact above is its output.
-      - name: Attach the native Studio archive to the draft release
+      - name: Upload the native Studio installers (workflow artifact)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: studio-egui-installers-${{ runner.os }}
+          path: ${{ env.studio_installers }}
+
+      # Attached to the draft the `draft` job created for this tag. `gh` finds
+      # a draft by its tag name (drafts have no ref yet, so the tag lookup
+      # alone would miss it). A manual dispatch has no tag and no draft: the
+      # workflow artifacts above are its output.
+      - name: Attach the Studio and liborender archives to the draft release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" "$archive" --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          # Bash 3.2 on the macOS runner: no mapfile. One path per line,
+          # spaces kept.
+          installers=()
+          while IFS= read -r installer; do
+            installers+=("$installer")
+          done < omniphony-studio-egui/target/packages/list.txt
+          gh release upload "$GITHUB_REF_NAME" "$archive" "$liborender_archive" \
+            "${installers[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+
+  # What this release goes with (#676): its version, the liborender ABI, the
+  # player tag and the bridge_api series a decoder bridge must be built
+  # against — the README's compatibility row, as JSON, for tools and for
+  # anyone holding only the downloaded files. After the builds, so it lands
+  # on the draft they created and only on a release that built everywhere.
+  manifest:
+    needs: build-studio
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Write the compatibility manifest
+        run: |
+          set -euo pipefail
+          manifest="omniphony-${GITHUB_REF_NAME}-manifest.json"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            python3 scripts/release_version.py manifest --tag "$GITHUB_REF_NAME" > "$manifest"
+          else
+            python3 scripts/release_version.py manifest > "$manifest"
+          fi
+          cat "$manifest"
+          echo "manifest=$manifest" >> "$GITHUB_ENV"
+
+      - name: Upload the manifest (workflow artifact)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manifest
+          path: ${{ env.manifest }}
+
+      - name: Attach the manifest to the draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" "$manifest" --clobber --repo "$GITHUB_REPOSITORY"

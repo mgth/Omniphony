@@ -60,28 +60,47 @@ fn non_empty_var(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Run `f` with the variable `name` set to `value` (unset for `None`), then
+/// restore it, even if `f` panics.
+///
+/// The environment is process-global and this crate's tests run in parallel in
+/// one process: every test that changes a variable goes through here, under one
+/// lock, so none observes another's half-set value. A second lock elsewhere
+/// would not exclude this one.
+#[cfg(test)]
+pub(crate) fn with_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct Restore<'a> {
+        name: &'a str,
+        previous: Option<std::ffi::OsString>,
+    }
+    impl Drop for Restore<'_> {
+        fn drop(&mut self) {
+            // SAFETY: under ENV_LOCK, held by the caller for this guard's life.
+            match self.previous.take() {
+                Some(v) => unsafe { std::env::set_var(self.name, v) },
+                None => unsafe { std::env::remove_var(self.name) },
+            }
+        }
+    }
+
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _restore = Restore {
+        name,
+        previous: std::env::var_os(name),
+    };
+    // SAFETY: under ENV_LOCK; see above.
+    match value {
+        Some(v) => unsafe { std::env::set_var(name, v) },
+        None => unsafe { std::env::remove_var(name) },
+    }
+    f()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The env is process-global, so these run under one lock and restore what
-    /// they change — otherwise a parallel test could observe a half-set value.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var(name).ok();
-        match value {
-            Some(v) => unsafe { std::env::set_var(name, v) },
-            None => unsafe { std::env::remove_var(name) },
-        }
-        let out = f();
-        match previous {
-            Some(v) => unsafe { std::env::set_var(name, v) },
-            None => unsafe { std::env::remove_var(name) },
-        }
-        out
-    }
 
     #[test]
     fn an_unset_variable_leaves_the_built_in_default() {

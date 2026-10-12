@@ -2543,25 +2543,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "omniphony-geometry"
-version = "0.1.0"
-
-[[package]]
 name = "omniphony-osc-contract"
 version = "0.1.0"
 
 [[package]]
 name = "omniphony-studio-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "flate2",
  "log",
  "memory-stats",
- "omniphony-geometry",
  "omniphony-osc-contract",
+ "omniphony_geometry",
  "rosc",
  "serde",
  "serde_json",
+ "socket2",
  "sofar",
  "tempfile",
  "ureq",
@@ -2570,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "omniphony-studio-egui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bytemuck",
  "clap",
@@ -2581,9 +2578,9 @@ dependencies = [
  "glam",
  "gltf",
  "log",
- "omniphony-geometry",
  "omniphony-studio-core",
  "omniphony-studio-scene",
+ "omniphony_geometry",
  "regex",
  "rfd",
  "rosc",
@@ -2595,18 +2592,22 @@ dependencies = [
 
 [[package]]
 name = "omniphony-studio-scene"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bytemuck",
  "glam",
  "gltf",
  "log",
- "omniphony-geometry",
  "omniphony-studio-core",
+ "omniphony_geometry",
  "serde",
  "serde_json",
  "wgpu",
 ]
+
+[[package]]
+name = "omniphony_geometry"
+version = "0.7.0"
 
 [[package]]
 name = "once_cell"
@@ -3446,9 +3447,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "sofar"
 version = "0.3.0"
-source = "git+https://github.com/mgth/sofar?rev=c03ff5cfd997d316ae330e2735e82311769b45a3#c03ff5cfd997d316ae330e2735e82311769b45a3"
+source = "git+https://github.com/mgth/sofar?rev=26ca8670b09bd55febc19fbdd73be5af06825ddb#26ca8670b09bd55febc19fbdd73be5af06825ddb"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",

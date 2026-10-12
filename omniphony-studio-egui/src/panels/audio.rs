@@ -95,6 +95,10 @@ impl StudioSpike {
                     });
                 });
 
+                // The Essentials view stops at the level.
+                if !self.advanced {
+                    return;
+                }
                 // `#autoGainSection`: the switch in the bar with the clip dot
                 // beside it — the web draws the dot in the label — and the
                 // ceiling in the inset.

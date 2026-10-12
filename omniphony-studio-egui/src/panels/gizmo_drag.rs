@@ -23,7 +23,7 @@ use egui::{Pos2, Rect};
 use glam::Vec3;
 
 use crate::app::StudioSpike;
-use crate::model::app_state::RoomRatio;
+use crate::model::app_state::{AppState, RoomRatio};
 use crate::model::layouts::Speaker;
 use crate::view::gizmos::{
     self, EditMode, GizmoTarget, project_ray_onto_axis, ray_plane, snap_drag_angle, spherical,
@@ -246,7 +246,13 @@ impl StudioSpike {
             return scene;
         };
         let adm_axis = gizmos::adm_axis_of(axis);
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.gizmo_frame();
+        // The grid is the speaker stage's, laid along the room's axes. Under
+        // the sphere reading a scene axis is not a room axis, so a snapped
+        // room coordinate would pull the target off the handle's line.
+        if room.sphere {
+            return scene;
+        }
         let mut adm = gizmos::scene_to_normalized(scene, &room);
         adm[adm_axis] = gizmos::snap_to_nodes(adm[adm_axis], &axes[adm_axis]);
         crate::view::scene_position(adm, &room)
@@ -260,11 +266,21 @@ impl StudioSpike {
         if *pinned != index {
             return None;
         }
-        let room = self.host.read().app.room_ratio.clone();
+        let room = self.host.read().app.speaker_frame();
         Some(speaker_at(
             speaker,
             gizmos::scene_to_normalized(*scene, &room),
         ))
+    }
+
+    /// The frame the gizmo's target is converted in ([`target_frame`]); the
+    /// display frame while it holds nothing.
+    fn gizmo_frame(&self) -> RoomRatio {
+        let live = self.host.read();
+        match &self.gizmo_target {
+            Some((target, _)) => target_frame(&live.app, target),
+            None => live.app.display_room(),
+        }
     }
 
     fn viewport_ray(&self, pointer: Pos2, rect: Rect, aspect: f32) -> (Vec3, Vec3) {
@@ -280,7 +296,7 @@ impl StudioSpike {
         let Some((target, _)) = self.gizmo_target.clone() else {
             return;
         };
-        let room = self.host.read().app.room_ratio.clone();
+        let room = target_frame(&self.host.read().app, &target);
         let adm = gizmos::scene_to_normalized(scene, &room);
         // Both targets live in the layout's cube: the conversion above clamps
         // to it, and so does the bed's `polar_to_adm` for a channel. Anchoring
@@ -326,6 +342,20 @@ impl StudioSpike {
                 );
             }
         }
+    }
+}
+
+/// The frame a gizmo target's scene position is converted back through: the
+/// one it is drawn in. A channel is a source, placed in the display frame,
+/// sphere reading included. A speaker stands where it is
+/// (`AppState::speaker_frame`): the scene draws the reference layout of the
+/// direct path without the reading, and inverting it with the reading moved
+/// a speaker at −30° to the room's corner at −45° on a drag that had not
+/// moved it.
+pub(crate) fn target_frame(app: &AppState, target: &GizmoTarget) -> RoomRatio {
+    match target {
+        GizmoTarget::Speaker(_) => app.speaker_frame(),
+        GizmoTarget::Channel { .. } => app.display_room(),
     }
 }
 
@@ -424,6 +454,46 @@ mod tests {
         assert!(wall.length() < beyond.length());
         // And the wall is where it stays: the clamp is idempotent.
         assert!((clamped_to_layout(wall, &room) - wall).length() < 1e-4);
+    }
+
+    /// Under the sphere reading a speaker and a channel are converted in
+    /// different frames, each the one it is drawn in: a reference speaker
+    /// comes back from its drawn position to where it stands, and a channel
+    /// to the room position heard there.
+    #[test]
+    fn each_gizmo_target_comes_back_through_the_frame_it_is_drawn_in() {
+        let mut app = AppState::new(Vec::new());
+        app.binaural = Some(serde_json::json!({
+            "outputMode": "binaural", "mode": "direct", "modeEffective": "direct",
+            "hrirSource": "saf", "unitScaleM": 1.0, "sphereCoordinates": true,
+        }));
+        assert!(app.display_room().sphere);
+        let speaker = target_frame(&app, &GizmoTarget::Speaker(0));
+        let channel = target_frame(
+            &app,
+            &GizmoTarget::Channel {
+                id: "0".to_owned(),
+                name: "L".to_owned(),
+            },
+        );
+        assert!(!speaker.sphere && channel.sphere);
+        assert_eq!(speaker, app.speaker_frame());
+
+        // A speaker at −30°, drawn as the scene draws speakers.
+        let stands = [-0.5, 0.75f64.sqrt(), 0.0];
+        let drawn = crate::view::scene_position(stands, &app.speaker_frame());
+        let back = gizmos::scene_to_normalized(drawn, &speaker);
+        for axis in 0..3 {
+            assert!((back[axis] - stands[axis]).abs() < 1e-6, "{back:?}");
+        }
+        assert!((clamped_to_layout(drawn, &speaker) - drawn).length() < 1e-6);
+        // The display frame would have read it as the room's corner.
+        let misread = gizmos::scene_to_normalized(drawn, &app.display_room());
+        assert!((misread[0] + 1.0).abs() < 1e-6 && (misread[1] - 1.0).abs() < 1e-6);
+
+        // A channel at the same drawn point is the corner, heard at −30°.
+        let heard = gizmos::scene_to_normalized(drawn, &channel);
+        assert!((heard[0] + 1.0).abs() < 1e-6 && (heard[1] - 1.0).abs() < 1e-6);
     }
 
     /// A handle the camera has shrunk to a few points still takes a press

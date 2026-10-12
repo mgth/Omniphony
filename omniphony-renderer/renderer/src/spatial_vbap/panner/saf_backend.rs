@@ -4,7 +4,7 @@
 //! struct ([`SpartaVbapLayout`]) that computes VBAP gains directly via
 //! [`SpartaVbapLayout::vbap_gains`].
 
-use super::Gains;
+use super::normalized_spread_to_degrees;
 use super::saf_ffi;
 use crate::spatial_vbap::vbap_native::prepare_effective_speaker_dirs;
 use std::ffi::c_int;
@@ -14,7 +14,7 @@ use std::ffi::c_int;
 /// Owns the C-allocated `ls_groups` and `layout_inv_mtx` pointers and frees
 /// them on drop.
 pub(crate) struct SpartaVbapLayout {
-    /// Number of *real* (non-dummy) speakers — size of the returned `Gains`.
+    /// Number of *real* (non-dummy) speakers — the number of gains returned.
     pub(crate) n_speakers: usize,
     pub(crate) n_faces: c_int,
     /// Total speaker count used for triangulation (real + dummy virtual speakers).
@@ -24,15 +24,6 @@ pub(crate) struct SpartaVbapLayout {
 }
 
 impl SpartaVbapLayout {
-    /// Maximum spread in degrees that SAF's `vbap3D` accepts.
-    /// The public API uses normalised [0, 1]; this constant maps 1.0 → 180°.
-    const NORMALIZED_SPREAD_MAX_DEG: f32 = 180.0;
-
-    #[inline]
-    fn normalized_spread_to_degrees(spread: f32) -> f32 {
-        spread.clamp(0.0, 1.0) * Self::NORMALIZED_SPREAD_MAX_DEG
-    }
-
     /// Build a layout from speaker directions (azimuth, elevation in degrees).
     ///
     /// The real layout is triangulated first. If that fails, virtual speakers at
@@ -110,9 +101,9 @@ impl SpartaVbapLayout {
         azimuth_deg: f32,
         elevation_deg: f32,
         spread: f32,
-    ) -> Result<Gains, String> {
+    ) -> Result<Vec<f32>, String> {
         let mut src_dirs = [azimuth_deg, elevation_deg];
-        let spread_deg = Self::normalized_spread_to_degrees(spread);
+        let spread_deg = normalized_spread_to_degrees(spread);
         let mut gain_mtx: *mut f32 = std::ptr::null_mut();
         unsafe {
             saf_ffi::vbap3D(
@@ -138,7 +129,7 @@ impl SpartaVbapLayout {
         // vertices inside vbap3d; the SAF FFI doesn't expose that hook, so a post-hoc
         // k-nearest redistribution table would be needed instead.
         let all_gains = unsafe { std::slice::from_raw_parts(gain_mtx, self.n_eff) };
-        let out = Gains::from_slice(&all_gains[..self.n_speakers]);
+        let out = all_gains[..self.n_speakers].to_vec();
         unsafe { libc::free(gain_mtx as *mut libc::c_void) };
         Ok(out)
     }

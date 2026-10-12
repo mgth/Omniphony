@@ -27,12 +27,9 @@ pub fn control_audio_config(
     // apply these bounds itself on the way out, so a field that was pulled
     // into range looked accepted as typed.
     //
-    // Neither step below may fail quietly. `sendAudioConfig()` chains the
-    // apply call onto this one's promise, so a `None` here means the renderer
-    // is told to apply a configuration it was never sent: the switch flips on,
-    // nothing reaches the audio path, and the next state broadcast flips it
-    // back. That is a silent no-op that reads as a UI bug, and it is what the
-    // original `.ok()?` produced.
+    // Neither step below may fail quietly: the apply follows this call, so a
+    // `None` that nobody explains means the renderer is told to apply a
+    // configuration it was never sent, a silent no-op that reads as a UI bug.
     let raw: crate::host::audio_config::AudioConfig = match serde_json::from_value(payload.clone())
     {
         Ok(config) => config,
@@ -67,8 +64,8 @@ pub fn control_audio_config(
 
 /// `sendAudioConfig`: the whole audio document, built from the model, resolved
 /// by the schema and applied. Every audio control writes the model first and
-/// then asks for the document, so the device, the rate and the adaptive
-/// controller can never disagree about what was sent.
+/// then asks for the document, so the device, the rate and the latency target
+/// can never disagree about what was sent.
 ///
 /// The apply only follows a document that actually went out: applying one the
 /// renderer never received flips a switch that nothing acts on.
@@ -83,51 +80,6 @@ pub fn send_audio_document(state: &SharedState) {
                 .latency
                 .latency_requested_ms
                 .or(a.latency.latency_target_ms),
-            // The adaptive controller rides the same document, so a
-            // parameter change and a device change cannot disagree.
-            "adaptiveResampling": {
-                "enabled": a.adaptive_resampling.unwrap_or(0) != 0,
-                "enableFarMode": a.adaptive_resampling_enable_far_mode.unwrap_or(0) != 0,
-                "forceSilenceInFarMode": a
-                    .adaptive_resampling_force_silence_in_far_mode
-                    .unwrap_or(1)
-                    != 0,
-                "hardRecoverHighInFarMode": a
-                    .adaptive_resampling_hard_recover_high_in_far_mode
-                    .unwrap_or(1)
-                    != 0,
-                "hardRecoverLowInFarMode": a
-                    .adaptive_resampling_hard_recover_low_in_far_mode
-                    .unwrap_or(0)
-                    != 0,
-                "farModeReturnFadeInMs": a.adaptive_resampling_far_mode_return_fade_in_ms,
-                "kpNear": a.adaptive_resampling_kp_near,
-                "ki": a.adaptive_resampling_ki,
-                "integralDischargeRatio": a.adaptive_resampling_integral_discharge_ratio,
-                "maxAdjust": a.adaptive_resampling_max_adjust,
-                "highRecoverEntryMarginMs": a
-                    .adaptive_resampling_high_recover_entry_margin_ms,
-                "updateIntervalCallbacks": a.adaptive_resampling_update_interval_callbacks,
-                "lowRecoverSettleStableMs": a
-                    .adaptive_resampling_low_recover_settle_stable_ms,
-                "lowRecoverEntryMarginMs": a
-                    .adaptive_resampling_low_recover_entry_margin_ms,
-                "lowRecoverExitMarginMs": a.adaptive_resampling_low_recover_exit_margin_ms,
-                "lowRecoverSettleMarginMs": a
-                    .adaptive_resampling_low_recover_settle_margin_ms,
-                "lowRecoverRefillDeltaAlpha": a
-                    .adaptive_resampling_low_recover_refill_delta_alpha,
-                "controlSmoothingCutoffHz": a
-                    .adaptive_resampling_control_smoothing_cutoff_hz,
-                "controlSmoothingOrder": a.adaptive_resampling_control_smoothing_order,
-                "paused": a.adaptive_resampling_paused.unwrap_or(0) != 0,
-                "usePreBridgeClock": a.adaptive_resampling_use_pre_bridge_clock.unwrap_or(0) != 0,
-                "useOutputPacing": a.adaptive_resampling_use_output_pacing.unwrap_or(0) != 0,
-                "disableBackpressure": a
-                    .adaptive_resampling_disable_backpressure
-                    .unwrap_or(0)
-                    != 0,
-            }
         })
     };
     if control_audio_config(state, payload).is_some() {

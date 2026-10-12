@@ -1,7 +1,12 @@
 # Phase 2 spec — the state & event contract between the web Studio and its Tauri host
 
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
 Scope: everything that crosses the host↔webview boundary in
-`omniphony-studio/` — the events the Rust host emits, the derived numbers it
+[`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio) — the events the Rust host emits, the derived numbers it
 computes before emitting, the connection/auto-start state machine, the JS
 `app` state object those events write into, the repaint (`dirty`) scheduling,
 the log pipeline, and the `get_state` snapshot. It says, per item, whether the
@@ -154,8 +159,8 @@ Ordered by the `handle_event` arm that produces it
 | `latency:stats` | see §2.3 | 250 ms timer | `app.timingStats = payload`; `updateLatencyMeterUI()`, `updateRenderTimeUI()` | **DERIVED** — whole event |
 | `diag:schema` | `{value: <JSON string>}` | `StateDiagSchema` | `app.diagSchema = JSON.parse(value)` (`parseDiagPayload`, idempotent if already an object) | **APPLIED** (`live.app.latency.diag_schema`) |
 | `diag:values` | `{value: <JSON string>}` | `StateDiagValues` | `app.diagValues = …` | **APPLIED** |
-| `objectGenerators:schema` | `{value: <JSON string>}` | `StateObjectGenerators` | `app.objectGenerators = JSON.parse(value) || []` (catch → `[]`); `rebuildObjectGeneratorControls()` | **APPLIED** (`live.object_generators_schema`) |
-| `phantom:schema` | `{value: <JSON string>}` | `StatePhantom` | `app.phantomSchema = …`; `rebuildPhantomControls()` | **APPLIED** (`live.phantom_schema`) |
+| `objectGenerators:schema` | `{value: <JSON string>}` | `StateObjectGenerators` | `app.objectGenerators = JSON.parse(value) || []` (catch → `[]`); `rebuildObjectGeneratorControls()` | **APPLIED** (`live.object_generator_listings`) |
+| `phantom:schema` | `{value: <JSON string>}` | `StatePhantom` | `app.phantomListing = …` (catch → `null`); `rebuildPhantomControls()` | **APPLIED** (`live.phantom_listing`) |
 | `options:schema` | `{value: <JSON string>}` | `StateOptionsSchema` | `app.optionsSchema = …`; `reflectBoundOptions()` | **APPLIED** (`live.options_schema`) |
 | `decode:time_ms` | `{value:f64}` | `StateDecodeTimeMs` | finite → `setDecodeTimeMs`, else `app.decodeTimeMs = null`; `updateRenderTimeUI()` | state **APPLIED**; `record_timing(Decode)` **DERIVED** |
 | `render:time_ms` | `{value:f64}` | `StateRenderTimeMs` | same shape | state **APPLIED**; `record_timing(Render)` **DERIVED** |
@@ -1017,11 +1022,11 @@ overwrites them on the first snapshot)
 |---|---|---|
 | `audioSampleRate` | `null` | |
 | `rampMode` | `'sample'` | accepted: `off`, `frame`, `sample`, `interp` |
-| `objectGenerators` | `[]` | schema from `objectGenerators:schema` |
-| `objectGeneratorParams` | `{}` | live overrides (key→value) |
+| `objectGenerators` | `[]` | listings from `objectGenerators:schema` |
+| `objectGeneratorParamValuesById` | `{}` | stored values (id→key→value) |
 | `objectGeneratorLayoutHasHeight` | `true` | assume yes until told otherwise |
-| `phantomSchema` | `[]` | from `phantom:schema` |
-| `phantomParams` | `{}` | |
+| `phantomListing` | `null` | from `phantom:schema` |
+| `phantomParamValues` | `{}` | stored values (key→value) |
 | `fixedChannelCatalog` | `[]` | |
 | `fixedChannelProcessing` | `{stream:'idle', labels:[], phantom:'no_stream', height:'no_stream'}` | |
 | `crossover` | `null` | `{engine, bands, cutoffsHz, taps, latencyMs}` |
@@ -1171,9 +1176,7 @@ per-option JS mirrors — "the lying hard-coded defaults died with phase 2".
 <input type="number" data-option="crossover_fir_transition_ratio">
 ```
 
-* `setOption(key, value)` (lines 36-49): optimistic `app.options[key] = value`;
-  run the `AFTER_SET[key]` hook (only one exists: `object_generator_id` resets
-  `app.objectGeneratorParams = {}`, mirroring the renderer); then
+* `setOption(key, value)`: optimistic `app.options[key] = value`; then
   `invoke('control_option', {key, value})` → OSC
   `/omniphony/control/option [key, value]`; then `reflectBoundOptions()`,
   `dirty.audioFormat = true`, `scheduleUIFlush()`. A failed invoke is logged to
@@ -1197,7 +1200,7 @@ per-option JS mirrors — "the lying hard-coded defaults died with phase 2".
   "key":     "<canonical snake_case>",
   "kind":    "bool" | "enum" | "string" | "float",
   "default": <bool|string|number>,
-  "flags":   ["persist"?, "replan"?],
+  "flags":   ["replan"?],             // "persist" was dropped: every option waits for Save
   "i18nKey": "<label key>",
   "values":  ["…"],          // enum only
   "min": …, "max": …, "step": …,  // float only (step is a UI hint, not a grid)
@@ -1212,6 +1215,7 @@ these but must still render generically from the received schema:
 |---|---|---|---|---|---|---|---|
 | `surround_placement` | enum | `side`, `back` | `"side"` | persist, replan | `twoDSources.surroundLabel` | — | `/omniphony/control/surround_placement` |
 | `synthetic_objects_enabled` | bool | — | `false` | persist, replan | `twoDSources.syntheticObjectsLabel` | `help.syntheticObjects` | `/omniphony/control/synthetic_objects` |
+| `decode_thread` | bool | — | `false` | persist | `renderer.decodeThreadLabel` | `help.decodeThread` | `/omniphony/control/decode_thread` |
 | `output_channel_mapping` | enum | `by_index`, `by_name` | `"by_index"` | persist | `audio.channelMapping` | — | `/omniphony/control/output_channel_mapping` |
 | `object_generator_id` | string | — | `""` | persist, replan | `twoDSources.objectGeneratorLabel` | `help.objectGenerator` | `/omniphony/control/object_generator` |
 | `phantom_extract_mode` | enum | `off`, `broadband`, `spectral` | `"off"` | persist, replan | `twoDSources.phantomLabel` | `help.phantomExtract` | `/omniphony/control/phantom_extract` |
@@ -1229,20 +1233,19 @@ The renderer's current values arrive as
 `options` block of `/state/renderer` (mirrored into `AppState::options`,
 `osc_listener.rs:650-652` / `NAT/src/osc/apply.rs`).
 
-**`objectGenerators:schema`** — array of
-`{id, label, i18nKey, requiresHeightLayer, params:[{key,label,i18nKey,min,max,step,default,unit}]}`
-(documented at `state.js:239-249`). Live overrides live in
-`app.objectGeneratorParams`, and `app.objectGeneratorLayoutHasHeight` (from the
+**`objectGenerators:schema`** — array of plugin listings
+`{id, label, i18nKey?, params:[ParamSpec]}`, the format of the backends'
+`availableBackends` (`docs/plugin-contract.md`). Stored values live in
+`app.objectGeneratorParamValuesById` (`{id: {key: value}}`), and `app.objectGeneratorLayoutHasHeight` (from the
 renderer domain) gates whether a configured generator can actually run — when
 false the control stays editable but the generator cannot run.
 
-**`phantom:schema`** — array of
-`{key,label,i18nKey,min,max,step,default,unit}` (`state.js:250-254`); overrides
-in `app.phantomParams`.
+**`phantom:schema`** — the phantom stage's listing, one object in the same
+format (`id: "phantom_extract"`); values in `app.phantomParamValues`.
 
 Both are `{value: <JSON string>}` on the wire and are `JSON.parse`d in the
-listener with a `catch → []`. Native `dispatch.rs:564-575` parses them straight
-into `live.object_generators_schema` / `live.phantom_schema` /
+listener (`catch → []` / `null`). Native `dispatch.rs:564-575` parses them straight
+into `live.object_generator_listings` / `live.phantom_listing` /
 `live.options_schema` as `Option<serde_json::Value>` (a parse failure leaves
 `None`, not `[]` — a difference to be aware of when the UI iterates).
 
@@ -1438,8 +1441,8 @@ one), `vbapRecomputing: bool?`, `recomputeError: String?` (skipped when None),
 `audioOutputFileFormat`, `audioSampleFormat`, `audioError`.
 
 **Flattened `LiveOptionsState`** (395-415, `rename_all = "camelCase"`):
-`objectGeneratorParams: Value?`, `objectGeneratorLayoutHasHeight: bool?`,
-`crossover: Value?`, `phantomParams: Value?`, `fixedChannelCatalog: Value?`,
+`objectGeneratorParamValuesById: Value?`, `objectGeneratorLayoutHasHeight: bool?`,
+`crossover: Value?`, `phantomParamValues: Value?`, `fixedChannelCatalog: Value?`,
 `fixedChannelProcessing: Value?`, `outputChannelMappingUnroutable: [String]?`,
 `virtualBed: Value?`. **`virtualBed` is deliberately not skipped when `None`**:
 an explicit `"virtualBed": null` means "renderer reports no saved bed" and
@@ -1552,8 +1555,8 @@ Order and semantics:
     (whitelist `off|frame|sample|interp`).
 21. `options` → `Object.assign(app.options, payload.options)` (**merge**, never
     replace).
-22. `objectGeneratorParams` (object), `objectGeneratorLayoutHasHeight`
-    (boolean), `phantomParams` (object), `fixedChannelCatalog` (array),
+22. `objectGeneratorParamValuesById` (object), `objectGeneratorLayoutHasHeight`
+    (boolean), `phantomParamValues` (object), `fixedChannelCatalog` (array),
     `fixedChannelProcessing` (object), `outputChannelMappingUnroutable` (array,
     filtered to strings).
 23. `crossover`: guarded with `hasOwnProperty` so an explicit `null` clears it;

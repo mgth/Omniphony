@@ -1,22 +1,57 @@
 // --- S/PDIF (IEC 61937) Constants ---
-// Syncwords in little-endian byte order.
-const SYNCWORD_PA: u16 = 0xF872;
-const SYNCWORD_PB: u16 = 0x4E1F;
+/// First burst-preamble word (Pa), as a little-endian 16-bit sample.
+pub const SYNCWORD_PA: u16 = 0xF872;
+/// Second burst-preamble word (Pb), as a little-endian 16-bit sample.
+pub const SYNCWORD_PB: u16 = 0x4E1F;
+/// Pa then Pb as they sit in a little-endian byte stream: what starts every
+/// IEC 61937 burst.
+pub const SYNC_BYTES: [u8; 4] = {
+    let [pa0, pa1] = SYNCWORD_PA.to_le_bytes();
+    let [pb0, pb1] = SYNCWORD_PB.to_le_bytes();
+    [pa0, pa1, pb0, pb1]
+};
+
+/// Offset of the first IEC 61937 burst preamble in `bytes`, if any.
+pub fn find_sync(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(SYNC_BYTES.len())
+        .position(|w| w == SYNC_BYTES)
+}
+
+/// Whether `bytes` holds an IEC 61937 burst preamble anywhere: how a host
+/// tells an encapsulated bitstream from PCM or a raw elementary stream.
+pub fn contains_sync(bytes: &[u8]) -> bool {
+    find_sync(bytes).is_some()
+}
+
+/// Whether an IEC 61937 data type is a burst that carries no audio: a null
+/// burst (0) or a pause burst (3). The time it spans on the carrier passes
+/// all the same.
+pub fn is_pause(data_type: u8) -> bool {
+    matches!(data_type, 0x00 | 0x03)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Iec61937Packet {
     pub data_type: u8,
     pub payload: Vec<u8>,
+    /// Absolute byte offset of the burst's preamble (Pa) in everything pushed
+    /// into the parser since it was created or reset. With the carrier's
+    /// byte rate this places the burst on the transport's timeline.
+    pub start_byte: u64,
 }
 
 #[derive(Debug)]
 enum ParserState {
     WaitingForSync,
-    WaitingForHeader,
+    WaitingForHeader {
+        start_byte: u64,
+    },
     WaitingForPayload {
         data_type: u8,
         payload_size: usize,
         pd_raw: u16,
+        start_byte: u64,
     },
 }
 
@@ -24,6 +59,8 @@ enum ParserState {
 pub struct SpdifParser {
     buffer: Vec<u8>,
     state: ParserState,
+    /// Bytes drained from the front of `buffer` so far.
+    consumed: u64,
 }
 
 impl SpdifParser {
@@ -31,6 +68,7 @@ impl SpdifParser {
         Self {
             buffer: Vec::with_capacity(256 * 1024),
             state: ParserState::WaitingForSync,
+            consumed: 0,
         }
     }
 
@@ -38,6 +76,13 @@ impl SpdifParser {
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.state = ParserState::WaitingForSync;
+        self.consumed = 0;
+    }
+
+    /// Drop `n` bytes from the front, keeping the absolute count.
+    fn drain_front(&mut self, n: usize) {
+        self.buffer.drain(0..n);
+        self.consumed += n as u64;
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8]) {
@@ -49,35 +94,36 @@ impl SpdifParser {
         loop {
             match self.state {
                 ParserState::WaitingForSync => {
-                    let sync_pos = self.buffer.windows(4).position(|w| {
-                        u16::from_le_bytes([w[0], w[1]]) == SYNCWORD_PA
-                            && u16::from_le_bytes([w[2], w[3]]) == SYNCWORD_PB
-                    });
+                    let sync_pos = find_sync(&self.buffer);
 
                     match sync_pos {
                         Some(pos) => {
                             if pos > 0 {
-                                self.buffer.drain(0..pos);
+                                self.drain_front(pos);
                             }
-                            self.state = ParserState::WaitingForHeader;
+                            self.state = ParserState::WaitingForHeader {
+                                start_byte: self.consumed,
+                            };
                         }
                         None => {
                             let keep_len = self.buffer.len().min(3);
                             if self.buffer.len() > keep_len {
-                                self.buffer.drain(0..self.buffer.len() - keep_len);
+                                self.drain_front(self.buffer.len() - keep_len);
                             }
                             return None;
                         }
                     }
                 }
-                ParserState::WaitingForHeader => {
+                ParserState::WaitingForHeader { start_byte } => {
                     if self.buffer.len() < 8 {
                         return None;
                     }
 
                     let data_type = self.buffer[4] & 0x1F; // bits 0-4 of Pc
+                    let pc_high = self.buffer[5]; // bits 8-15 of Pc
                     let pd_raw = u16::from_le_bytes([self.buffer[6], self.buffer[7]]);
-                    let (payload_size, payload_unit) = payload_size_from_pd(data_type, pd_raw);
+                    let (payload_size, payload_unit) =
+                        payload_size_from_header(data_type, pc_high, pd_raw);
                     log::debug!(
                         "IEC 61937 header: data_type=0x{:02X} pd_raw={} payload_size={} payload_unit={}",
                         data_type,
@@ -85,23 +131,26 @@ impl SpdifParser {
                         payload_size,
                         payload_unit
                     );
-                    self.buffer.drain(0..8);
+                    self.drain_front(8);
                     self.state = ParserState::WaitingForPayload {
                         data_type,
                         payload_size,
                         pd_raw,
+                        start_byte,
                     };
                 }
                 ParserState::WaitingForPayload {
                     data_type,
                     payload_size,
                     pd_raw,
+                    start_byte,
                 } => {
                     if self.buffer.len() < payload_size {
                         return None;
                     }
 
                     let payload = self.buffer.drain(0..payload_size).collect::<Vec<u8>>();
+                    self.consumed += payload_size as u64;
                     self.state = ParserState::WaitingForSync;
                     log::debug!(
                         "IEC 61937 packet extracted: data_type=0x{:02X} pd_raw={} payload={} bytes",
@@ -109,20 +158,32 @@ impl SpdifParser {
                         pd_raw,
                         payload.len()
                     );
-                    return Some(Iec61937Packet { data_type, payload });
+                    return Some(Iec61937Packet {
+                        data_type,
+                        payload,
+                        start_byte,
+                    });
                 }
             }
         }
     }
 }
 
-fn payload_size_from_pd(data_type: u8, pd_raw: u16) -> (usize, &'static str) {
+fn payload_size_from_header(data_type: u8, pc_high: u8, pd_raw: u16) -> (usize, &'static str) {
     match data_type {
+        // IAMF, private: a byte count that goes on in Pc past 16 bits.
+        crate::burst::DATA_TYPE_IAMF_PRIVATE => {
+            (crate::burst::iamf_payload_bytes(pc_high, pd_raw), "bytes")
+        }
         // AC-3 (IEC 61937-3) and DTS type I/II/III (IEC 61937-5): the length
         // code (Pd) is a bit count. Reading AC-3 as bytes makes the parser wait
         // for eight times the burst it will ever receive, so the packet is
         // never completed and the stream decodes to silence.
         0x01 | 0x0B | 0x0C | 0x0D => (usize::from(pd_raw) / 8, "bits"),
+        // Null (0) and pause (3) bursts (IEC 61937-1): a bit count too. A
+        // pause burst carries 32 bits; read as 32 bytes it would run into
+        // whatever follows a short one.
+        0x00 | 0x03 => (usize::from(pd_raw) / 8, "bits"),
         // E-AC3 (0x15), TrueHD/MAT (0x16) and DTS-HD type IV (0x11): byte count.
         _ => (usize::from(pd_raw), "bytes"),
     }
@@ -136,7 +197,41 @@ impl Default for SpdifParser {
 
 #[cfg(test)]
 mod tests {
-    use super::{Iec61937Packet, SpdifParser};
+    use super::{Iec61937Packet, SYNC_BYTES, SpdifParser, contains_sync, find_sync};
+
+    /// The preamble as bytes is Pa then Pb in little-endian order, and it is
+    /// found wherever it sits, a burst resuming mid-chunk included.
+    #[test]
+    fn sync_is_found_anywhere_in_a_chunk() {
+        assert_eq!(SYNC_BYTES, [0x72, 0xF8, 0x1F, 0x4E]);
+        assert_eq!(find_sync(&[0x00, 0x72, 0xF8, 0x1F, 0x4E, 0x16]), Some(1));
+        assert!(contains_sync(&[0x72, 0xF8, 0x1F, 0x4E]));
+        // Pa alone, Pb before Pa, or a truncated preamble is not a burst.
+        assert!(!contains_sync(&[0x72, 0xF8, 0x00, 0x00, 0x1F, 0x4E]));
+        assert!(!contains_sync(&[0x1F, 0x4E, 0x72, 0xF8]));
+        assert!(!contains_sync(&[0x72, 0xF8, 0x1F]));
+        assert!(!contains_sync(&[]));
+    }
+
+    /// A pause burst's length code counts bits (32 of them): the burst that
+    /// follows a short one is not swallowed as its payload.
+    #[test]
+    fn a_pause_burst_is_four_bytes_long() {
+        let mut parser = SpdifParser::new();
+        let pause = [
+            0x72, 0xF8, 0x1F, 0x4E, 0x03, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let audio = [0x72, 0xF8, 0x1F, 0x4E, 0x01, 0x00, 0x10, 0x00, 0xAA, 0xBB];
+        parser.push_bytes(&pause);
+        parser.push_bytes(&[0; 4]);
+        parser.push_bytes(&audio);
+        let first = parser.get_next_packet().unwrap();
+        assert!(super::is_pause(first.data_type));
+        assert_eq!((first.payload.len(), first.start_byte), (4, 0));
+        let second = parser.get_next_packet().unwrap();
+        assert!(!super::is_pause(second.data_type));
+        assert_eq!((second.payload, second.start_byte), (vec![0xAA, 0xBB], 16));
+    }
 
     #[test]
     fn extracts_single_packet() {
@@ -150,6 +245,7 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x16,
                 payload: vec![0xAA, 0xBB, 0xCC, 0xDD],
+                start_byte: 0,
             })
         );
         assert_eq!(parser.get_next_packet(), None);
@@ -167,6 +263,7 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x15,
                 payload: vec![0x0B, 0x77, 0xAA, 0xBB],
+                start_byte: 0,
             })
         );
     }
@@ -184,6 +281,8 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x01,
                 payload: vec![0xAB, 0xCD],
+                // After the three garbage bytes.
+                start_byte: 3,
             })
         );
     }
@@ -205,6 +304,7 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x01,
                 payload,
+                start_byte: 0,
             })
         );
     }
@@ -224,7 +324,31 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x15,
                 payload,
+                start_byte: 0,
             })
         );
+    }
+
+    /// Burst start offsets stay absolute across chunks, stuffing and
+    /// garbage, so a burst can be placed on the transport timeline.
+    #[test]
+    fn burst_start_offsets_are_absolute() {
+        let mut parser = SpdifParser::new();
+        let burst = |pd: u8, fill: u8| {
+            let mut b = vec![0x72, 0xF8, 0x1F, 0x4E, 0x15, 0x00, pd, 0x00];
+            b.extend(std::iter::repeat_n(fill, pd as usize));
+            b
+        };
+        // Burst 1 at 0 (8 + 4 bytes), 20 bytes of stuffing, burst 2 at 32,
+        // pushed in uneven chunks.
+        let mut stream = burst(4, 0xAA);
+        stream.extend(std::iter::repeat_n(0u8, 20));
+        stream.extend(burst(6, 0xBB));
+        for chunk in stream.chunks(5) {
+            parser.push_bytes(chunk);
+        }
+        assert_eq!(parser.get_next_packet().unwrap().start_byte, 0);
+        assert_eq!(parser.get_next_packet().unwrap().start_byte, 32);
+        assert_eq!(parser.get_next_packet(), None);
     }
 }

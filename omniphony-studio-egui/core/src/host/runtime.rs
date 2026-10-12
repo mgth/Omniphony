@@ -22,6 +22,13 @@ impl StopToken {
             None => thread::park(),
         }
     }
+
+    /// A token already cancelled, for a test that calls a worker's body
+    /// directly: whatever it would start on a stop check, it does not.
+    #[cfg(test)]
+    pub(crate) fn cancelled_for_test() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
 }
 
 pub struct Worker {

@@ -15,7 +15,7 @@ mod ui;
 // The core's modules, bound at the crate root so the UI keeps reading them as
 // `crate::model`, `crate::osc`, … . Everything they hold is the core's; this
 // crate only draws it.
-use omniphony_studio_core::{auto_tune, host, i18n, model, osc, stats};
+use omniphony_studio_core::{host, i18n, model, osc, stats};
 // The 3D scene is its own crate, for the same reason the core is: a crate
 // cannot name a toolkit it does not depend on. Bound here so the app's modules
 // keep writing `crate::view::…` and `crate::render::…`.
@@ -105,9 +105,8 @@ pub struct Args {
 const HEAD_MODEL_FILE: &str = "la_dame_de_brassempouy_centered.glb";
 
 /// The checkout this binary was built from, for a run from the source tree:
-/// the layouts and the head model are read from it when nothing ships next to
-/// the executable. Resolved at build time, so the run's working directory
-/// does not matter.
+/// the layouts are read from it when nothing ships next to the executable.
+/// Resolved at build time, so the run's working directory does not matter.
 fn checkout_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -120,10 +119,11 @@ fn default_layouts_dir() -> PathBuf {
         .unwrap_or_else(|| checkout_root().join("layouts"))
 }
 
+/// From a source-tree run, this crate's own `assets/`.
 fn default_head_model() -> PathBuf {
     host::bundle::resource_dir()
-        .map(|dir| dir.join("assets"))
-        .unwrap_or_else(|| checkout_root().join("omniphony-studio").join("assets"))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .join("assets")
         .join(HEAD_MODEL_FILE)
 }
 

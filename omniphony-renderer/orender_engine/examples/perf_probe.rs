@@ -84,8 +84,14 @@ fn main() {
 
     // Pass the bridge explicitly too (like mpv's --ad-orender-bridge-path) so a
     // config that fails to parse still loads the bridge.
-    let mut engine = Engine::from_paths(Some(&cfg_path), None, Some(&bridge), None, 48_000)
-        .expect("build engine from temp config");
+    let mut engine = Engine::from_paths(
+        Some(&cfg_path),
+        None,
+        std::slice::from_ref(&bridge),
+        None,
+        48_000,
+    )
+    .expect("build engine from temp config");
     eprintln!(
         "perf_probe: stream={} ramp={ramp} max_mb={max_mb} channels={} spatial={}",
         stream.display(),

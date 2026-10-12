@@ -1,6 +1,11 @@
 # Studio native UI: extracted specifications
 
-These documents describe the **web Studio** (`omniphony-studio/`) — what it
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+These documents describe the **web Studio** ([`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio)) — what it
 draws, what its controls do, where every value comes from and what each action
 sends. They were written by reading the JavaScript, the CSS and the Tauri host
 before porting any of it, so the native egui host
@@ -26,6 +31,6 @@ Each document ends with a section listing what its author could not determine
 from the sources. Those are open questions, not settled facts.
 
 The port itself is documented in
-[`../studio-native-ui-spike.md`](../studio-native-ui-spike.md) (phase 0),
-[`../studio-native-ui-phase1.md`](../studio-native-ui-phase1.md) (viewport) and
-[`../studio-native-ui-phase2.md`](../studio-native-ui-phase2.md) (panels).
+[`../archive/studio-native-ui-spike.md`](../archive/studio-native-ui-spike.md) (phase 0),
+[`../archive/studio-native-ui-phase1.md`](../archive/studio-native-ui-phase1.md) (viewport) and
+[`../archive/studio-native-ui-phase2.md`](../archive/studio-native-ui-phase2.md) (panels).

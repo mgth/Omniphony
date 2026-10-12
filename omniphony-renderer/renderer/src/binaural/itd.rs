@@ -8,8 +8,18 @@
 /// Default effective head radius (m) — KEMAR-ish. Live-tunable via
 /// `BinauralLiveParams::head_radius_m` for per-listener ITD fit.
 pub const DEFAULT_HEAD_RADIUS_M: f32 = 0.0875;
-/// Speed of sound (m/s).
-pub(super) const SPEED_OF_SOUND: f32 = 343.0;
+/// Speed of sound (m/s), shared by every binaural model (ITD, head shadow,
+/// reflection delays).
+pub const SPEED_OF_SOUND: f32 = 343.0;
+
+/// Signed sine of the **lateral angle** of a direction, `sin(az)·cos(el)`:
+/// +1 on the right ear's axis, −1 on the left's, 0 anywhere in the median
+/// plane. The one variable the spherical-head models depend on (see
+/// [`ear_delays_seconds`]).
+#[inline]
+pub fn lateral_sine(azimuth_rad: f32, elevation_rad: f32) -> f32 {
+    azimuth_rad.sin() * elevation_rad.cos()
+}
 
 /// Per-ear delays in seconds for a source at the given azimuth/elevation.
 ///
@@ -33,7 +43,7 @@ pub(super) const SPEED_OF_SOUND: f32 = 343.0;
 pub fn ear_delays_seconds(azimuth_rad: f32, elevation_rad: f32, head_radius_m: f32) -> (f32, f32) {
     // Signed sine of the lateral angle: +1 at the right ear, −1 at the left,
     // 0 anywhere in the median plane (front, back, overhead alike).
-    ear_delays_from_lateral(elevation_rad.cos() * azimuth_rad.sin(), head_radius_m)
+    ear_delays_from_lateral(lateral_sine(azimuth_rad, elevation_rad), head_radius_m)
 }
 
 /// [`ear_delays_seconds`] for a direction given by the **sine of its lateral

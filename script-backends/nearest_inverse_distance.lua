@@ -7,7 +7,9 @@
 -- --------
 --   gains(pos, speakers, state, params) -> { number, ... }   (REQUIRED)
 --     pos      : { x=, y=, z= }            target position (raw ADM)
---     speakers : { {x=,y=,z=}, ... }       unit speaker directions
+--     speakers : { {x=,y=,z=}, ... }       unit speaker directions, in the
+--                                          room-relative space `room_scale(pos)`
+--                                          maps a position into
 --     state    : value returned by setup(), or nil
 --     params   : { key = number, ... }     values for the params declared below
 --     return   : array of #speakers finite gains, same order as `speakers`.
@@ -33,11 +35,15 @@ end
 function gains(pos, speakers, state, params)
   local falloff = params.falloff or 0.1
   local sharpness = params.sharpness or 2.0
+  -- The speakers are given in the room-relative space; the raw position is
+  -- warped into it the same way, or a non-unit room would pull the object
+  -- off the speaker it sits on.
+  local p = room_scale(pos)
   local out = {}
   local energy = 0.0
   for i = 1, #speakers do
     local s = speakers[i]
-    local dx, dy, dz = pos.x - s.x, pos.y - s.y, pos.z - s.z
+    local dx, dy, dz = p.x - s.x, p.y - s.y, p.z - s.z
     local d = math.sqrt(dx * dx + dy * dy + dz * dz)
     local w = 1.0 / (d + falloff) ^ sharpness
     out[i] = w

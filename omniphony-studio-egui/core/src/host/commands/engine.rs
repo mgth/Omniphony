@@ -8,7 +8,7 @@ use super::{SharedState, send_control};
 use crate::host::channels::{CoordMode, Family, PlacementMode};
 use crate::osc_contract;
 
-pub fn control_save_config(state: &SharedState) {
+fn control_save_config(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
@@ -26,13 +26,71 @@ pub fn control_reload_config(state: &SharedState) {
     );
 }
 
+/// Restart the renderer's pipeline, keeping the unsaved edits: they come
+/// back unsaved. For a change only a restart applies (a new bridge), which
+/// must not save everything else behind the user's back.
+pub fn control_restart(state: &SharedState) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: osc_contract::CONTROL_RESTART.to_string(),
+        },
+    );
+}
+
 /// The Save button: the model remembers that a save was asked for — the
-/// footer's indicator reads it — and the renderer is told. The bootstrap path
-/// of the input apply wants only the message, and calls
-/// [`control_save_config`].
+/// footer's indicator reads it — and the renderer is told. This is the only
+/// way Studio writes the renderer's config (docs/persistence-policy.md).
 pub fn request_save_config(state: &SharedState) {
     state.inner.lock().unwrap().save_requested = true;
     control_save_config(state);
+}
+
+/// Whether the renderer holds edits its config file does not: connected, and
+/// its last word on the file was "unsaved". An unknown or stale answer (no
+/// snapshot yet, a renderer gone) says no, so nothing ever asks about edits
+/// in a renderer that is not there.
+pub fn has_unsaved_edits(state: &SharedState) -> bool {
+    renderer_connected(state) && state.inner.lock().unwrap().app.config_saved == Some(0)
+}
+
+/// Whether a renderer is registered to answer what Studio asks.
+pub fn renderer_connected(state: &SharedState) -> bool {
+    state.stats.connection_state() == crate::osc::ConnectionState::Connected
+}
+
+/// Where the last Save stands, for a flow that waits on it (save and quit).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// Asked for, no answer yet.
+    Pending,
+    /// The file matches the renderer.
+    Saved,
+    /// The renderer tried and could not.
+    Failed(String),
+    /// Answered, and the renderer still holds unsaved edits (another write
+    /// landed in between).
+    Unsaved,
+}
+
+pub fn save_outcome(state: &SharedState) -> SaveOutcome {
+    let live = state.inner.lock().unwrap();
+    if live.save_requested {
+        return SaveOutcome::Pending;
+    }
+    if let Some(error) = live
+        .app
+        .save_error
+        .as_ref()
+        .filter(|e| !e.trim().is_empty())
+    {
+        return SaveOutcome::Failed(error.clone());
+    }
+    if live.app.config_saved == Some(1) {
+        SaveOutcome::Saved
+    } else {
+        SaveOutcome::Unsaved
+    }
 }
 
 pub fn control_log_level(state: &SharedState, value: String) {
@@ -74,20 +132,9 @@ pub fn control_ramp_mode(state: &SharedState, value: String) {
 /// a bool for toggles (forwarded as int 0/1), a number for future scalar
 /// kinds. Validation lives renderer-side against the registry spec — an
 /// unknown key or a bad value is dropped there, per the OSC contract.
-/// Pick the object generator, or `""` for none.
-///
-/// Its own command because changing it drops state: the renderer forgets the
-/// previous generator's parameter overrides, so the local copy has to go with
-/// it or the form would show the old generator's values under the new one's
-/// name until the next snapshot.
+/// Pick the object generator, or `""` for none. Each generator keeps its
+/// own parameter values, so nothing is dropped with the previous choice.
 pub fn set_object_generator(state: &SharedState, id: &str) {
-    state
-        .inner
-        .lock()
-        .unwrap()
-        .app
-        .live_options
-        .object_generator_params = None;
     control_option(
         state,
         "object_generator_id".to_owned(),
@@ -122,19 +169,90 @@ pub fn control_option(state: &SharedState, key: String, value: serde_json::Value
     );
 }
 
-/// Set a live object-generator parameter (PAD: `strength` / `hpf_hz` /
-/// `gain_db`). Sent as `[key, value]`; the renderer clamps and applies it live.
-/// Remember a live parameter in the model, so the slider that set it reads
-/// its own value back instead of snapping until the renderer's echo arrives.
-fn remember_param(params: &mut Option<serde_json::Value>, key: &str, value: f64) {
+/// Apply a `staged` group of declared options (`/control/options/apply`):
+/// every value staged since its last apply goes in at once. The pending flag
+/// is cleared at once, as the renderer's echo will.
+pub fn apply_option_group(state: &SharedState, group: &str) {
+    let group = group.trim();
+    if group.is_empty() {
+        return;
+    }
+    state.inner.lock().unwrap().clear_group_pending(group);
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_OPTIONS_APPLY.to_string(),
+            args: vec![rosc::OscType::String(group.to_owned())],
+        },
+    );
+}
+
+/// Remember a plugin parameter in the model, so the control that set it
+/// reads its own value back instead of snapping until the renderer's echo
+/// arrives.
+fn remember_param(params: &mut Option<serde_json::Value>, key: &str, value: &serde_json::Value) {
     let params = params.get_or_insert_with(|| serde_json::Value::Object(Default::default()));
     if let Some(map) = params.as_object_mut() {
-        map.insert(key.to_owned(), serde_json::json!(value));
+        map.insert(key.to_owned(), value.clone());
     }
 }
 
-/// A generator parameter, remembered and sent.
-pub fn set_object_generator_param(state: &SharedState, key: &str, value: f64) {
+/// A parameter of the object generator `generator`, remembered and sent as
+/// `[generator, key, value]` — addressed by id, so it reaches the generator
+/// the form shows whatever is selected. The value keeps its JSON type (a
+/// switch sends a bool); the renderer reads it in the type the generator's
+/// schema declares and clamps it.
+pub fn set_object_generator_param(
+    state: &SharedState,
+    generator: &str,
+    key: &str,
+    value: serde_json::Value,
+) {
+    let (generator, key) = (generator.trim(), key.trim().to_ascii_lowercase());
+    let Some(arg) = super::render::param_value_arg(&value) else {
+        return;
+    };
+    if generator.is_empty() || key.is_empty() {
+        return;
+    }
+    {
+        let mut live = state.inner.lock().unwrap();
+        let by_id = live
+            .app
+            .live_options
+            .object_generator_param_values_by_id
+            .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(map) = by_id.as_object_mut() {
+            let mut values = map.remove(generator);
+            remember_param(&mut values, &key, &value);
+            if let Some(values) = values {
+                map.insert(generator.to_owned(), values);
+            }
+        }
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_OBJECT_GENERATOR_PARAM.to_string(),
+            args: vec![
+                rosc::OscType::String(generator.to_owned()),
+                rosc::OscType::String(key),
+                arg,
+            ],
+        },
+    );
+}
+
+/// A phantom-extraction parameter, remembered and sent as `[key, value]`,
+/// the value in its JSON type.
+pub fn set_phantom_extract_param(state: &SharedState, key: &str, value: serde_json::Value) {
+    let key = key.trim().to_ascii_lowercase();
+    let Some(arg) = super::render::param_value_arg(&value) else {
+        return;
+    };
+    if key.is_empty() {
+        return;
+    }
     remember_param(
         &mut state
             .inner
@@ -142,51 +260,15 @@ pub fn set_object_generator_param(state: &SharedState, key: &str, value: f64) {
             .unwrap()
             .app
             .live_options
-            .object_generator_params,
-        key,
-        value,
+            .phantom_param_values,
+        &key,
+        &value,
     );
-    control_object_generator_param(state, key.to_owned(), value as f32);
-}
-
-/// A phantom-extraction parameter, remembered and sent.
-pub fn set_phantom_extract_param(state: &SharedState, key: &str, value: f64) {
-    remember_param(
-        &mut state.inner.lock().unwrap().app.live_options.phantom_params,
-        key,
-        value,
-    );
-    control_phantom_extract_param(state, key.to_owned(), value as f32);
-}
-
-pub fn control_object_generator_param(state: &SharedState, key: String, value: f32) {
-    let k = key.trim().to_ascii_lowercase();
-    // Any non-empty key is accepted; the renderer validates it against the active
-    // generator's declared schema and clamps the value.
-    if k.is_empty() || !value.is_finite() {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendArgs {
-            address: osc_contract::CONTROL_OBJECT_GENERATOR_PARAM.to_string(),
-            args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
-        },
-    );
-}
-
-/// Set a live phantom-extraction parameter (`strength` / `passes` / `lift`). Sent
-/// as `[key, value]`; the renderer clamps and applies it live.
-pub fn control_phantom_extract_param(state: &SharedState, key: String, value: f32) {
-    let k = key.trim().to_ascii_lowercase();
-    if k.is_empty() || !value.is_finite() {
-        return;
-    }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
             address: osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM.to_string(),
-            args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
+            args: vec![rosc::OscType::String(key), arg],
         },
     );
 }
@@ -251,7 +333,7 @@ pub fn clear_placement_layout(state: &SharedState, family: Family) {
         let mut live = state.inner.lock().unwrap();
         placement_block_mut(&mut live.app, family)
             .insert("layout".to_owned(), serde_json::Value::Null);
-        if family == Family::Generic {
+        if family.is_generic() {
             live.app.live_options.virtual_bed = None;
         }
     }
@@ -268,7 +350,9 @@ pub fn switch_placement_to_manual(state: &SharedState, family: Family) {
     use crate::host::channels::{adm_to_polar, build_layout_payload, effective_channels_for};
     let payload = {
         let live = state.inner.lock().unwrap();
-        let room = live.app.room_ratio.clone();
+        // The renderer's positions are read in the room the output renders
+        // in (`display_room`): on the direct path, straight off the sphere.
+        let room = live.app.display_room();
         let playing = crate::host::channels::playing_family(&live.app) == Some(family);
         let mut channels = effective_channels_for(&live.channels, &live.app, family);
         if playing {
@@ -303,7 +387,7 @@ pub fn switch_placement_to_manual(state: &SharedState, family: Family) {
 pub fn preview_placement_layout(state: &SharedState, family: Family, payload: serde_json::Value) {
     {
         let mut live = state.inner.lock().unwrap();
-        if family == Family::Generic {
+        if family.is_generic() {
             live.app.live_options.virtual_bed = Some(payload.clone());
         }
         placement_block_mut(&mut live.app, family).insert("layout".to_owned(), payload);
@@ -410,35 +494,35 @@ mod placement_tests {
     #[test]
     fn placement_commands_update_the_model_before_the_echo() {
         let state = crate::host::commands::tests::state();
-        set_placement_mode(&state, Family::Dts, Some(PlacementMode::Sphere));
+        set_placement_mode(&state, Family::named("dts"), Some(PlacementMode::Sphere));
         {
             let live = state.inner.lock().unwrap();
-            let dts = family_placement(&live.app, Family::Dts);
+            let dts = family_placement(&live.app, Family::named("dts"));
             assert_eq!(dts.own_mode, Some(PlacementMode::Sphere));
             assert_eq!(dts.effective_mode, PlacementMode::Sphere);
             assert_eq!(
-                family_placement(&live.app, Family::Dolby).effective_mode,
+                family_placement(&live.app, Family::named("dolby")).effective_mode,
                 PlacementMode::Room,
                 "another family is untouched"
             );
         }
-        set_placement_mode(&state, Family::Dts, None);
+        set_placement_mode(&state, Family::named("dts"), None);
         assert_eq!(
-            family_placement(&state.inner.lock().unwrap().app, Family::Dts).own_mode,
+            family_placement(&state.inner.lock().unwrap().app, Family::named("dts")).own_mode,
             None
         );
 
         let entries = serde_json::json!({ "radius_m": 1.0, "speakers": [
             { "name": "LFE", "coord_mode": "cartesian", "x": 0.0, "y": 1.0, "z": 0.0, "spatialize": false }
         ] });
-        set_placement_layout(&state, Family::Dts, entries);
+        set_placement_layout(&state, Family::named("dts"), entries);
         assert_eq!(
-            family_placement(&state.inner.lock().unwrap().app, Family::Dts).layout_source,
+            family_placement(&state.inner.lock().unwrap().app, Family::named("dts")).layout_source,
             LayoutSource::Own
         );
-        clear_placement_layout(&state, Family::Dts);
+        clear_placement_layout(&state, Family::named("dts"));
         assert_eq!(
-            family_placement(&state.inner.lock().unwrap().app, Family::Dts).layout_source,
+            family_placement(&state.inner.lock().unwrap().app, Family::named("dts")).layout_source,
             LayoutSource::None,
             "no generic entries either"
         );
@@ -451,27 +535,163 @@ mod placement_tests {
         let state = crate::host::commands::tests::state();
         {
             let mut live = state.inner.lock().unwrap();
+            // A bridge family that is a sphere by default, as the renderer
+            // reports it.
+            live.app.live_options.placement = Some(serde_json::json!({
+                "auro": { "label": "Auro-3D", "defaultMode": "sphere" }
+            }));
             let app = std::mem::take(&mut live.app);
             live.channels.refresh(&app);
             live.app = app;
         }
-        switch_placement_to_manual(&state, Family::Auro);
+        switch_placement_to_manual(&state, Family::named("auro"));
         let live = state.inner.lock().unwrap();
-        let auro = family_placement(&live.app, Family::Auro);
+        let auro = family_placement(&live.app, Family::named("auro"));
         assert_eq!(auro.own_mode, Some(PlacementMode::Manual));
         assert_eq!(auro.layout_source, LayoutSource::Own);
-        let ls =
-            crate::host::channels::effective_channels_for(&live.channels, &live.app, Family::Auro)
-                .into_iter()
-                .find(|c| c.name == "Ls")
-                .expect("Ls");
-        // Auro's built-in mode is sphere: the seed is its nominal direction,
+        let ls = crate::host::channels::effective_channels_for(
+            &live.channels,
+            &live.app,
+            Family::named("auro"),
+        )
+        .into_iter()
+        .find(|c| c.name == "Ls")
+        .expect("Ls");
+        // Auro's default mode is sphere: the seed is its nominal direction,
         // kept as a polar entry.
         assert_eq!(ls.coord_mode, CoordMode::Polar);
         assert_eq!((ls.azimuth, ls.elevation), (-110.0, 0.0));
         let family = live.editing_family;
         drop(live);
-        select_placement_family(&state, Family::Pcm);
+        select_placement_family(&state, Family::named("pcm"));
         assert_ne!(state.inner.lock().unwrap().editing_family, family);
+    }
+}
+
+#[cfg(test)]
+mod unsaved_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// The quit prompt and the Reload confirmation ask only about a renderer
+    /// that is there and said "unsaved".
+    #[test]
+    fn unsaved_edits_need_a_connected_renderer_that_said_so() {
+        let state = crate::host::commands::tests::state();
+        assert!(!has_unsaved_edits(&state), "nothing heard yet");
+        state.inner.lock().unwrap().app.config_saved = Some(0);
+        assert!(!has_unsaved_edits(&state), "not connected");
+        state.stats.registered.store(true, Ordering::Relaxed);
+        assert!(has_unsaved_edits(&state));
+        state.inner.lock().unwrap().app.config_saved = Some(1);
+        assert!(!has_unsaved_edits(&state));
+    }
+
+    #[test]
+    fn a_save_is_pending_until_the_renderer_answers() {
+        let state = crate::host::commands::tests::state();
+        state.inner.lock().unwrap().app.config_saved = Some(0);
+        request_save_config(&state);
+        assert_eq!(save_outcome(&state), SaveOutcome::Pending);
+        {
+            let mut live = state.inner.lock().unwrap();
+            live.save_requested = false;
+            live.app.config_saved = Some(1);
+        }
+        assert_eq!(save_outcome(&state), SaveOutcome::Saved);
+        state.inner.lock().unwrap().app.save_error = Some("read-only".into());
+        assert_eq!(
+            save_outcome(&state),
+            SaveOutcome::Failed("read-only".into())
+        );
+    }
+
+    /// What the renderer sends for a save, in order: the old error cleared,
+    /// the file written, then `saved = 1`. Only that last one answers it.
+    #[test]
+    fn a_save_is_answered_by_saved_not_by_the_error_it_clears_first() {
+        use crate::osc::{dispatch::apply_event, parser::OscEvent};
+        let state = crate::host::commands::tests::state();
+        state.stats.registered.store(true, Ordering::Relaxed);
+        state.inner.lock().unwrap().app.config_saved = Some(0);
+        request_save_config(&state);
+        let event = |ev| apply_event(&mut state.inner.lock().unwrap(), ev);
+        event(OscEvent::StateConfigSaveError {
+            message: String::new(),
+        });
+        assert_eq!(save_outcome(&state), SaveOutcome::Pending);
+        event(OscEvent::StateConfigSaved { saved: true });
+        assert_eq!(save_outcome(&state), SaveOutcome::Saved);
+    }
+}
+
+#[cfg(test)]
+mod staged_group_tests {
+    use super::*;
+    use crate::host::commands::tests::{sent_addresses, state_with_outbox};
+    use crate::osc::dispatch::StagedGroup;
+
+    /// A schema with one staged group (`live_input`) and one live one.
+    fn schema() -> serde_json::Value {
+        serde_json::json!([
+            {"key": "room_ratio_rear", "group": {"key": "room", "mode": "live", "i18nKey": "room.title"}},
+            {"key": "input_mode", "group": {"key": "live_input", "mode": "staged", "i18nKey": "section.audioInput"}},
+            {"key": "live_input_node", "group": {"key": "live_input", "mode": "staged", "i18nKey": "section.audioInput"}},
+            {"key": "decode_thread"}
+        ])
+    }
+
+    #[test]
+    fn staged_groups_come_from_the_schema_with_their_pending_flag() {
+        let (state, _rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        {
+            let mut live = state.inner.lock().unwrap();
+            live.options_schema = Some(schema());
+            // No host options yet (or the embedded engine): nothing pending.
+            assert_eq!(
+                live.staged_groups(),
+                vec![StagedGroup {
+                    key: "live_input".into(),
+                    i18n_key: "section.audioInput".into(),
+                    pending: false,
+                }]
+            );
+            live.host_options = Some(serde_json::json!({
+                "options": {}, "applied": {}, "pending": {"live_input": true}
+            }));
+            assert!(live.staged_group("live_input").is_some_and(|g| g.pending));
+            assert_eq!(
+                live.staged_group("room"),
+                None,
+                "a live group is not staged"
+            );
+        }
+    }
+
+    /// The Apply sends the generic group apply and clears the flag at once,
+    /// so a second click is not offered before the renderer's echo.
+    #[test]
+    fn applying_a_group_sends_it_and_clears_its_flag() {
+        let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        {
+            let mut live = state.inner.lock().unwrap();
+            live.options_schema = Some(schema());
+            live.host_options = Some(serde_json::json!({"pending": {"live_input": true}}));
+        }
+        apply_option_group(&state, "live_input");
+        assert_eq!(
+            sent_addresses(&rx),
+            vec![osc_contract::CONTROL_OPTIONS_APPLY.to_string()]
+        );
+        assert!(
+            state
+                .inner
+                .lock()
+                .unwrap()
+                .staged_group("live_input")
+                .is_some_and(|g| !g.pending)
+        );
+        apply_option_group(&state, "  ");
+        assert!(sent_addresses(&rx).is_empty(), "no group, nothing sent");
     }
 }

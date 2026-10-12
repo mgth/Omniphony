@@ -185,6 +185,127 @@ fn labelled<R>(
     .inner
 }
 
+/// One entry of an editable list (the decoder bridges): its name on the first
+/// line with the entry's buttons at the right, and a detail line under it in
+/// `colour`. Both lines are one line high whatever they hold — the name and
+/// the detail truncate — so an entry never changes height under the buttons
+/// of the entries below it. The name shows `full` on hover, the detail
+/// itself when cut.
+///
+/// `mark` highlights the entry (the bridge decoding the stream): an accent
+/// outline painted around it, outside its rect, and a tag of that text at the
+/// right end of its detail line, in the detail's own font. Neither takes
+/// space, so marking an entry moves nothing: only its detail truncates
+/// sooner.
+pub fn list_entry(
+    ui: &mut Ui,
+    name: &str,
+    full: &str,
+    detail: &str,
+    colour: Color32,
+    mark: Option<&str>,
+    add_right: impl FnOnce(&mut Ui),
+) {
+    // Filled once the entry is laid out, under it.
+    let outline = ui.painter().add(egui::Shape::Noop);
+    let top = ui.cursor().top();
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            add_right(ui);
+            // As `labelled` does: the name takes exactly what the buttons
+            // left, laid out, cut and painted at that width.
+            let space = ui.available_rect_before_wrap();
+            let galley = egui::WidgetText::from(name).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                space.width().max(0.0),
+                egui::TextStyle::Body,
+            );
+            let row_height = ui.spacing().interact_size.y.max(galley.size().y);
+            let (rect, response) =
+                ui.allocate_exact_size(vec2(space.width(), row_height), Sense::hover());
+            let at = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+            let text = ui.visuals().text_color();
+            ui.painter()
+                .with_clip_rect(rect.intersect(ui.clip_rect()))
+                .galley(at, galley, text);
+            response.on_hover_text(full);
+        });
+    });
+    let small = |text: &str, colour: Color32| {
+        egui::WidgetText::from(
+            egui::RichText::new(text)
+                .size(theme::FONT_SIZE_SMALL)
+                .color(colour),
+        )
+    };
+    let width = ui.available_width().max(0.0);
+    let tag = mark.map(|mark| {
+        small(mark, theme::ACCENT).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+    });
+    let tag_width = tag
+        .as_ref()
+        .map_or(0.0, |tag| tag.size().x + 2.0 * TAG_PADDING_X);
+    let galley = small(detail, colour).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (width - tag_width - if tag.is_some() { TAG_GAP } else { 0.0 }).max(0.0),
+        egui::TextStyle::Body,
+    );
+    // The line is as high as the detail's text, tag or not: the tag is
+    // that font too.
+    let height = galley.size().y;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let truncated = galley.elided;
+    painter.galley(rect.left_top(), galley, colour);
+    if truncated {
+        response.on_hover_text(detail);
+    }
+    let Some(tag) = tag else {
+        return;
+    };
+    let pill = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - tag_width, rect.top()),
+        rect.right_bottom(),
+    );
+    painter.rect(
+        pill,
+        pill.height() / 2.0,
+        theme::ACCENT.gamma_multiply(0.15),
+        egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.6)),
+        egui::StrokeKind::Inside,
+    );
+    let at = pill.center() - tag.size() / 2.0;
+    painter.galley(at, tag, theme::ACCENT);
+    // Around the whole entry, in the margin the rows already leave.
+    let entry = egui::Rect::from_min_max(egui::pos2(rect.left(), top), rect.max)
+        .expand2(vec2(MARK_OUTSET_X, MARK_OUTSET_Y));
+    ui.painter().set(
+        outline,
+        egui::epaint::RectShape::new(
+            entry,
+            theme::CONTROL_RADIUS,
+            theme::ACCENT.gamma_multiply(0.06),
+            egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.5)),
+            egui::StrokeKind::Inside,
+        ),
+    );
+}
+
+/// A [`list_entry`] tag's text inset, and its gap to the detail it ends.
+const TAG_PADDING_X: f32 = 5.0;
+const TAG_GAP: f32 = 4.0;
+/// How far a marked [`list_entry`]'s outline reaches past the entry: inside
+/// the group's padding and the spacing between entries, never into the next.
+const MARK_OUTSET_X: f32 = 4.0;
+const MARK_OUTSET_Y: f32 = 1.0;
+
 /// The width a dropdown in a `label_row` takes: its usual width, but never more
 /// than 60 % of the row, so its label keeps room to be read when the panel is
 /// narrow. Called inside the row's controls closure, where the row is still
@@ -470,6 +591,84 @@ pub fn status_dot(ui: &mut Ui, colour: Color32, text: impl Into<egui::WidgetText
     });
 }
 
+/// What a [`progress_button`] shows behind its label.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ButtonProgress {
+    /// A plain button.
+    Idle,
+    /// Filled from the left up to this share, 0 to 1.
+    Fill(f32),
+    /// Working on it: a band sweeps across, and the button takes no clicks.
+    Busy,
+}
+
+/// How long the busy band takes to cross the button.
+const BUSY_SWEEP_SECS: f64 = 1.4;
+/// The busy band's width, as a share of the button's.
+const BUSY_BAND: f32 = 0.35;
+
+/// A button with its progress drawn behind the label, inside its own rect.
+///
+/// `labels` lists every label the button can show: it takes the width of the
+/// widest, so a label that changes with the progress never moves what sits
+/// beside it. The fill goes under the button's own (translucent) frame, in a
+/// slot reserved before it, so the label stays on top.
+pub fn progress_button(
+    ui: &mut Ui,
+    text: &str,
+    labels: &[&str],
+    progress: ButtonProgress,
+) -> Response {
+    let widest = labels
+        .iter()
+        .copied()
+        .chain(std::iter::once(text))
+        .map(|label| {
+            egui::WidgetText::from(label)
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Button,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    let width = widest + 2.0 * ui.spacing().button_padding.x;
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let busy = progress == ButtonProgress::Busy;
+    let response = ui.add_enabled(!busy, egui::Button::new(text).min_size(vec2(width, 0.0)));
+    let rect = response.rect;
+    let span = match progress {
+        ButtonProgress::Idle => None,
+        ButtonProgress::Fill(share) => Some((
+            rect.left(),
+            egui::lerp(rect.x_range(), share.clamp(0.0, 1.0)),
+        )),
+        ButtonProgress::Busy => {
+            let phase = (ui.input(|i| i.time) / BUSY_SWEEP_SECS).fract() as f32;
+            let band = rect.width() * BUSY_BAND;
+            let left = egui::lerp((rect.left() - band)..=rect.right(), phase);
+            Some((left, left + band))
+        }
+    };
+    if let Some((left, right)) = span
+        && right > left
+    {
+        let clip = egui::Rect::from_x_y_ranges(left..=right, rect.y_range()).intersect(rect);
+        ui.painter().with_clip_rect(clip).set(
+            slot,
+            egui::epaint::RectShape::filled(
+                rect,
+                ui.visuals().widgets.inactive.corner_radius,
+                theme::ACCENT.gamma_multiply(0.3),
+            ),
+        );
+    }
+    response
+}
+
 /// Severity of a banner row (`#bridgeErrorBanner`, `#foreignRendererBanner`,
 /// `#updateAvailableBanner`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -622,6 +821,180 @@ fn decimals_for(step: f64) -> usize {
 }
 
 #[cfg(test)]
+mod choice_card_tests {
+    use super::{CardLayout, CardPlan, Choice, choice_cards, theme};
+    use crate::ui::icons::{HEADPHONES, Icon, SECTION_SPEAKERS};
+
+    const ONE: &[&Icon] = &[&SECTION_SPEAKERS];
+    const TWO: &[&Icon] = &[&HEADPHONES, &SECTION_SPEAKERS];
+
+    /// The output mode's cards, with the labels of a locale.
+    fn cards<'a>(labels: [&'a str; 3]) -> [Choice<'a, usize>; 3] {
+        [
+            Choice {
+                value: 0,
+                icons: ONE,
+                label: labels[0],
+                name: labels[0],
+            },
+            Choice {
+                value: 1,
+                icons: &[&HEADPHONES],
+                label: labels[1],
+                name: labels[1],
+            },
+            Choice {
+                value: 2,
+                icons: TWO,
+                label: labels[2],
+                name: "the full name",
+            },
+        ]
+    }
+
+    /// The cards' labels in the locales with the longest words, and one
+    /// without spaces to break at.
+    const LOCALES: [[&str; 3]; 4] = [
+        ["Speakers", "Headphones", "Virtual room"],
+        ["Lautsprecher", "Kopfhörer", "Virtueller Raum"],
+        ["Caixas", "Fones de ouvido", "Sala virtual"],
+        ["スピーカー", "ヘッドホン", "仮想ルーム"],
+    ];
+
+    /// The room the cards get in a side panel `panel` wide.
+    fn room(panel: f32) -> f32 {
+        panel - 2.0 * theme::PANEL_PADDING_X
+    }
+
+    fn with_ui<R>(width: f32, events: Vec<egui::Event>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        thread_local! {
+            static CTX: egui::Context = {
+                let ctx = egui::Context::default();
+                theme::install(&ctx);
+                ctx
+            };
+        }
+        CTX.with(|ctx| {
+            let mut out = None;
+            let mut add = Some(add);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    if let Some(add) = add.take() {
+                        out = Some(add(ui));
+                    }
+                },
+            );
+            output.textures_delta.clear();
+            out.expect("the frame ran")
+        })
+    }
+
+    /// No label is ever cut or broken inside a word, from the narrowest
+    /// side panel to the default one: the cards share a row while every
+    /// label fits its share, and stack where one would not. At the minimum
+    /// width a share is some forty points, where "Headphones" broke into
+    /// "Headpho / nes" and the virtual room lost its name to an ellipsis.
+    #[test]
+    fn no_label_is_cut_from_the_narrowest_panel_up() {
+        for labels in LOCALES {
+            let options = cards(labels);
+            let mut panel = crate::ui::layout::MIN_WIDTH;
+            while panel <= 440.0 {
+                with_ui(room(panel), Vec::new(), |ui| {
+                    let plan = CardPlan::new(ui, room(panel), &options);
+                    for option in &options {
+                        let galley = plan.label(ui, option.label, egui::Color32::WHITE);
+                        assert!(
+                            !galley.elided,
+                            "{:?} is cut at {panel} ({:?})",
+                            option.label, plan.layout
+                        );
+                        if plan.layout == CardLayout::Row {
+                            // One row of the galley per word at most: no
+                            // word runs over two rows.
+                            assert!(
+                                galley.rows.len() <= option.label.split_whitespace().count(),
+                                "{:?} breaks inside a word at {panel}",
+                                option.label
+                            );
+                        }
+                    }
+                });
+                panel += 20.0;
+            }
+        }
+    }
+
+    /// The narrowest panel stacks the cards; the default one keeps the row.
+    #[test]
+    fn a_narrow_panel_stacks_the_cards() {
+        let options = cards(LOCALES[0]);
+        let layout = |panel: f32| {
+            with_ui(room(panel), Vec::new(), |ui| {
+                CardPlan::new(ui, room(panel), &options).layout
+            })
+        };
+        assert_eq!(layout(crate::ui::layout::MIN_WIDTH), CardLayout::Stack);
+        assert_eq!(layout(440.0), CardLayout::Row);
+    }
+
+    /// One click anywhere on a card — its icons, its label, its padding —
+    /// picks it, the first time, in a row and in a stack; a click on the
+    /// card in force picks nothing.
+    #[test]
+    fn a_click_anywhere_on_a_card_picks_it() {
+        let options = cards(LOCALES[0]);
+        for panel in [440.0, crate::ui::layout::MIN_WIDTH] {
+            let width = room(panel);
+            let frame = |events: Vec<egui::Event>| {
+                with_ui(width, events, |ui| {
+                    let origin = ui.cursor().min;
+                    let plan = CardPlan::new(ui, ui.available_width(), &options);
+                    let picked = choice_cards(ui, &0, &options);
+                    let step = match plan.layout {
+                        CardLayout::Row => egui::vec2(plan.size.x + theme::GROUP_GAP, 0.0),
+                        CardLayout::Stack => egui::vec2(0.0, plan.size.y + theme::GROUP_GAP),
+                    };
+                    let rects: Vec<egui::Rect> = (0..options.len())
+                        .map(|i| egui::Rect::from_min_size(origin + step * i as f32, plan.size))
+                        .collect();
+                    (picked, rects)
+                })
+            };
+            let cards = frame(Vec::new()).1;
+            let click = |pos: egui::Pos2| {
+                let button = |pressed| egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                };
+                frame(vec![egui::Event::PointerMoved(pos)]);
+                frame(vec![button(true)]);
+                frame(vec![button(false)]).0
+            };
+            // The middle, a corner of the padding, the far end.
+            assert_eq!(click(cards[1].center()), Some(1), "at {panel}");
+            assert_eq!(click(cards[2].left_top() + egui::vec2(3.0, 3.0)), Some(2));
+            assert_eq!(
+                click(cards[2].right_bottom() - egui::vec2(3.0, 3.0)),
+                Some(2)
+            );
+            // The one in force.
+            assert_eq!(click(cards[0].center()), None);
+        }
+    }
+}
+
+#[cfg(test)]
 mod row_tests {
     use super::{Sense, switch_row_help_leading};
 
@@ -693,6 +1066,317 @@ pub fn tab_bar<T: PartialEq + Clone>(ui: &mut Ui, current: &T, options: &[(T, &s
                 .clicked()
                 && !active
             {
+                picked = Some(value.clone());
+            }
+        }
+    });
+    picked
+}
+
+/// One card of [`choice_cards`].
+pub struct Choice<'a, T> {
+    pub value: T,
+    /// One icon, or several side by side for a choice that combines others.
+    pub icons: &'a [&'a super::icons::Icon],
+    /// What the card says: short, since the cards share a side panel.
+    pub label: &'a str,
+    /// The choice's full name: what the card says on hover when its label
+    /// is a shorter form of it or had to be cut, and what a screen reader
+    /// is told.
+    pub name: &'a str,
+}
+
+/// How [`choice_cards`] lays its cards out at the width it is given.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CardLayout {
+    /// Side by side, each an equal share of the width, icons over the label.
+    Row,
+    /// One under the other at full width, icons before the label: what a
+    /// narrow panel gets, where a share of the width would break a label
+    /// inside a word or cut it.
+    Stack,
+}
+
+/// The geometry of one frame's cards.
+#[derive(Clone, Copy, Debug)]
+struct CardPlan {
+    layout: CardLayout,
+    /// A card's outer size.
+    size: egui::Vec2,
+    /// The room a label has.
+    text_width: f32,
+    /// The width kept for the icons of a stacked card: that of the card
+    /// with the most, so the labels line up.
+    icon_slot: f32,
+}
+
+impl CardPlan {
+    const ICON: f32 = 26.0;
+    const STACK_ICON: f32 = 20.0;
+    const ICON_SPACING: f32 = 8.0;
+    const STACK_ICON_SPACING: f32 = 6.0;
+    const PADDING: f32 = 8.0;
+    const STACK_PADDING_Y: f32 = 6.0;
+    const ICON_GAP: f32 = 5.0;
+    const ROW_LABEL_ROWS: usize = 2;
+
+    fn icons_width(count: usize, icon: f32, spacing: f32) -> f32 {
+        icon * count as f32 + spacing * count.saturating_sub(1) as f32
+    }
+
+    /// Side by side while every label fits its share of `width` without a
+    /// word broken or a line cut; stacked otherwise. Depends on the width
+    /// and the labels only, so it does not change while a card is clicked.
+    fn new<T>(ui: &Ui, width: f32, options: &[Choice<'_, T>]) -> Self {
+        let count = options.len().max(1) as f32;
+        let gap = theme::GROUP_GAP;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line = ui.fonts_mut(|f| f.row_height(&font));
+        let most_icons = options.iter().map(|o| o.icons.len()).max().unwrap_or(0);
+        let share = ((width - gap * (count - 1.0)) / count).floor().max(0.0);
+        let row = CardPlan {
+            layout: CardLayout::Row,
+            size: vec2(
+                share,
+                Self::PADDING
+                    + Self::ICON
+                    + Self::ICON_GAP
+                    + line * Self::ROW_LABEL_ROWS as f32
+                    + Self::PADDING,
+            ),
+            text_width: (share - 2.0 * Self::PADDING).max(0.0),
+            icon_slot: 0.0,
+        };
+        let fits = Self::icons_width(most_icons, Self::ICON, Self::ICON_SPACING) <= row.text_width
+            && options.iter().all(|option| {
+                let whole_words = option.label.split_whitespace().all(|word| {
+                    let wide = ui.fonts_mut(|f| {
+                        f.layout_no_wrap(word.to_owned(), font.clone(), Color32::WHITE)
+                    });
+                    wide.size().x <= row.text_width
+                });
+                whole_words && !row.label(ui, option.label, Color32::WHITE).elided
+            });
+        if fits {
+            return row;
+        }
+        let icon_slot = Self::icons_width(most_icons, Self::STACK_ICON, Self::STACK_ICON_SPACING);
+        CardPlan {
+            layout: CardLayout::Stack,
+            size: vec2(
+                width.max(0.0),
+                Self::STACK_ICON.max(line) + 2.0 * Self::STACK_PADDING_Y,
+            ),
+            text_width: (width - 2.0 * Self::PADDING - icon_slot - Self::ICON_SPACING).max(0.0),
+            icon_slot,
+        }
+    }
+
+    /// A label laid out for this plan: centred over two lines at most in a
+    /// row, one line from the left in a stack, cut with an ellipsis when it
+    /// still does not fit.
+    fn label(&self, ui: &Ui, text: &str, colour: Color32) -> std::sync::Arc<egui::Galley> {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, colour, self.text_width);
+        match self.layout {
+            CardLayout::Row => {
+                job.halign = egui::Align::Center;
+                job.wrap.max_rows = Self::ROW_LABEL_ROWS;
+            }
+            CardLayout::Stack => job.wrap.max_rows = 1,
+        }
+        ui.fonts_mut(|f| f.layout_job(job))
+    }
+}
+
+/// A set of cards, one chosen: the few-way choice that decides what the rest
+/// of a section is about (the output mode), where a select would hide the
+/// alternatives. Each card carries its icons and its label; the one in force
+/// carries the accent, the others stay quiet until hovered. The whole card
+/// is the click target. Returns the newly picked value.
+///
+/// The cards sit side by side, an equal share of the width each, icons over
+/// label, and are all as high as an icon and two lines of label so that a
+/// longer translation wraps without moving what follows. Where a share of
+/// the width would break a label inside a word or cut it — a narrow panel —
+/// they are stacked instead, one line each, icons before the label. A label
+/// that is cut all the same, or that shortens the choice's name, shows the
+/// name on hover.
+pub fn choice_cards<T: PartialEq + Clone>(
+    ui: &mut Ui,
+    current: &T,
+    options: &[Choice<'_, T>],
+) -> Option<T> {
+    let plan = CardPlan::new(ui, ui.available_width(), options);
+    let enabled = ui.is_enabled();
+    let gap = theme::GROUP_GAP;
+    let mut picked = None;
+    let mut cards = |ui: &mut Ui| {
+        for option in options {
+            let active = option.value == *current;
+            let (rect, response) = ui.allocate_exact_size(plan.size, Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::RadioButton,
+                    enabled,
+                    active,
+                    option.name,
+                )
+            });
+            if response.clicked() && !active {
+                picked = Some(option.value.clone());
+            }
+            let hovered = response.hovered() && enabled;
+            let (fill, stroke, colour) = if active {
+                (
+                    theme::ACCENT.gamma_multiply(0.14),
+                    egui::Stroke::new(1.5, theme::ACCENT),
+                    theme::TEXT_STRONG,
+                )
+            } else if hovered {
+                (
+                    theme::FILL_HOVER,
+                    egui::Stroke::new(1.0, theme::CONTROL_BORDER),
+                    theme::TEXT,
+                )
+            } else {
+                (
+                    theme::FILL,
+                    egui::Stroke::new(1.0, theme::CONTROL_BORDER),
+                    theme::TEXT_MUTED,
+                )
+            };
+            let colour = if enabled {
+                colour
+            } else {
+                colour.gamma_multiply(0.5)
+            };
+            let galley = plan.label(ui, option.label, colour);
+            let cut = galley.elided;
+            if ui.is_rect_visible(rect) {
+                let stroke = if response.has_focus() {
+                    ui.visuals().selection.stroke
+                } else {
+                    stroke
+                };
+                let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+                painter.rect(
+                    rect,
+                    theme::GROUP_RADIUS,
+                    fill,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+                let icon_colour = if active { theme::ACCENT } else { colour };
+                let paint_icons = |left: f32, centre_y: f32, size: f32, spacing: f32| {
+                    for (i, icon) in option.icons.iter().enumerate() {
+                        super::icons::paint(
+                            &painter,
+                            egui::Rect::from_min_size(
+                                egui::pos2(
+                                    left + (size + spacing) * i as f32,
+                                    centre_y - size / 2.0,
+                                ),
+                                vec2(size, size),
+                            ),
+                            icon,
+                            icon_colour,
+                        );
+                    }
+                };
+                match plan.layout {
+                    CardLayout::Row => {
+                        let icons_width = CardPlan::icons_width(
+                            option.icons.len(),
+                            CardPlan::ICON,
+                            CardPlan::ICON_SPACING,
+                        );
+                        let icons_centre = rect.top() + CardPlan::PADDING + CardPlan::ICON / 2.0;
+                        paint_icons(
+                            rect.center().x - icons_width / 2.0,
+                            icons_centre,
+                            CardPlan::ICON,
+                            CardPlan::ICON_SPACING,
+                        );
+                        // Centred in the two lines kept for it: a one-line
+                        // label sits level with the middle of a two-line one.
+                        let label_top = icons_centre + CardPlan::ICON / 2.0 + CardPlan::ICON_GAP;
+                        let room = rect.bottom() - CardPlan::PADDING - label_top;
+                        let slack = (room - galley.size().y).max(0.0);
+                        painter.galley(
+                            egui::pos2(rect.center().x, label_top + slack / 2.0),
+                            galley,
+                            colour,
+                        );
+                    }
+                    CardLayout::Stack => {
+                        let left = rect.left() + CardPlan::PADDING;
+                        paint_icons(
+                            left,
+                            rect.center().y,
+                            CardPlan::STACK_ICON,
+                            CardPlan::STACK_ICON_SPACING,
+                        );
+                        painter.galley(
+                            egui::pos2(
+                                left + plan.icon_slot + CardPlan::ICON_SPACING,
+                                rect.center().y - galley.size().y / 2.0,
+                            ),
+                            galley,
+                            colour,
+                        );
+                    }
+                }
+            }
+            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if cut || option.name != option.label {
+                response.on_hover_text(option.name);
+            }
+        }
+    };
+    match plan.layout {
+        CardLayout::Row => {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                cards(ui);
+            });
+        }
+        CardLayout::Stack => {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = gap;
+                cards(ui);
+            });
+        }
+    }
+    picked
+}
+
+/// Tabs for a list the renderer supplies, of any length: each tab as wide as
+/// its label, wrapping between tabs rather than inside a label. `marked`
+/// tabs carry a trailing dot (the one playing); every tab keeps the dot's
+/// room, invisible when unmarked, so a mark moving never shifts the row.
+pub fn wrapping_tab_bar<T: PartialEq + Clone>(
+    ui: &mut Ui,
+    current: &T,
+    options: &[(T, &str, bool)],
+) -> Option<T> {
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        for (value, label, marked) in options {
+            let active = value == current;
+            let color = if active {
+                ui.visuals().text_color()
+            } else {
+                theme::TEXT_MUTED
+            };
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let mut job = egui::text::LayoutJob::default();
+            job.append(label, 0.0, egui::TextFormat::simple(font.clone(), color));
+            let dot = if *marked { color } else { Color32::TRANSPARENT };
+            job.append(" \u{25CF}", 0.0, egui::TextFormat::simple(font, dot));
+            job.wrap.max_width = f32::INFINITY;
+            let response = ui.add(egui::Button::selectable(active, job));
+            if response.clicked() && !active {
                 picked = Some(value.clone());
             }
         }
@@ -1079,5 +1763,122 @@ mod coord_table_tests {
             output.textures_delta.clear();
             assert!(taken <= width + 0.5, "{taken} pt of {width}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One frame with a progress button showing `text` in `progress`, after
+    /// `events`: its rect, and whether it was clicked.
+    fn frame(
+        ctx: &egui::Context,
+        text: &str,
+        progress: ButtonProgress,
+        events: Vec<egui::Event>,
+    ) -> (egui::Rect, bool) {
+        let mut out = (egui::Rect::NOTHING, false);
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(400.0, 100.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let response =
+                    progress_button(ui, text, &["Start", "Starting the engine…"], progress);
+                out = (response.rect, response.clicked());
+            },
+        );
+        output.textures_delta.clear();
+        out
+    }
+
+    fn click(ctx: &egui::Context, text: &str, progress: ButtonProgress, at: egui::Pos2) -> bool {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(ctx, text, progress, vec![egui::Event::PointerMoved(at)]);
+        frame(ctx, text, progress, vec![button(true)]);
+        frame(ctx, text, progress, vec![button(false)]).1
+    }
+
+    #[test]
+    fn the_button_keeps_its_rect_whatever_it_shows() {
+        let ctx = egui::Context::default();
+        let rect = frame(&ctx, "Start", ButtonProgress::Idle, Vec::new()).0;
+        for (text, progress) in [
+            ("Start", ButtonProgress::Fill(0.0)),
+            ("Start", ButtonProgress::Fill(0.6)),
+            ("Start", ButtonProgress::Fill(1.0)),
+            ("Starting the engine…", ButtonProgress::Busy),
+            ("Start", ButtonProgress::Idle),
+        ] {
+            assert_eq!(
+                frame(&ctx, text, progress, Vec::new()).0,
+                rect,
+                "{text} {progress:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fill_is_painted_under_the_label_up_to_its_share() {
+        let ctx = egui::Context::default();
+        let fill = theme::ACCENT.gamma_multiply(0.3);
+        let painted = |progress| {
+            let mut rect = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                rect = progress_button(ui, "Start", &[], progress).rect;
+            });
+            output.textures_delta.clear();
+            let fills: Vec<_> = output
+                .shapes
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| matches!(&s.shape, egui::Shape::Rect(r) if r.fill == fill))
+                .map(|(i, s)| (i, s.clip_rect))
+                .collect();
+            let label = output
+                .shapes
+                .iter()
+                .position(|s| matches!(s.shape, egui::Shape::Text(_)))
+                .expect("a label");
+            (rect, fills, label)
+        };
+        let (rect, fills, label) = painted(ButtonProgress::Fill(0.5));
+        let [(index, clip)] = fills[..] else {
+            panic!("one fill expected, got {fills:?}")
+        };
+        assert!(index < label, "the fill must sit under the label");
+        assert!((clip.left() - rect.left()).abs() < 0.5);
+        assert!((clip.right() - rect.center().x).abs() < 0.5);
+        assert!(painted(ButtonProgress::Idle).1.is_empty());
+        assert!(painted(ButtonProgress::Fill(0.0)).1.is_empty());
+        let (rect, fills, _) = painted(ButtonProgress::Busy);
+        assert!(fills.iter().all(|(_, clip)| rect.contains_rect(*clip)));
+    }
+
+    #[test]
+    fn a_counting_down_button_takes_the_first_click_and_a_busy_one_none() {
+        let ctx = egui::Context::default();
+        let centre = frame(&ctx, "Start", ButtonProgress::Idle, Vec::new())
+            .0
+            .center();
+        assert!(click(&ctx, "Start", ButtonProgress::Fill(0.4), centre));
+        assert!(click(&ctx, "Start", ButtonProgress::Idle, centre));
+        assert!(!click(
+            &ctx,
+            "Starting the engine…",
+            ButtonProgress::Busy,
+            centre
+        ));
     }
 }

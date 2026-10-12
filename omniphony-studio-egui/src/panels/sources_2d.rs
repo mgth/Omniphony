@@ -5,17 +5,20 @@
 //!
 //! Every control here is a declared live option, so the panel sends
 //! `/omniphony/control/option` and the renderer validates against its own
-//! registry. The generator and phantom parameters come from the schemas the
-//! renderer publishes.
+//! registry. The generator and phantom parameters come from the listings the
+//! renderer publishes — the plugin format the backends use — and are drawn by
+//! the same generated form as the backend parameters.
 
 use egui::Ui;
 
 use crate::app::StudioSpike;
 use crate::host::channels::{
-    Family, LayoutSource, PlacementMode, family_placement, playing_family,
+    Family, LayoutSource, ModeSource, PlacementMode, families, family_label, family_placement,
+    playing_family,
 };
 use crate::host::commands::engine;
 use crate::i18n::t;
+use crate::panels::renderer::ParamTarget;
 use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::widgets;
@@ -36,7 +39,7 @@ fn reason_text(reason: &str) -> &'static str {
 
 impl StudioSpike {
     pub(crate) fn sources_2d_section(&mut self, ui: &mut Ui) {
-        let (placement, synthetic, generator, phantom, processing, generators, phantom_schema) = {
+        let (placement, synthetic, generator, phantom, processing, generators, phantom_listing) = {
             let live = self.host.read();
             (
                 live.option_str("surround_placement")
@@ -47,8 +50,8 @@ impl StudioSpike {
                 live.option_str("phantom_extract_mode")
                     .unwrap_or_else(|| "off".to_owned()),
                 live.app.live_options.fixed_channel_processing.clone(),
-                live.object_generators_schema.clone(),
-                live.phantom_schema.clone(),
+                live.object_generator_listings.clone(),
+                live.phantom_listing.clone(),
             )
         };
         let summary = format!(
@@ -131,7 +134,7 @@ impl StudioSpike {
                 self.generator_group(ui, &generator, generators.as_ref(), &height_reason);
                 let phantom_reason =
                     effective_reason(phantom != "off", synthetic, processing.as_ref(), "phantom");
-                self.phantom_group(ui, &phantom, phantom_schema.as_ref(), &phantom_reason);
+                self.phantom_group(ui, &phantom, phantom_listing.as_ref(), &phantom_reason);
 
                 // Where the fixed channels go, per source family. The editor
                 // for one channel opens from the objects list.
@@ -144,39 +147,27 @@ impl StudioSpike {
     /// entries. Picking Manual seeds the family's entries with the poses it
     /// renders right now, so nothing jumps.
     fn placement_group(&mut self, ui: &mut Ui) {
-        let (family, placement, generic_has_mode, playing) = {
+        let (family, placement, tabs) = {
             let live = self.host.read();
             let family = live.editing_family;
-            (
-                family,
-                family_placement(&live.app, family),
-                family_placement(&live.app, Family::Generic)
-                    .own_mode
-                    .is_some(),
-                playing_family(&live.app),
-            )
+            let playing = playing_family(&live.app);
+            // The renderer's families, named as it names them; the one it is
+            // playing is marked.
+            let tabs: Vec<(Family, String, bool)> = families(&live.app)
+                .into_iter()
+                .map(|f| (f, family_label(&live.app, f), playing == Some(f)))
+                .collect();
+            (family, family_placement(&live.app, family), tabs)
         };
         let mode_name = t(placement.effective_mode.i18n_key());
         Group::new(t("placement.title"))
             .help("help.placement")
             .show(ui, |ui| {
-                // The family tabs; the one the renderer is playing is marked.
-                let labels: Vec<String> = Family::ALL
+                let options: Vec<(Family, &str, bool)> = tabs
                     .iter()
-                    .map(|f| {
-                        if playing == Some(*f) {
-                            format!("{} ●", t(f.i18n_key()))
-                        } else {
-                            t(f.i18n_key()).to_owned()
-                        }
-                    })
+                    .map(|(f, label, playing)| (*f, label.as_str(), *playing))
                     .collect();
-                let options: Vec<(Family, &str)> = Family::ALL
-                    .iter()
-                    .copied()
-                    .zip(labels.iter().map(String::as_str))
-                    .collect();
-                if let Some(picked) = widgets::tab_bar(ui, &family, &options) {
+                if let Some(picked) = widgets::wrapping_tab_bar(ui, &family, &options) {
                     engine::select_placement_family(&self.host, picked);
                 }
 
@@ -184,7 +175,7 @@ impl StudioSpike {
                 // the generic one can leave the choice to it).
                 let current = placement.own_mode;
                 let mut choices: Vec<(Option<PlacementMode>, &str)> = Vec::new();
-                if family != Family::Generic {
+                if !family.is_generic() {
                     choices.push((None, t("placement.mode.inherit")));
                 }
                 for mode in PlacementMode::ALL {
@@ -200,12 +191,13 @@ impl StudioSpike {
                         }
                     }
                 });
-                if placement.own_mode.is_none() {
-                    let text = if family != Family::Generic && generic_has_mode {
-                        t("placement.inherited")
-                    } else {
-                        t("placement.builtin")
-                    };
+                let why = match placement.mode_source {
+                    ModeSource::Own => None,
+                    ModeSource::Generic => Some(t("placement.inherited")),
+                    ModeSource::Headphones => Some(t("placement.headphonesDefault")),
+                    ModeSource::Family => Some(t("placement.builtin")),
+                };
+                if let Some(text) = why {
                     widgets::note(ui, &text.replace("{mode}", mode_name));
                 }
                 widgets::note(
@@ -224,7 +216,7 @@ impl StudioSpike {
                 if placement.layout_source == LayoutSource::Own {
                     ui.add_space(4.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        let label = if family == Family::Generic {
+                        let label = if family.is_generic() {
                             t("virtualBed.reset")
                         } else {
                             t("placement.useGeneric")
@@ -293,7 +285,7 @@ impl StudioSpike {
         &mut self,
         ui: &mut Ui,
         current: &str,
-        schema: Option<&serde_json::Value>,
+        listing: Option<&serde_json::Value>,
         reason: &str,
     ) {
         let options = [
@@ -324,9 +316,9 @@ impl StudioSpike {
             .show(ui, |ui| {
                 widgets::note(ui, reason_text(reason));
                 if current != "off"
-                    && let Some(schema) = schema
+                    && let Some(listing) = listing
                 {
-                    self.phantom_params(ui, schema, current == "spectral");
+                    self.phantom_params(ui, listing, current == "spectral");
                 }
             });
         if chosen != current {
@@ -334,9 +326,9 @@ impl StudioSpike {
         }
     }
 
-    /// The active generator's declared parameters, one slider each.
-    fn generator_params(&mut self, ui: &mut Ui, generator: &str, schema: &serde_json::Value) {
-        let Some(params) = schema
+    /// The active generator's declared parameters, from its listing.
+    fn generator_params(&mut self, ui: &mut Ui, generator: &str, listings: &serde_json::Value) {
+        let Some(params) = listings
             .as_array()
             .and_then(|list| {
                 list.iter()
@@ -347,73 +339,43 @@ impl StudioSpike {
         else {
             return;
         };
-        let stored = {
+        let values = {
             let live = self.host.read();
-            live.app.live_options.object_generator_params.clone()
-        };
-        for spec in params {
-            let Some(key) = spec.get("key").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let value = stored
+            live.app
+                .live_options
+                .object_generator_param_values_by_id
                 .as_ref()
-                .and_then(|v| v.get(key))
-                .and_then(|v| v.as_f64())
-                .or_else(|| spec.get("default").and_then(|v| v.as_f64()))
-                .unwrap_or(0.0);
-            if let Some(sent) = param_slider(ui, key, spec, value) {
-                engine::set_object_generator_param(&self.host, key, sent);
-            }
-        }
+                .and_then(|by_id| by_id.get(generator))
+                .cloned()
+        };
+        self.plugin_params_form(
+            ui,
+            ParamTarget::Generator(generator),
+            params,
+            values.as_ref(),
+            |_| None,
+        );
     }
 
-    /// The phantom extractor's declared parameters (`buildPhantomParamSliders`):
-    /// a switch for an on/off parameter, a slider for the rest. A parameter
-    /// only the other method reads stays editable — the configuration is
-    /// kept for when that method is picked — but is dimmed and says so.
-    fn phantom_params(&mut self, ui: &mut Ui, schema: &serde_json::Value, spectral: bool) {
-        let Some(params) = schema.as_array() else {
+    /// The phantom extractor's declared parameters (`buildPhantomParamSliders`).
+    /// A parameter only the other method reads (its `requires`) stays
+    /// editable — the configuration is kept for when that method is picked —
+    /// but is dimmed and says so.
+    fn phantom_params(&mut self, ui: &mut Ui, listing: &serde_json::Value, spectral: bool) {
+        let Some(params) = listing.get("params").and_then(|p| p.as_array()) else {
             return;
         };
-        let stored = {
+        let values = {
             let live = self.host.read();
-            live.app.live_options.phantom_params.clone()
+            live.app.live_options.phantom_param_values.clone()
         };
-        for spec in params {
-            let Some(key) = spec.get("key").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let value = stored
-                .as_ref()
-                .and_then(|v| v.get(key))
-                .and_then(|v| v.as_f64())
-                .or_else(|| spec.get("default").and_then(|v| v.as_f64()))
-                .unwrap_or(0.0);
-            let gate = phantom_gate(key, spectral);
-            let row = ui.scope(|ui| {
-                if gate.is_some() {
-                    ui.multiply_opacity(0.7);
-                }
-                if is_binary(spec) {
-                    let mut on = value >= 0.5;
-                    widgets::switch_row(ui, &param_label(key, spec), &mut on).then_some(if on {
-                        1.0
-                    } else {
-                        0.0
-                    })
-                } else {
-                    param_slider(ui, key, spec, value)
-                }
-            });
-            if let Some(hover) = gate {
-                row.response.on_hover_text(t(hover));
-            }
-            if let Some(sent) = row.inner {
-                // Kept at once, as the generator's are: the slider would
-                // otherwise snap back until the renderer's echo arrives.
-                engine::set_phantom_extract_param(&self.host, key, sent);
-            }
-        }
+        self.plugin_params_form(
+            ui,
+            ParamTarget::Phantom,
+            params,
+            values.as_ref(),
+            |requires| phantom_gate(requires, spectral),
+        );
     }
 
     /// The web's `confirm('confirm.resetVirtualBed')`, per family: clearing a
@@ -425,8 +387,9 @@ impl StudioSpike {
         };
         let mut run = false;
         let mut cancel = false;
-        let text = t("confirm.resetPlacement").replace("{family}", t(family.i18n_key()));
-        let action = if family == Family::Generic {
+        let family_name = family_label(&self.host.read().app, family);
+        let text = t("confirm.resetPlacement").replace("{family}", &family_name);
+        let action = if family.is_generic() {
             t("virtualBed.reset")
         } else {
             t("placement.useGeneric")
@@ -503,70 +466,14 @@ fn generator_options(schema: Option<&serde_json::Value>) -> Vec<(String, String)
     options
 }
 
-/// `schemaLabel`: the translation when the key has one, else the English
-/// label the schema carries, else the key.
-fn param_label(key: &str, spec: &serde_json::Value) -> String {
-    spec.get("i18nKey")
-        .and_then(|v| v.as_str())
-        .and_then(crate::i18n::lookup)
-        .map(str::to_owned)
-        .or_else(|| {
-            spec.get("label")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| key.to_owned())
-}
-
-/// `isBinaryParam`: an on/off parameter (0..1 in steps of 1), shown as a
-/// switch rather than a two-position slider.
-fn is_binary(spec: &serde_json::Value) -> bool {
-    let number = |k: &str| spec.get(k).and_then(|v| v.as_f64());
-    number("min") == Some(0.0) && number("max") == Some(1.0) && number("step") == Some(1.0)
-}
-
-/// `applyPhantomParamGate`: which method alone reads `key`, when it is not
-/// the one running — the i18n key of the note saying so.
-fn phantom_gate(key: &str, spectral: bool) -> Option<&'static str> {
-    const BROADBAND_ONLY: [&str; 3] = ["passes", "center", "sides"];
-    const SPECTRAL_ONLY: [&str; 2] = ["heights", "height_split"];
-    if spectral && BROADBAND_ONLY.contains(&key) {
-        Some("twoDSources.phantomBroadbandOnly")
-    } else if !spectral && SPECTRAL_ONLY.contains(&key) {
-        Some("twoDSources.phantomSpectralOnly")
-    } else {
-        None
+/// `applyPhantomParamGate`: the method a parameter `requires`, when it is
+/// not the one running — the i18n key of the note saying so.
+fn phantom_gate(requires: &str, spectral: bool) -> Option<&'static str> {
+    match requires {
+        "broadband" if spectral => Some("twoDSources.phantomBroadbandOnly"),
+        "spectral" if !spectral => Some("twoDSources.phantomSpectralOnly"),
+        _ => None,
     }
-}
-
-/// One declared parameter: a slider with the schema's range, step and unit.
-fn param_slider(ui: &mut Ui, key: &str, spec: &serde_json::Value, value: f64) -> Option<f64> {
-    let min = spec.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-    let max = spec.get("max").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-    let step = spec.get("step").and_then(|v| v.as_f64()).unwrap_or(0.01);
-    let unit = spec
-        .get("unit")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_owned();
-    let label = param_label(key, spec);
-    let mut current = value as f32;
-    // `fmtParamValue`: the step decides how many decimals are meaningful.
-    let changed = widgets::value_slider(ui, &label, &mut current, min..=max, step, move |v| {
-        let text = if step >= 1.0 {
-            format!("{}", v.round() as i64)
-        } else if step >= 0.1 {
-            format!("{v:.1}")
-        } else {
-            format!("{v:.2}")
-        };
-        if unit.is_empty() {
-            text
-        } else {
-            format!("{text} {unit}")
-        }
-    });
-    changed.then_some(current as f64)
 }
 
 /// `effectiveHeightReason` / `effectivePhantomReason`: the stage's own state
@@ -592,7 +499,7 @@ fn effective_reason(
 
 #[cfg(test)]
 mod tests {
-    use super::{generator_options, is_binary, phantom_gate};
+    use super::{generator_options, phantom_gate};
 
     #[test]
     fn an_empty_generator_schema_falls_back_to_the_built_in_generators() {
@@ -615,22 +522,17 @@ mod tests {
     }
 
     #[test]
-    fn on_off_parameters_and_method_only_parameters_are_told_apart() {
-        assert!(is_binary(
-            &serde_json::json!({ "min": 0, "max": 1, "step": 1 })
-        ));
-        assert!(!is_binary(
-            &serde_json::json!({ "min": 0, "max": 1, "step": 0.01 })
-        ));
+    fn a_parameter_is_gated_by_the_method_it_requires() {
         assert_eq!(
-            phantom_gate("passes", true),
+            phantom_gate("broadband", true),
             Some("twoDSources.phantomBroadbandOnly")
         );
-        assert_eq!(phantom_gate("passes", false), None);
+        assert_eq!(phantom_gate("broadband", false), None);
         assert_eq!(
-            phantom_gate("heights", false),
+            phantom_gate("spectral", false),
             Some("twoDSources.phantomSpectralOnly")
         );
-        assert_eq!(phantom_gate("strength", true), None);
+        assert_eq!(phantom_gate("spectral", true), None);
+        assert_eq!(phantom_gate("anything_else", true), None);
     }
 }

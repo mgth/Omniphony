@@ -1,5 +1,5 @@
 //! Toolkit-independent presentation policy derived from the current producer.
-//! Unknown legacy producers keep the standalone controls visible. Known
+//! Unknown producers keep the standalone controls visible. Known
 //! capabilities are authoritative; an offline embedded producer must not hide
 //! the local recovery actions needed to bring up a standalone renderer.
 
@@ -10,8 +10,10 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActionPolicy {
     pub renderer_ready: bool,
+    /// The producer plays to a device or a file of its own: an output to
+    /// choose and a latency to hold. Not a renderer hosted by a player, whose
+    /// audio is the player's.
     pub audio_output: bool,
-    pub adaptive_resampling: bool,
     pub manage_process: bool,
     pub input: bool,
 }
@@ -56,9 +58,6 @@ impl ActionPolicy {
         Self {
             renderer_ready: connected && snapshot_ready,
             audio_output: !embedded && supports("domains", "audio"),
-            adaptive_resampling: !embedded
-                && supports("domains", "audio")
-                && supports("controlConfig", "adaptive_resampling"),
             manage_process: local && !embedded,
             input: !embedded && supports("domains", "input"),
         }
@@ -71,32 +70,28 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn standalone_embedded_offline_and_legacy_matrix() {
-        let standalone = json!({"variant":"standalone", "domains":["audio", "input"], "controlConfig":["adaptive_resampling"]});
+    fn standalone_embedded_offline_and_unknown_matrix() {
+        let standalone = json!({
+            "variant": "standalone",
+            "domains": ["renderer", "audio", "input"],
+            "controlConfig": ["layout", "speakers", "audio", "sync"],
+        });
         let embedded = json!({"variant":"embedded", "domains":["render"], "controlConfig":[]});
         let connected = ConnectionState::Connected;
         let full = ActionPolicy::from_producer(connected, true, true, Some(&standalone));
-        assert!(
-            full.renderer_ready
-                && full.audio_output
-                && full.input
-                && full.adaptive_resampling
-                && full.manage_process
-        );
+        assert!(full.renderer_ready && full.audio_output && full.input && full.manage_process);
         let hosted = ActionPolicy::from_producer(connected, true, true, Some(&embedded));
         assert!(hosted.renderer_ready);
-        assert!(
-            !hosted.audio_output
-                && !hosted.input
-                && !hosted.adaptive_resampling
-                && !hosted.manage_process
-        );
+        assert!(!hosted.audio_output && !hosted.input && !hosted.manage_process);
+        // Not connected any more: what it said no longer describes anything,
+        // and the forms that bring a standalone renderer up stay available.
         let offline =
             ActionPolicy::from_producer(ConnectionState::Reconnecting, true, true, Some(&embedded));
         assert!(!offline.renderer_ready);
-        assert!(offline.manage_process && offline.input);
-        let legacy = ActionPolicy::from_producer(connected, true, true, None);
-        assert_eq!(legacy, full);
+        assert!(offline.manage_process && offline.input && offline.audio_output);
+        // A producer that says nothing about itself is taken for standalone.
+        let unknown = ActionPolicy::from_producer(connected, true, true, None);
+        assert_eq!(unknown, full);
         let remote = ActionPolicy::from_producer(connected, true, false, Some(&standalone));
         assert!(!remote.manage_process);
         let partial = ActionPolicy::from_producer(
@@ -106,6 +101,6 @@ mod tests {
             Some(&json!({"domains":["audio"]})),
         );
         assert!(partial.audio_output);
-        assert!(!partial.adaptive_resampling && !partial.input && !partial.renderer_ready);
+        assert!(!partial.input && !partial.renderer_ready);
     }
 }

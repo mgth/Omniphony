@@ -9,6 +9,7 @@ use crate::host::commands::gain;
 use crate::host::peak_hold::METER_DB_MIN;
 use crate::i18n::t;
 use crate::model::app_state::Meter;
+use crate::model::binaural::RenderPath;
 use crate::panels::audio::meter_fraction;
 use crate::panels::row_glyphs;
 use crate::ui::{section::Section, theme, widgets};
@@ -28,6 +29,9 @@ struct Row {
     colour: Color32,
     /// Extra note shown after the label (bed channels, gain).
     detail: Option<String>,
+    /// The name of the stream's tag on this channel (`Dialogue`), on a line
+    /// of its own above the meter line.
+    tag: Option<String>,
     /// Normalised position, for the plan thumbnail.
     position: Option<[f64; 3]>,
     /// False for a direct feed, which sits outside the room model.
@@ -38,6 +42,12 @@ struct Row {
     speaker: bool,
     freq_low: Option<f32>,
     freq_high: Option<f32>,
+    /// A read-only speaker (a BRIR set's own loudspeaker): no mute, no solo,
+    /// no reordering — it can only be selected.
+    fixed: bool,
+    /// A speaker of a headphone room, virtual or measured: its thumbnail's
+    /// frame is dashed, as the scene draws its cube in wire.
+    virtual_speaker: bool,
     /// How much of the selected object this entry carries, 0..1, and the same
     /// split per crossover band. Both empty unless an object is selected.
     contribution: Option<f64>,
@@ -81,7 +91,10 @@ impl StudioSpike {
             )
             .show(ui, |ui| {
                 self.metering_row(ui);
-                self.object_test_feature_row(ui);
+                // Injecting a test object is a tool, not listening.
+                if self.advanced {
+                    self.object_test_feature_row(ui);
+                }
                 if rows.is_empty() {
                     widgets::note(ui, t("objects.none"));
                 }
@@ -113,11 +126,7 @@ impl StudioSpike {
     /// mode, so they carry the same meter and mute a speaker row does — but
     /// they are addressed by ear, not by layout index.
     pub(crate) fn headphones_section(&mut self, ui: &mut Ui) {
-        let mode = {
-            let live = self.host.read();
-            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
-        };
-        if mode == crate::panels::renderer::OutputMode::Speaker {
+        if !self.host.read().app.render_path().is_binaural() {
             return;
         }
         // A mute pattern that no longer matches the solo interpretation
@@ -131,9 +140,9 @@ impl StudioSpike {
         let rows = self.ear_rows();
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
-        // Hardcoded English in the web too: this header has no i18n key.
+        // The output mode's own word: the web hard-codes "Headphones" here.
         ui.label(
-            RichText::new("Headphones")
+            RichText::new(t("outputMode.headphones"))
                 .size(theme::FONT_SIZE_SECTION)
                 .color(theme::TEXT_STRONG),
         );
@@ -182,11 +191,14 @@ impl StudioSpike {
                     soloed: self.ear_solo == Some(ear),
                     colour: theme::TEXT,
                     detail: None,
+                    tag: None,
                     position: None,
                     spatialize: true,
                     speaker: false,
                     freq_low: None,
                     freq_high: None,
+                    fixed: false,
+                    virtual_speaker: false,
                     contribution: None,
                     band_gains: Vec::new(),
                     size: None,
@@ -227,14 +239,10 @@ impl StudioSpike {
     }
 
     pub(crate) fn speakers_section(&mut self, ui: &mut Ui) {
-        // In binaural-direct mode the speakers are not the output, so the list
-        // stands down; the virtual-room mode shows both because it renders
-        // through the speakers into the ears.
-        let mode = {
-            let live = self.host.read();
-            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
-        };
-        if mode == crate::panels::renderer::OutputMode::BinauralDirect {
+        // On the direct headphone path nothing feeds the speakers, so the
+        // list stands down; the two rooms render through them into the ears.
+        let path = self.host.read().app.render_path();
+        if path == RenderPath::Direct {
             return;
         }
         let rows = self.speaker_rows();
@@ -247,21 +255,42 @@ impl StudioSpike {
                 .filter(|(_, at)| at.elapsed() < CLIP_FLASH)
                 .map(|(index, _)| index)
         };
-        let layout_name = {
+        let (layout_name, brir) = {
             let live = self.host.read();
-            live.app
-                .layouts
-                .iter()
-                .find(|l| Some(&l.key) == live.app.selected_layout_key.as_ref())
-                .map(|l| l.name.clone())
-                .unwrap_or_default()
+            let brir = live.app.brir_speakers.is_some();
+            let name = if brir {
+                t("speakers.brirLayout").to_string()
+            } else {
+                let name = live
+                    .app
+                    .layouts
+                    .iter()
+                    .find(|l| Some(&l.key) == live.app.selected_layout_key.as_ref())
+                    .map(|l| l.name.clone())
+                    .unwrap_or_default();
+                // The layout stands in for a room on headphones: the summary
+                // says so, as the scene draws its speakers in wire.
+                if path == RenderPath::VirtualRoom {
+                    format!("{} · {name}", t("speakers.kind.virtual"))
+                } else {
+                    name
+                }
+            };
+            (name, brir)
         };
         Section::new("speakersSection", "section.speakers")
             .icon(&crate::ui::icons::SECTION_SPEAKERS)
             .default_open(true)
             .summary(layout_name)
             .show(ui, |ui| {
-                self.layout_actions(ui);
+                if brir {
+                    // The set's own loudspeakers stand in for the layout:
+                    // nothing to load, edit or trim, and the layout itself is
+                    // kept for the speakers.
+                    widgets::note(ui, t("speakers.brirReadOnly"));
+                } else {
+                    self.layout_actions(ui);
+                }
                 if rows.is_empty() {
                     widgets::note(ui, t("speakers.none"));
                 }
@@ -459,6 +488,9 @@ impl StudioSpike {
         // each object row says what that object puts through it.
         let selected_speaker = self.selection.speaker;
         let show_details = self.settings.show_object_details;
+        // While the renderer reads positions on the sphere, the polar
+        // readout is where the object is heard, as the scene draws it.
+        let sphere = live.app.reads_on_sphere().then(|| live.app.display_room());
         // One band's gains, or the full band's while every band is shown.
         let band = (!self.volume_settings.all_bands).then_some(self.settings.heatmap_band_index);
         let mut rows: Vec<Row> = live
@@ -492,11 +524,16 @@ impl StudioSpike {
                     // thumbnail, which is drawn at the destination speaker
                     // and framed in black.
                     detail: None,
+                    // A dialogue element coded apart has an L, an R and a C
+                    // beside the bed's: the stream's tag tells them apart.
+                    tag: live.app.channel_tag_of(id).map(view::objects::tag_name),
                     position: Some(direct.map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z])),
                     spatialize: direct.is_none(),
                     speaker: false,
                     freq_low: None,
                     freq_high: None,
+                    fixed: false,
+                    virtual_speaker: false,
                     contribution: selected_speaker.and_then(|spk| {
                         contribution_fraction(
                             live.app
@@ -538,13 +575,22 @@ impl StudioSpike {
                             None => (
                                 coordinates(
                                     [src.x, src.y, src.z],
-                                    src.azimuth_deg.map(|az| {
-                                        [
-                                            az,
-                                            src.elevation_deg.unwrap_or(0.0),
-                                            src.distance_m.unwrap_or(0.0),
-                                        ]
-                                    }),
+                                    match &sphere {
+                                        Some(frame) => {
+                                            let (az, el, r) = crate::host::channels::adm_to_polar(
+                                                frame,
+                                                [src.x, src.y, src.z],
+                                            );
+                                            Some([az, el, r])
+                                        }
+                                        None => src.azimuth_deg.map(|az| {
+                                            [
+                                                az,
+                                                src.elevation_deg.unwrap_or(0.0),
+                                                src.distance_m.unwrap_or(0.0),
+                                            ]
+                                        }),
+                                    },
                                 ),
                                 dominant_speaker(
                                     live.app
@@ -593,6 +639,15 @@ impl StudioSpike {
 
     fn speaker_rows(&self) -> Vec<Row> {
         let live = self.host.read();
+        // A BRIR set's own loudspeakers: the editable layout's rows (gain,
+        // mute) index other speakers, so none is shown or offered.
+        let brir = live.app.brir_speakers.is_some();
+        // The speakers of a headphone room, virtual or measured: the
+        // thumbnail's frame goes dashed, as the scene draws them in wire.
+        let virtual_speaker = matches!(
+            live.app.render_path(),
+            RenderPath::VirtualRoom | RenderPath::MeasuredRoom
+        );
         // The contribution overlay answers "where does *this* object go", so it
         // exists only while one is selected.
         let selected = self.selection.object.as_deref();
@@ -607,7 +662,9 @@ impl StudioSpike {
             .enumerate()
             .map(|(index, speaker)| {
                 let key = index.to_string();
-                let gain = live.app.speaker_gains.get(&key).copied();
+                let gain = (!brir)
+                    .then(|| live.app.speaker_gains.get(&key).copied())
+                    .flatten();
                 Row {
                     id: key.clone(),
                     label: speaker.id.clone(),
@@ -615,17 +672,20 @@ impl StudioSpike {
                     strip_icon: None,
                     meter: live.app.speaker_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("spk:{key}")),
-                    muted: live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
+                    muted: !brir && live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
                     soloed: false,
                     colour: theme::TEXT,
                     detail: gain
                         .filter(|g| (*g - 1.0).abs() > 1e-3)
                         .map(|g| crate::panels::audio::format_linear_as_db(Some(g))),
                     position: Some([speaker.x, speaker.y, speaker.z]),
+                    tag: None,
                     spatialize: speaker.spatialize != 0,
                     speaker: true,
                     freq_low: speaker.freq_low,
                     freq_high: speaker.freq_high,
+                    fixed: brir,
+                    virtual_speaker,
                     // The object's own RMS through this speaker's panning gain
                     // — what it actually contributes, not what it was asked for.
                     contribution: contribution_fraction(
@@ -748,23 +808,32 @@ impl StudioSpike {
             .collect();
         let solo_target = (unmuted.len() == 1).then(|| unmuted[0].clone());
 
-        if solo_target.as_deref() == Some(id) {
-            // Already soloed: lift the mutes.
-            for other in &ids {
-                if other != id {
-                    self.set_muted(other, false, speaker);
-                }
+        // What changes, as `(id, muted)`: already soloed, the mutes are
+        // lifted; else everything else is muted and this entry is not.
+        let unsolo = solo_target.as_deref() == Some(id);
+        let changes: Vec<(&String, bool)> = ids
+            .iter()
+            .zip(&muted_now)
+            .filter_map(|(other, &muted)| {
+                let wanted = !unsolo && other != id;
+                (wanted != muted).then_some((other, wanted))
+            })
+            .collect();
+        if speaker {
+            // One message for the lot: the renderer answers each speakers
+            // message with the whole state.
+            let mutes: Vec<(i32, bool)> = changes
+                .iter()
+                .filter_map(|(other, muted)| Some((other.parse().ok()?, *muted)))
+                .collect();
+            gain::control_speaker_mutes(&self.host, &mutes);
+        } else {
+            for (other, muted) in changes {
+                self.set_muted(other, muted, speaker);
             }
-            return;
         }
-        for (other, muted) in ids.iter().zip(&muted_now) {
-            if other == id {
-                if *muted {
-                    self.set_muted(other, false, speaker);
-                }
-            } else if !*muted {
-                self.set_muted(other, true, speaker);
-            }
+        if unsolo {
+            return;
         }
         if !speaker {
             self.selection = Selection {
@@ -1042,8 +1111,8 @@ fn list_row(
     (action, response.rect)
 }
 
-/// What a row's frame holds: the badge down its left, then the details line,
-/// the meter line and the band bars.
+/// What a row's frame holds: the badge down its left, then the tag line, the
+/// details line, the meter line and the band bars.
 fn row_body(
     ui: &mut Ui,
     list: &str,
@@ -1061,6 +1130,9 @@ fn row_body(
         let (reserved, _) = ui.allocate_exact_size(vec2(row_glyphs::STRIP_W, 0.0), Sense::hover());
         let content = ui
             .vertical(|ui| {
+                if let Some(tag) = &row.tag {
+                    tag_line(ui, tag);
+                }
                 if let Some(details) = &row.details {
                     details_line(ui, details);
                 }
@@ -1102,7 +1174,7 @@ fn row_body(
     let strip = ui.interact(
         strip_rect,
         egui::Id::new(("row-strip", list, row.id.as_str())),
-        if row.speaker {
+        if row.speaker && !row.fixed {
             Sense::click_and_drag()
         } else {
             Sense::click()
@@ -1113,15 +1185,40 @@ fn row_body(
     } else if strip.clicked() {
         *action = RowAction::Select;
     }
-    if row.speaker {
+    if row.speaker && !row.fixed {
         if strip.hovered() && !strip.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
         strip.on_hover_text("Drag to reorder");
+    } else if let Some(tag) = &row.tag {
+        // A tagged channel says whose it is, icon or not.
+        strip.on_hover_text(format!("{tag} · {}", row.label));
     } else if row.strip_icon.is_some() {
         // The name hides behind the icon, so it shows on hover.
         strip.on_hover_text(&row.label);
     }
+}
+
+/// The channel tag's name, on a line of its own: the meter line's columns
+/// are fixed and its meter takes what they leave, so a name there, which the
+/// stream chooses and can be any length, would be taken out of the meter.
+/// Here it is cut to the row's width, and egui shows it whole on hover.
+fn tag_line(ui: &mut Ui, tag: &str) -> egui::Response {
+    ui.scope(|ui| {
+        // Small text, not a control: a text line's height, as the details
+        // line has.
+        ui.spacing_mut().interact_size.y = 12.0;
+        ui.add(
+            egui::Label::new(
+                RichText::new(tag)
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED),
+            )
+            .truncate()
+            .selectable(false),
+        )
+    })
+    .inner
 }
 
 /// `.object-head`: the coordinates on the left, cut short when the row is
@@ -1215,7 +1312,7 @@ fn dominant_speaker(gains: Option<&Vec<f64>>, name_of: impl Fn(usize) -> Option<
 fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
     ui.horizontal(|ui| {
         if let Some(position) = row.position {
-            row_glyphs::position_icon(ui, position, row.spatialize);
+            row_glyphs::position_icon(ui, position, row.spatialize, row.virtual_speaker);
         }
         if row.speaker {
             row_glyphs::filter_icon(ui, row.freq_low, row.freq_high);
@@ -1238,11 +1335,13 @@ fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
         // scroll area, which widens the next row's slack, and the list fans out
         // as it goes down.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if toggle_letter(ui, "S", row.soloed).clicked() {
-                *action = RowAction::Solo;
-            }
-            if toggle_letter(ui, "M", row.muted).clicked() {
-                *action = RowAction::Mute;
+            if !row.fixed {
+                if toggle_letter(ui, "S", row.soloed).clicked() {
+                    *action = RowAction::Solo;
+                }
+                if toggle_letter(ui, "M", row.muted).clicked() {
+                    *action = RowAction::Mute;
+                }
             }
             if let Some(size) = row.size {
                 row_glyphs::size_gauges(ui, size);
@@ -1310,11 +1409,14 @@ mod tests {
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
+            tag: None,
             position: None,
             spatialize: true,
             speaker: true,
             freq_low: None,
             freq_high: None,
+            fixed: false,
+            virtual_speaker: false,
             contribution: None,
             band_gains: Vec::new(),
             size: None,
@@ -1353,6 +1455,89 @@ mod tests {
         check_row_clicks(false);
     }
 
+    /// A channel tag's name is the stream's and can be any length. It has a
+    /// line of its own, cut to the row's width, so that the meter line keeps
+    /// the room it has on an untagged row down to the narrowest panel.
+    #[test]
+    fn a_long_tag_is_cut_to_the_row_and_leaves_the_meter_line_alone() {
+        use super::{Row, RowState, list_row, tag_line};
+        const TAG: &str = "Dialogue, original version with the director's commentary (fr)";
+        let row = |tag: Option<&str>| Row {
+            id: "12".to_owned(),
+            label: "L".to_owned(),
+            meter: None,
+            hold: None,
+            muted: false,
+            soloed: false,
+            colour: egui::Color32::WHITE,
+            detail: None,
+            tag: tag.map(str::to_owned),
+            position: Some([0.0, 1.0, 0.0]),
+            spatialize: true,
+            speaker: false,
+            freq_low: None,
+            freq_high: None,
+            fixed: false,
+            virtual_speaker: false,
+            contribution: None,
+            band_gains: Vec::new(),
+            size: None,
+            moving: false,
+            strip: "L".to_owned(),
+            strip_icon: None,
+            colorized: false,
+            details: None,
+        };
+        // The narrowest the side panels go.
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(220.0, 100.0));
+        let ctx = egui::Context::default();
+        let run = |add: &mut dyn FnMut(&mut egui::Ui)| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| add(ui),
+            );
+            output.textures_delta.clear();
+        };
+        let mut plain = egui::Rect::NOTHING;
+        let mut tagged = egui::Rect::NOTHING;
+        run(&mut |ui| plain = list_row(ui, "plain", &row(None), RowState::default(), &[]).1);
+        run(&mut |ui| {
+            tagged = list_row(ui, "tagged", &row(Some(TAG)), RowState::default(), &[]).1;
+        });
+        // The tagged row is as wide as the plain one, inside the panel, and
+        // one line taller: nothing was taken from the meter line.
+        assert_eq!(tagged.left(), plain.left());
+        assert_eq!(tagged.right(), plain.right());
+        assert!(tagged.right() <= screen.right(), "{tagged:?}");
+        assert!(tagged.height() > plain.height(), "{tagged:?} vs {plain:?}");
+
+        // The name itself stops where its line does.
+        let mut line = egui::Rect::NOTHING;
+        let mut room = 0.0;
+        let mut whole = 0.0;
+        run(&mut |ui| {
+            room = ui.available_width();
+            whole = ui
+                .painter()
+                .layout_no_wrap(
+                    TAG.to_owned(),
+                    egui::FontId::proportional(crate::ui::theme::FONT_SIZE_SMALL),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x;
+            line = tag_line(ui, TAG).rect;
+        });
+        assert!(
+            whole > room,
+            "the name must be too long for the test: {whole} <= {room}"
+        );
+        assert!(line.width() <= room, "{line:?} in {room}");
+    }
+
     fn check_row_clicks(speaker: bool) {
         use super::{Row, RowAction, RowState, list_row};
         let row = Row {
@@ -1364,11 +1549,14 @@ mod tests {
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
+            tag: None,
             position: None,
             spatialize: true,
             speaker,
             freq_low: None,
             freq_high: None,
+            fixed: false,
+            virtual_speaker: false,
             contribution: None,
             band_gains: Vec::new(),
             size: None,

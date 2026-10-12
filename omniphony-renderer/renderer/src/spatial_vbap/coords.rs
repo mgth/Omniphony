@@ -1,6 +1,6 @@
 //! ADM coordinate conversions.
 //!
-//! The implementations live in `omniphony-geometry`, which the Studio backend
+//! The implementations live in `omniphony_geometry`, which the Studio backend
 //! shares, so both ends of the OSC link agree on what an azimuth means.
 //!
 //! ADM:

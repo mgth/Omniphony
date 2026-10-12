@@ -83,8 +83,49 @@ fn row_id(section: &str) -> egui::Id {
 }
 
 /// Where a header toggle leaves its click for the caller to pick up.
+/// Which sections are open, by section id: seeded from the preferences at
+/// start-up, updated on every toggle, and read back by the app through
+/// [`take_changed_open_states`] — the preferences file, not egui's memory, is
+/// what remembers them across launches (docs/persistence-policy.md).
+pub type OpenStates = std::collections::BTreeMap<String, bool>;
+
+fn open_states_id() -> egui::Id {
+    egui::Id::new("section-open-states")
+}
+
+fn open_states_changed_id() -> egui::Id {
+    egui::Id::new("section-open-states-changed")
+}
+
+/// Hand the saved open sections to the widgets, before the first frame.
+pub fn seed_open_states(ctx: &egui::Context, states: OpenStates) {
+    ctx.data_mut(|d| d.insert_temp(open_states_id(), states));
+}
+
+/// The open sections, when one was toggled since the last call.
+pub fn take_changed_open_states(ctx: &egui::Context) -> Option<OpenStates> {
+    ctx.data_mut(|d| {
+        d.remove_temp::<bool>(open_states_changed_id())?;
+        Some(
+            d.get_temp_mut_or_default::<OpenStates>(open_states_id())
+                .clone(),
+        )
+    })
+}
+
 fn toggle_id(section: &str) -> egui::Id {
     egui::Id::new(("section-header-toggle", section))
+}
+
+fn open_request_id(section: &str) -> egui::Id {
+    egui::Id::new(("section-open-request", section))
+}
+
+/// Ask a section to open on its next frame, from outside its panel (the
+/// viewport's badge): the widget takes the request when it draws.
+pub fn request_open(ctx: &egui::Context, section_id: &str) {
+    ctx.data_mut(|d| d.insert_temp(open_request_id(section_id), true));
+    ctx.request_repaint();
 }
 
 impl<'a> Section<'a> {
@@ -164,6 +205,24 @@ impl<'a> Section<'a> {
     }
 
     pub fn show<R>(self, ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        self.show_keeping(ui, &mut (), |_, _| {}, |_, ui| body(ui))
+    }
+
+    /// [`Section::show`] with rows that stay in view while the section is
+    /// folded: `kept` draws under the header whether the body is open or
+    /// not, and the body follows it. For the one choice a section hangs on
+    /// and that is made more often than the section is opened (the output
+    /// mode) — not a way to keep a section's favourite rows out.
+    ///
+    /// Both closures get `owner`, since each needs the panel's state and two
+    /// closures cannot both borrow it.
+    pub fn show_keeping<S, R>(
+        self,
+        ui: &mut Ui,
+        owner: &mut S,
+        kept: impl FnOnce(&mut S, &mut Ui),
+        body: impl FnOnce(&mut S, &mut Ui) -> R,
+    ) -> Option<R> {
         let Section {
             id: section_id,
             title,
@@ -175,11 +234,25 @@ impl<'a> Section<'a> {
             header_widget,
         } = self;
         let id = ui.make_persistent_id(("section", section_id));
+        // The saved state only matters on the first frame: after it egui's
+        // own state (and its animation) carries the section.
+        let saved = ui.ctx().data_mut(|d| {
+            d.get_temp_mut_or_default::<OpenStates>(open_states_id())
+                .get(section_id)
+                .copied()
+        });
         let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(),
             id,
-            default_open,
+            saved.unwrap_or(default_open),
         );
+        if ui
+            .ctx()
+            .data_mut(|d| d.remove_temp::<bool>(open_request_id(section_id)))
+            .is_some()
+        {
+            state.set_open(true);
+        }
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
         // The whole row senses the click, beneath its children, as a list
@@ -292,8 +365,17 @@ impl<'a> Section<'a> {
             .data_mut(|d| d.insert_temp(row_id(section_id), header.response.rect));
         if header.inner.clicked() || header.response.clicked() {
             state.toggle(ui);
+            let open = state.is_open();
+            ui.ctx().data_mut(|d| {
+                d.get_temp_mut_or_default::<OpenStates>(open_states_id())
+                    .insert(section_id.to_owned(), open);
+                d.insert_temp(open_states_changed_id(), true);
+            });
         }
-        state.show_body_unindented(ui, body).map(|r| r.inner)
+        kept(owner, ui);
+        state
+            .show_body_unindented(ui, |ui| body(owner, ui))
+            .map(|r| r.inner)
     }
 }
 
@@ -393,6 +475,32 @@ mod tests {
         output.textures_delta.clear();
         assert!(widget_drawn, "the header widget did not draw");
         assert!(!body_drawn, "the body drew while closed");
+    }
+
+    /// The kept rows draw under the header of a closed section, and before
+    /// the body of an open one.
+    #[test]
+    fn the_kept_rows_show_while_the_section_is_closed() {
+        for open in [false, true] {
+            let ctx = egui::Context::default();
+            let mut drawn: Vec<&str> = Vec::new();
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                Section::new(
+                    if open { "kept-open" } else { "kept-closed" },
+                    "section.display",
+                )
+                .default_open(open)
+                .show_keeping(
+                    ui,
+                    &mut drawn,
+                    |drawn, _| drawn.push("kept"),
+                    |drawn, _| drawn.push("body"),
+                );
+            });
+            output.textures_delta.clear();
+            let expected: &[&str] = if open { &["kept", "body"] } else { &["kept"] };
+            assert_eq!(drawn, expected);
+        }
     }
 }
 

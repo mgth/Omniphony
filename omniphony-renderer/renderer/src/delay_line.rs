@@ -1,6 +1,8 @@
-//! Per-speaker fractional delay line with linear-interpolated read pointer.
+//! Delay lines: the per-speaker fractional [`DelayLine`] with a
+//! linear-interpolated, ramped read pointer, the fixed whole-sample
+//! [`IntegerDelay`], and the ring read [`read_linear`] the binaural taps share.
 //!
-//! # Design
+//! # `DelayLine` design
 //!
 //! Each `DelayLine` holds a fixed-size circular buffer sized for 100 ms at the
 //! renderer's sample rate.  The read pointer is fractional and ramps toward the
@@ -8,7 +10,9 @@
 //! 100 ms delay change takes at most 100 ms to complete with no discontinuity.
 //!
 //! Fractional positions are resolved with linear interpolation between the two
-//! neighbouring buffer slots.
+//! neighbouring buffer slots. It keeps its own `a + f·(b − a)` read from a
+//! float read position rather than [`read_linear`]: the two forms round
+//! differently, and switching would change the output bits.
 
 /// Maximum ramp speed: delay changes by at most this many samples per output sample.
 /// At this rate a 100 ms change at 48 kHz (4 800 samples) completes in 100 ms.
@@ -131,9 +135,90 @@ impl DelayLine {
     }
 }
 
+/// Linear-interpolated read `delay` samples behind `write_pos`, which still
+/// points at the sample just written.
+///
+/// `delay` must lie in `[0, ring.len() − 1)`: the read then sits less than one
+/// lap behind the write, so one conditional add wraps it, with no division in
+/// the per-sample path (the reflection bank and the FDN run this for every
+/// tap of every sample).
+#[inline]
+pub fn read_linear(ring: &[f32], write_pos: usize, delay: f32) -> f32 {
+    debug_assert!(delay >= 0.0, "negative delay {delay}");
+    let cap = ring.len();
+    // Truncation is the floor here: `delay` is non-negative.
+    let lo = delay as usize;
+    let frac = delay - lo as f32;
+    debug_assert!(lo < cap);
+    let idx0 = if write_pos >= lo {
+        write_pos - lo
+    } else {
+        write_pos + cap - lo
+    };
+    let idx1 = if idx0 == 0 { cap - 1 } else { idx0 - 1 };
+    ring[idx0] * (1.0 - frac) + ring[idx1] * frac
+}
+
+/// Fixed whole-sample delay line — keeps a path that bypasses a
+/// latency-bearing stage (the FIR crossover, the spectral phantom STFT)
+/// time-aligned with the paths that go through it. Zero steady-state
+/// allocations.
+pub struct IntegerDelay {
+    buf: Vec<f32>,
+    pos: usize,
+}
+
+impl IntegerDelay {
+    /// A delay of exactly `delay` samples (`delay ≥ 1`; use no delay line at
+    /// all for zero).
+    pub fn new(delay: usize) -> Self {
+        Self {
+            buf: vec![0.0; delay.max(1)],
+            pos: 0,
+        }
+    }
+
+    /// The configured delay in samples.
+    pub fn delay(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Push one sample in, take the sample from `delay()` samples ago out.
+    #[inline]
+    pub fn push(&mut self, input: f32) -> f32 {
+        let out = self.buf[self.pos];
+        self.buf[self.pos] = input;
+        self.pos += 1;
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_delay_delays_by_exactly_n() {
+        let mut d = IntegerDelay::new(3);
+        let out: Vec<f32> = (1..=6).map(|v| d.push(v as f32)).collect();
+        assert_eq!(out, vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0]);
+    }
+
+    /// `read_linear` interpolates between the two samples straddling the
+    /// delay, and wraps across the start of the ring.
+    #[test]
+    fn read_linear_interpolates_and_wraps() {
+        let ring = [10.0f32, 20.0, 30.0, 40.0];
+        // Written last at index 1: 0 behind = 20, 1 behind = 10, 2 behind
+        // (wrapped) = 40.
+        assert_eq!(read_linear(&ring, 1, 0.0), 20.0);
+        assert_eq!(read_linear(&ring, 1, 0.5), 15.0);
+        assert_eq!(read_linear(&ring, 1, 1.25), 10.0 * 0.75 + 40.0 * 0.25);
+        assert_eq!(read_linear(&ring, 0, 2.0), 30.0);
+    }
 
     /// A fractional delay reads back the impulse at the right place, on
     /// every lap of the ring — the wrap of both the write pointer and the

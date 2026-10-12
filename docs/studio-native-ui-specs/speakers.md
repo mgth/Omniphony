@@ -1,6 +1,11 @@
 # Viewport parity spec — speakers, speaker gauges, per-speaker heatmaps, gain-table transport
 
-Scope: `omniphony-studio/src/speakers.js`, `src/scene/speaker-gaintable.js`, `src/scene/speaker-band-bars.js`, `src/scene/speaker-band-select.js`, `src/scene/speaker-solo-volume.js`, `src/scene/discontinuity-volume.js`, plus the OSC/Tauri path in `src-tauri/src/osc_parser.rs` / `osc_listener.rs` / `commands/diag.rs` and the renderer-side encoder (`omniphony-renderer/renderer/src/band_gaintable.rs`, `runtime_control/src/osc.rs`, `orender_engine/src/osc/{dispatch,gaintable}.rs`). All paths below are relative to `omniphony-studio/` unless prefixed with `omniphony-renderer/`. Line numbers are from the integration tree on 2026-09-10.
+> The web (Tauri) Studio these specifications were read from was removed in
+> 0.7.0 (#677). Its sources, the `omniphony-studio/` paths cited below, are
+> kept at [commit 49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio), the last `main` that
+> had them; line numbers refer to the state described in the text.
+
+Scope: [`omniphony-studio/src/speakers.js`](https://github.com/mgth/Omniphony/blob/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src/speakers.js), `src/scene/speaker-gaintable.js`, `src/scene/speaker-band-bars.js`, `src/scene/speaker-band-select.js`, `src/scene/speaker-solo-volume.js`, `src/scene/discontinuity-volume.js`, plus the OSC/Tauri path in `src-tauri/src/osc_parser.rs` / `osc_listener.rs` / `commands/diag.rs` and the renderer-side encoder (`omniphony-renderer/renderer/src/band_gaintable.rs`, `runtime_control/src/osc.rs`, `orender_engine/src/osc/{dispatch,gaintable}.rs`). All paths below are relative to [`omniphony-studio/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio) unless prefixed with `omniphony-renderer/`. Line numbers are from the integration tree on 2026-09-10.
 
 Helpers that live in other files but that these visuals cannot be reproduced without (`scene/materials.js`, `sources.js` `applySpeakerLevel`/`updateSpeakerColorsFromSelection`, `coordinates.js`, `scene/labels.js`, `scene/gizmos.js`, `scene/energy-volume-core.js`, `scene/object-energy-shared.js`) are quoted with references; their own specs in this directory are authoritative for anything not stated here.
 
@@ -13,7 +18,7 @@ Helpers that live in other files but that these visuals cannot be reproduced wit
 | Frame | Axes | Where |
 |---|---|---|
 | Omniphony/ADM normalised | `x` left(−1)/right(+1), `y` rear(−1)/front(+1), `z` down(−1)/up(+1); all clamped to [−1, 1] | layout JSON, gain-table grid, OSC |
-| Scene (three.js, Y-up) | `scene.x = adm.y` (depth, +x = front/screen), `scene.y = adm.z` (height), `scene.z = adm.x` (width, +z = right) | `coordinates.js:33-39` (`omniphonyToSceneCartesian`), crate `omniphony_geometry::adm_to_scene` (`omniphony-renderer/omniphony-geometry/src/lib.rs:88`) |
+| Scene (three.js, Y-up) | `scene.x = adm.y` (depth, +x = front/screen), `scene.y = adm.z` (height), `scene.z = adm.x` (width, +z = right) | `coordinates.js:33-39` (`omniphonyToSceneCartesian`), crate `omniphony_geometry::adm_to_scene` (`omniphony-renderer/omniphony_geometry/src/lib.rs:88`) |
 
 Room-ratio warp (`coordinates.js:106-135`, crate `map_depth` lib.rs:207 / `room_scaled_position` lib.rs:269):
 
@@ -92,11 +97,26 @@ if index === selectedSpeakerIndex: color = 0x4dff88   // selection overrides eve
 | Situation | Opacity | Ref |
 |---|---|---|
 | Base | `getSpeakerBaseOpacity`: `spatialize === 0 ? 0.3 : 0.65` (non-spatialised / direct feeds such as an LFE output) | `coordinates.js:409-411`; `speakers.js:2334-2336` |
-| Binaural output (ghosted) | `base × 0.18`; labels 0.3 | `speakers.js:993-1012`; trigger `controls/binaural.js:423-429` when renderer state `outputMode === 'binaural'` |
+| Binaural output (ghosted) | `base × 0.18`; labels 0.3 | `speakers.js:993-1012`; trigger `controls/binaural.js:423-429` when renderer state `outputMode === 'binaural'`. **Native Studio (2026-10): only on the direct path, and only when Display → *Speaker layout on headphones* keeps the layout in view (hidden by default there). The two headphone rooms draw their speakers in full: see §1.5a.** |
 | An object is selected | `mix ≤ 1e-6 ? min(base, 0.08) : base` — speakers the selected object does not feed fade to 0.08 | `sources.js:933-939` |
 | No selected object | `base` | `sources.js:934-937` |
 
 As coded: `updateSpeakerColorsFromSelection` writes `baseOpacity` without the ghost factor, so a ghosted speaker returns to full opacity on the next selection/gains update (`setSpeakersGhosted` early-returns when the state is unchanged). Port faithfully or fix deliberately.
+
+### 1.5a Kind of speaker (native Studio, `view/speakers.rs::SpeakerLook`)
+
+Colour, opacity and size carry other meanings, so the kind of speaker is said by its shape, from `model::binaural::RenderPath`:
+
+| Kind | Path | Look |
+|---|---|---|
+| Real | speakers | solid cube, band colour, driver disc (the rules above) |
+| Virtual | headphones through the virtual room (HRTF cascade) | wireframe cube (twelve depth-tested edges) in the band colour, alpha `min(1, opacity × 1.4)`; disc, level scaling, selection and feed colours as for a solid |
+| Measured | headphones through a measured room (BRIR, `binaural.brir.layout` present) | wireframe cube in `MEASURED_ROOM_COLOR` (`#ffb86b`) at the loudspeaker's measured position (`brir.loaded.emittersM`, metres at the room's scale per unit — `brir.room.ratio.scaleM`, the reach from an older renderer — `AppState::brir_geometry`); the set carries no band; the appended LFE keeps the layout's place |
+| Reference | direct headphones, layout kept in view | the ghost above |
+
+The speaker list's position thumbnail draws its frame dashed for the two wire kinds, and the Speakers section summary reads "Virtual room · <layout>" through the virtual room.
+
+On the direct path the scene places every position with the unit room (`AppState::display_room()` → `RoomRatio::unit`, the engine's `RoomRatios::UNIT`; the gizmos' inverse, the channel editor's polar conversions and the heatmap volumes read the same room, so a drag lands where the pointer is and a volume stays on its sources), draws the listener's cube (`RoomStyle::LISTENER_CUBE`, no screen) in place of the user's room, with a "1 unit = `unitScaleM` m" guide, and leaves out the room's grid, the hybrid surface and the dimension guides, which describe the speaker stage. While the renderer reads positions on the sphere (`AppState::reads_on_sphere`, #773), that frame carries the reading (`RoomRatio::sphere`): sources, trails, the channel gizmo and the channel editor's polar conversions go through it, and the reference speakers do not, since a speaker's position is where it stands: they are drawn, and their gizmo converted back, in `AppState::speaker_frame` (`gizmo_drag::target_frame` picks the frame by target). The polar table's metre field shows the radius at the frame's scale (`channels::adm_polar_distance_m`), the value it takes back, and the cartesian grid snap is off for a channel, the grid being the speaker stage's.
 
 ### 1.6 Band base colour (crossover layouts)
 
@@ -305,7 +325,7 @@ band 0: values[cells]   band 1: values[cells] …   (cells = nx·ny·nz)
 cell index = xi + nx·(yi + ny·zi)          // xi fastest (live_params.rs:2218-2220, band_gaintable.rs:214)
 ```
 
-Grid axes (`live_params.rs:2166-2190`, `omniphony-geometry/src/lib.rs:322-352`): `x_positions = evenly_spaced_axis(x_size, −1, 1)` (**ADM x**, width), `y_positions = evenly_spaced_axis(y_size, −1, 1)` (ADM y, depth), `z_positions = cartesian_z_axis(z_size, z_neg_size)` = `z_neg_size` nodes at `−1 + i/z_neg_size` (covering [−1, 0)) followed by `z_size` evenly spaced nodes on [0, 1] — **not** symmetric, which is why the positions are shipped and must be used for the height lookup. Counts are node counts (already `interval + 1`); use the shipped positions, not the `render_evaluation` state events.
+Grid axes (`live_params.rs:2166-2190`, `omniphony_geometry/src/lib.rs:322-352`): `x_positions = evenly_spaced_axis(x_size, −1, 1)` (**ADM x**, width), `y_positions = evenly_spaced_axis(y_size, −1, 1)` (ADM y, depth), `z_positions = cartesian_z_axis(z_size, z_neg_size)` = `z_neg_size` nodes at `−1 + i/z_neg_size` (covering [−1, 0)) followed by `z_size` evenly spaced nodes on [0, 1] — **not** symmetric, which is why the positions are shipped and must be used for the height lookup. Counts are node counts (already `interval + 1`); use the shipped positions, not the `render_evaluation` state events.
 
 Value semantics per `speaker_index`:
 

@@ -99,9 +99,11 @@ pub struct Speaker {
     /// Set to false for LFE/subwoofers (default: true)
     pub spatialize: bool,
 
-    /// Per-entry gain in dB (default: 0 = unity). Used by the virtual bed as
-    /// the per-input-channel trim (0.1 dB resolution, like the per-speaker
-    /// output gain); ignored for output-layout speakers.
+    /// Per-entry gain in dB (default: 0 = unity, 0.1 dB resolution). In the
+    /// virtual bed, the per-input-channel trim; in an output layout, the saved
+    /// per-speaker output gain, which seeds the live one
+    /// (`live_params::speaker_live_from_layout`) and is written back from it
+    /// on Save.
     pub gain_db: f32,
 
     /// Per-speaker output delay in milliseconds (default: 0.0).
@@ -112,6 +114,41 @@ pub struct Speaker {
 
     /// Highest frequency this speaker can reproduce, in Hz (default: None = +∞ Hz).
     pub freq_high: Option<f32>,
+}
+
+/// How far a BRIR emitter may sit from a standard position and still take its
+/// name ([`SpeakerLayout::from_brir_emitters`]), degrees.
+pub const BRIR_NAME_MATCH_DEG: f32 = 20.0;
+
+/// Standard positions a BRIR emitter is named after: `(name, azimuth,
+/// elevation)` in the layout convention (negative azimuth to the left).
+const BRIR_STANDARD_POSITIONS: [(&str, f32, f32); 16] = [
+    ("C", 0.0, 0.0),
+    ("FL", -30.0, 0.0),
+    ("FR", 30.0, 0.0),
+    ("FWL", -60.0, 0.0),
+    ("FWR", 60.0, 0.0),
+    ("SL", -90.0, 0.0),
+    ("SR", 90.0, 0.0),
+    ("BL", -135.0, 0.0),
+    ("BR", 135.0, 0.0),
+    ("BC", 180.0, 0.0),
+    ("TFL", -45.0, 35.0),
+    ("TFR", 45.0, 35.0),
+    ("TSL", -90.0, 45.0),
+    ("TSR", 90.0, 45.0),
+    ("TBL", -135.0, 35.0),
+    ("TBR", 135.0, 35.0),
+];
+
+/// Great-circle angle between two `(azimuth, elevation)` directions, degrees.
+fn angle_between_deg(az_a: f32, el_a: f32, az_b: f32, el_b: f32) -> f32 {
+    let (a, b) = (
+        geometry::from_spherical(az_a, el_a, 1.0),
+        geometry::from_spherical(az_b, el_b, 1.0),
+    );
+    let dot = a.0 * b.0 + a.1 * b.1 + a.2 * b.2;
+    dot.clamp(-1.0, 1.0).acos().to_degrees()
 }
 
 fn default_coord_mode() -> String {
@@ -426,6 +463,69 @@ impl SpeakerLayout {
         Ok(layout)
     }
 
+    /// The virtual loudspeakers of a measured room (a BRIR set): one
+    /// spatialized speaker per emitter, in the set's order, so bus `n` is
+    /// emitter `n`, plus a non-spatialized `LFE` last — the set measures no
+    /// subwoofer, and the cascade's direct-bus policy feeds it to both ears.
+    ///
+    /// `positions` are the emitters relative to the listener in the
+    /// renderer's frame (`x` right, `y` front, `z` up, metres). Each is
+    /// placed as a fraction of the measured room they stand in — `room`,
+    /// `radius_m` metres to its unit ([`crate::binaural::brir::MeasuredRoom`])
+    /// — by the inverse of the stage's warp, so that warping the layout
+    /// with that same room returns every speaker to its measured position
+    /// (up to scale) and an object is panned among them in the room's own
+    /// metric. No delay, gain or crossover band: the measurement carries the
+    /// room's own. An emitter within [`BRIR_NAME_MATCH_DEG`] of a standard
+    /// position takes that position's name (each name once, nearest
+    /// first), so beds placed by channel name still find their speaker; the
+    /// others are `E<n>`, `n` counted from 1.
+    pub fn from_brir_emitters(
+        positions: &[[f32; 3]],
+        room: &crate::live_params::RoomRatios,
+        radius_m: f32,
+    ) -> Result<Self> {
+        let radius_m = radius_m.max(0.01);
+        let directions: Vec<(f32, f32)> = positions
+            .iter()
+            .map(|&[x, y, z]| {
+                let (azimuth, elevation, _) = geometry::to_spherical(x, y, z);
+                (azimuth, elevation)
+            })
+            .collect();
+        let mut names: Vec<Option<&str>> = vec![None; positions.len()];
+        let mut candidates: Vec<(f32, usize, usize)> = Vec::new();
+        for (e, &(azimuth, elevation)) in directions.iter().enumerate() {
+            for (n, &(_, std_azimuth, std_elevation)) in BRIR_STANDARD_POSITIONS.iter().enumerate()
+            {
+                let angle = angle_between_deg(azimuth, elevation, std_azimuth, std_elevation);
+                if angle <= BRIR_NAME_MATCH_DEG {
+                    candidates.push((angle, e, n));
+                }
+            }
+        }
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut taken = [false; BRIR_STANDARD_POSITIONS.len()];
+        for (_, e, n) in candidates {
+            if names[e].is_none() && !taken[n] {
+                names[e] = Some(BRIR_STANDARD_POSITIONS[n].0);
+                taken[n] = true;
+            }
+        }
+        let mut speakers: Vec<Speaker> = positions
+            .iter()
+            .zip(&names)
+            .enumerate()
+            .map(|(e, (&[x, y, z], name))| {
+                let [x, y, z] = room.inverse([x / radius_m, y / radius_m, z / radius_m]);
+                let name = name.map_or_else(|| format!("E{}", e + 1), str::to_string);
+                Speaker::from_cartesian(name, x, y, z, true, 0.0)
+            })
+            .collect();
+        speakers.push(Speaker::new_with_spatialize("LFE", 0.0, -30.0, false));
+        Self::from_speakers(speakers)
+    }
+
     /// Get number of speakers in the layout
     pub fn num_speakers(&self) -> usize {
         self.speakers.len()
@@ -497,6 +597,39 @@ impl SpeakerLayout {
         (positions, mapping)
     }
 
+    /// How far each spatializable speaker stands from the listener once
+    /// placed in the room, in the order of
+    /// [`Self::spatializable_positions_for_room`]: a cartesian speaker is
+    /// scaled as there, a polar one keeps its hydrated distance. The depth a
+    /// volumetric render measures is against these.
+    pub fn spatializable_radii_for_room(
+        &self,
+        room_ratio: [f32; 3],
+        room_ratio_rear: f32,
+        room_ratio_lower: f32,
+        room_ratio_center_blend: f32,
+    ) -> Vec<f32> {
+        self.speakers
+            .iter()
+            .filter(|speaker| speaker.spatialize)
+            .map(|speaker| {
+                let position = [speaker.x, speaker.y, speaker.z];
+                let placed = if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
+                    geometry::room_scaled_position(
+                        position,
+                        room_ratio,
+                        room_ratio_rear,
+                        room_ratio_lower,
+                        room_ratio_center_blend,
+                    )
+                } else {
+                    position
+                };
+                geometry::vec3::length(placed)
+            })
+            .collect()
+    }
+
     /// Get speaker names
     pub fn speaker_names(&self) -> Vec<&str> {
         self.speakers.iter().map(|s| s.name.as_str()).collect()
@@ -565,7 +698,8 @@ impl SpeakerLayout {
         }
     }
 
-    /// ITU-R BS.775 stereo layout (±30°)
+    /// Stereo pair on the front corners of the default 1:2 room — ±26.57°,
+    /// not the ITU-R BS.775 ±30°.
     pub fn preset_stereo() -> Result<Self> {
         Self::from_speakers(vec![
             speaker_with_distance("L", -26.565052, 0.0, 2.236068),
@@ -574,7 +708,9 @@ impl SpeakerLayout {
         ])
     }
 
-    /// ITU-R BS.775 5.1 layout
+    /// 5.1 with the ITU-R BS.775 channel set, placed on the corners of the
+    /// default 1:2 room: fronts at ±26.57°, backs at ±153.4° (not the
+    /// recommendation's ±30° / ±110°).
     pub fn preset_5_1() -> Result<Self> {
         Self::from_speakers(vec![
             speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
@@ -586,7 +722,8 @@ impl SpeakerLayout {
         ])
     }
 
-    /// ITU-R BS.775 7.1 layout
+    /// 7.1: the [`Self::preset_5_1`] room-corner placement (fronts ±26.57°,
+    /// backs ±153.4°) plus sides at ±90° — not the ITU-R BS.775 angles.
     pub fn preset_7_1() -> Result<Self> {
         Self::from_speakers(vec![
             speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
@@ -650,7 +787,15 @@ impl SpeakerLayout {
         ])
     }
 
-    /// 9.1.6 spatial audio layout (ITU-R BS.2051-3 Config 6+4+0)
+    /// 9.1.6 with the channel set of ITU-R BS.2051, placed on the walls and
+    /// corners of the default 1:2 room (fronts ±26.57°, wides ±63.4°, backs
+    /// ±153.4°, heights on the ceiling corners) rather than at the
+    /// recommendation's angles.
+    // The TSL/TSR distance `1.4142136` parses to the f32 one ULP above
+    // `std::f32::consts::SQRT_2` (0x3fb504f4 against 0x3fb504f3). Swapping in
+    // the constant would move those two speakers and so change this preset's
+    // render, so the literal stays and the lint is silenced here only.
+    #[allow(clippy::approx_constant)]
     pub fn preset_9_1_6() -> Result<Self> {
         Self::from_speakers(vec![
             // Bed layer (9.1)
@@ -690,6 +835,145 @@ impl SpeakerLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binaural::brir::MeasuredRoom;
+    use crate::live_params::RoomRatios;
+
+    /// The 13 loudspeakers of a generic 9+4 measured room, as the BRIR loader
+    /// reports them: renderer frame, metres.
+    fn nine_plus_four_room_emitters() -> Vec<[f32; 3]> {
+        [
+            (0.0, 0.0, 1.99),
+            (-45.0, 0.0, 3.01),
+            (45.0, 0.0, 3.01),
+            (-30.0, 0.0, 2.37),
+            (30.0, 0.0, 2.37),
+            (-90.0, 0.0, 2.28),
+            (90.0, 0.0, 2.28),
+            (-135.0, 0.0, 3.01),
+            (135.0, 0.0, 3.01),
+            (-45.0, 40.0, 1.91),
+            (45.0, 40.0, 1.91),
+            (-110.0, 40.0, 1.91),
+            (110.0, 40.0, 1.91),
+        ]
+        .iter()
+        .map(|&(az, el, r)| {
+            let (x, y, z) = geometry::from_spherical(az, el, r);
+            [x, y, z]
+        })
+        .collect()
+    }
+
+    /// The layout of a set whose loudspeakers stand at `emitters` (metres,
+    /// renderer frame), in the room estimated from them with the default
+    /// front/rear blend: what `RendererControl::brir_layout` builds.
+    fn brir_layout_of(emitters: &[[f32; 3]]) -> (SpeakerLayout, RoomRatios) {
+        let measured = MeasuredRoom::of(emitters, None);
+        let room = measured.ratios(0.5);
+        let layout =
+            SpeakerLayout::from_brir_emitters(emitters, &room, measured.radius_m()).unwrap();
+        (layout, room)
+    }
+
+    #[test]
+    fn a_brir_layout_has_one_speaker_per_emitter_pointing_at_it() {
+        let emitters = nine_plus_four_room_emitters();
+        let (layout, room) = brir_layout_of(&emitters);
+        assert_eq!(layout.num_speakers(), emitters.len() + 1);
+        // Placed as fractions of the measured room, the speakers point at
+        // their emitters once the stage warps them with that room — not
+        // before: the cube reading is the room-fraction, which an
+        // elongated room moves off the direction.
+        let (positions, mapping) = layout.spatializable_positions_for_room(
+            room.ratio,
+            room.rear,
+            room.lower,
+            room.center_blend,
+        );
+        assert_eq!(mapping.len(), emitters.len());
+        for ((speaker, e), [az, el]) in layout.speakers.iter().zip(&emitters).zip(&positions) {
+            let (want_az, want_el, _) = geometry::to_spherical(e[0], e[1], e[2]);
+            assert!(
+                // f32 `acos` near 1 resolves a few hundredths of a degree.
+                angle_between_deg(*az, *el, want_az, want_el) < 0.1,
+                "{} points at its emitter in the room: {az} {el} vs {want_az} {want_el}",
+                speaker.name
+            );
+            assert!(speaker.spatialize);
+            assert_eq!(
+                (
+                    speaker.gain_db,
+                    speaker.delay_ms,
+                    speaker.freq_low,
+                    speaker.freq_high
+                ),
+                (0.0, 0.0, None, None),
+                "no trim, delay or band of its own"
+            );
+        }
+        let lfe = layout.speakers.last().unwrap();
+        assert_eq!(lfe.name, "LFE");
+        assert!(!lfe.spatialize, "the LFE is a direct bus");
+    }
+
+    /// Warping a speaker's room fraction with the room it was placed in
+    /// returns its measured position, to the metre scale of the room: the
+    /// topology pans an object onto the loudspeakers where they stand.
+    #[test]
+    fn a_brir_speaker_warps_back_to_its_measured_position() {
+        // A room the listener is not centred in: fronts far, sides near,
+        // a back wall closer than the front one.
+        let emitters: Vec<[f32; 3]> = vec![
+            [0.0, 3.0, 0.0],
+            [-1.5, 3.0, 0.0],
+            [1.5, 3.0, 0.0],
+            [-2.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [-1.5, -2.0, 0.0],
+            [1.5, -2.0, 0.0],
+            [-1.5, 3.0, 1.5],
+            [1.5, 3.0, 1.5],
+        ];
+        let measured = MeasuredRoom::of(&emitters, None);
+        let room = measured.ratios(0.5);
+        let radius = measured.radius_m();
+        let layout = SpeakerLayout::from_brir_emitters(&emitters, &room, radius).unwrap();
+        assert_ne!(room.ratio[1], room.rear, "the room is deeper to the front");
+        for (speaker, e) in layout.speakers.iter().zip(&emitters) {
+            let back = room.scale([speaker.x, speaker.y, speaker.z]);
+            for axis in 0..3 {
+                assert!(
+                    (back[axis] * radius - e[axis]).abs() < 1e-3,
+                    "{}: axis {axis} warps back to {} m, measured {} m",
+                    speaker.name,
+                    back[axis] * radius,
+                    e[axis]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn brir_emitters_take_the_nearest_free_standard_name() {
+        let (layout, _) = brir_layout_of(&nine_plus_four_room_emitters());
+        assert_eq!(
+            layout.speaker_names(),
+            [
+                // ±45° lose FL/FR to the exact ±30° pair and are the wides.
+                "C", "FWL", "FWR", "FL", "FR", "SL", "SR", "BL", "BR", "TFL", "TFR",
+                // ±110° at 40°: nearer the top sides than the top backs.
+                "TSL", "TSR", "LFE",
+            ]
+        );
+        // Nothing standard near it: numbered from 1 in the set's order.
+        let (odd, _) = brir_layout_of(&[
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.3, -1.0],
+        ]);
+        assert_eq!(odd.speaker_names(), ["C", "SL", "SR", "E4", "LFE"]);
+    }
 
     #[test]
     fn placement_entries_accept_a_partial_set_and_reject_duplicates() {
@@ -806,15 +1090,6 @@ mod tests {
     }
 
     #[test]
-    fn test_speaker_creation() {
-        let speaker = Speaker::new("FL", -30.0, 0.0);
-        assert_eq!(speaker.name, "FL");
-        assert_eq!(speaker.azimuth, -30.0);
-        assert_eq!(speaker.elevation, 0.0);
-        assert!(speaker.validate().is_ok());
-    }
-
-    #[test]
     fn test_speaker_validation() {
         // Valid speaker
         assert!(Speaker::new("FL", -30.0, 0.0).validate().is_ok());
@@ -926,31 +1201,19 @@ mod integration_tests {
             .join(name)
     }
 
+    /// The shipped layouts load, with the speakers their names promise. The
+    /// height-less ones live under `layouts/legacy/`.
     #[test]
-    fn test_load_5_1_yaml() {
-        // The height-less layouts now live under layouts/legacy/.
-        let layout = SpeakerLayout::from_file(layout_path("legacy/5.1.yaml"));
-        assert!(
-            layout.is_ok(),
-            "Failed to load legacy/5.1.yaml: {:?}",
-            layout.err()
-        );
-
-        let layout = layout.unwrap();
-        assert_eq!(layout.num_speakers(), 6);
-    }
-
-    #[test]
-    fn test_load_7_1_4_yaml() {
-        let layout = SpeakerLayout::from_file(layout_path("7.1.4.yaml"));
-        assert!(
-            layout.is_ok(),
-            "Failed to load 7.1.4.yaml: {:?}",
-            layout.err()
-        );
-
-        let layout = layout.unwrap();
-        assert_eq!(layout.num_speakers(), 12);
+    fn bundled_layouts_load_with_their_speaker_counts() {
+        for (file, speakers) in [
+            ("legacy/5.1.yaml", 6),
+            ("7.1.4.yaml", 12),
+            ("9.1.6.yaml", 16),
+        ] {
+            let layout = SpeakerLayout::from_file(layout_path(file))
+                .unwrap_or_else(|e| panic!("{file}: {e:?}"));
+            assert_eq!(layout.num_speakers(), speakers, "{file}");
+        }
     }
 
     #[test]
@@ -974,18 +1237,5 @@ mod integration_tests {
                 (y.x, y.y, y.z)
             );
         }
-    }
-
-    #[test]
-    fn test_load_9_1_6_yaml() {
-        let layout = SpeakerLayout::from_file(layout_path("9.1.6.yaml"));
-        assert!(
-            layout.is_ok(),
-            "Failed to load 9.1.6.yaml: {:?}",
-            layout.err()
-        );
-
-        let layout = layout.unwrap();
-        assert_eq!(layout.num_speakers(), 16);
     }
 }

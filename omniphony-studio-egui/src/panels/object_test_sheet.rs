@@ -1012,6 +1012,7 @@ mod tests {
             lower: 0.5,
             center_blend: 0.5,
             scale_m: 1.0,
+            sphere: false,
         }
     }
 

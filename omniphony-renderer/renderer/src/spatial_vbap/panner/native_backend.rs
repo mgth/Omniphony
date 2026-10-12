@@ -2,44 +2,39 @@
 //!
 //! Used when the `saf_vbap` feature is disabled (no C FFI, no external library).
 
-use super::Gains;
+use super::normalized_spread_to_degrees;
 use crate::spatial_vbap::vbap_native::{
-    DummyRing, OutOfHullMode, compute_dummy_rings, find_ls_triplets, invert_ls_mtx_3d,
-    prepare_effective_speaker_dirs, vbap3d,
+    DummyRing, OutOfHullMode, Vbap3dScratch, invert_ls_mtx_3d, prepare_triangulation, vbap3d_into,
 };
-
-/// Maximum spread in degrees accepted by `vbap3d`.
-/// Matches `SpartaVbapLayout::NORMALIZED_SPREAD_MAX_DEG` for parity.
-const NORMALIZED_SPREAD_MAX_DEG: f32 = 180.0;
-
-#[inline]
-fn normalized_spread_to_degrees(spread: f32) -> f32 {
-    spread.clamp(0.0, 1.0) * NORMALIZED_SPREAD_MAX_DEG
-}
 
 /// Pure-Rust equivalent of `SpartaVbapLayout`.
 ///
 /// Owns the triangulation and inverse speaker matrices produced by
-/// `find_ls_triplets` + `invert_ls_mtx_3d`. Computes VBAP gains directly via
-/// [`Self::vbap_gains`]; the panner stores one instance and samples it.
+/// `prepare_triangulation` + `invert_ls_mtx_3d`. Computes VBAP gains directly
+/// via [`Self::vbap_gains_into`]; the panner stores one instance and samples it.
 pub(crate) struct NativeVbapLayout {
-    /// Number of *real* (non-dummy) speakers — the size of the returned `Gains`.
+    /// Number of *real* (non-dummy) speakers — the number of gains returned.
     pub(crate) n_speakers: usize,
     pub(crate) n_faces: usize,
-    /// Total speaker count used for triangulation (real + dummy virtual speakers).
+    /// Number of virtual loudspeakers at the centre of coplanar hull faces
+    /// (`vbap_native::Triangulation`).
+    pub(crate) n_centres: usize,
+    /// Total speaker count used for triangulation (real + virtual poles +
+    /// virtual centres).
     n_eff: usize,
     #[allow(dead_code)]
     u_spkr: Vec<[f32; 3]>,
     ls_groups: Vec<[usize; 3]>,
     layout_inv_mtx: Vec<[f32; 9]>,
     /// Per-effective-speaker flag: `true` for the virtual ±90° pole(s) injected
-    /// for triangulation. `vbap3d` uses this to fold dummy gain back into real
+    /// for triangulation. `vbap3d_into` uses this to fold dummy gain back into real
     /// speakers of the matched triangle instead of letting it be silently dropped.
     is_dummy: Vec<bool>,
     /// Out-of-hull rendering mode, baked at construction (it shapes the
     /// triangulation itself in `VirtualPoles`).
     mode: OutOfHullMode,
-    /// Per-dummy downmix rings, non-empty only in `VirtualPoles`.
+    /// Downmix rings of the virtual loudspeakers: the centres of coplanar
+    /// faces in every mode, the poles in `VirtualPoles`.
     dummy_rings: Vec<DummyRing>,
 }
 
@@ -49,76 +44,103 @@ impl NativeVbapLayout {
     /// The real layout is triangulated first. If that fails, virtual speakers at
     /// ±90° elevation are injected as a fallback so the 3D convex hull can be
     /// built (in [`OutOfHullMode::VirtualPoles`], also at any pole the real
-    /// hull leaves uncovered). Dummy gains are stripped before returning.
+    /// hull leaves uncovered). Every coplanar hull face is closed around a
+    /// virtual centre (`vbap_native::Triangulation`). Virtual gains are
+    /// stripped before returning.
     pub fn from_speaker_dirs(
         speaker_dirs_deg: &[[f32; 2]],
         mode: OutOfHullMode,
     ) -> Result<Self, String> {
         let n_real = speaker_dirs_deg.len();
-        let (effective_dirs, is_dummy) =
-            prepare_effective_speaker_dirs(speaker_dirs_deg, true, true, mode)
-                .ok_or_else(|| "find_ls_triplets failed".to_string())?;
-
-        let n_eff = effective_dirs.len();
-        debug_assert_eq!(is_dummy.len(), n_eff);
-
-        let (u_spkr, ls_groups) = find_ls_triplets(&effective_dirs, true)
+        let tri = prepare_triangulation(speaker_dirs_deg, true, true, mode)
             .ok_or_else(|| "find_ls_triplets failed".to_string())?;
 
-        if ls_groups.is_empty() {
+        let n_eff = tri.dirs.len();
+        debug_assert_eq!(tri.is_dummy.len(), n_eff);
+
+        if tri.ls_groups.is_empty() {
             return Err("No valid loudspeaker triangles found".to_string());
         }
 
-        let layout_inv_mtx = invert_ls_mtx_3d(&u_spkr, &ls_groups);
-        let n_faces = ls_groups.len();
-        let dummy_rings = match mode {
-            OutOfHullMode::VirtualPoles => compute_dummy_rings(&ls_groups, &is_dummy),
-            _ => Vec::new(),
-        };
+        let layout_inv_mtx = invert_ls_mtx_3d(&tri.u_spkr, &tri.ls_groups);
+        let n_faces = tri.ls_groups.len();
+        let n_centres = tri.centres();
+        let dummy_rings = tri.downmix_rings(mode);
 
         Ok(Self {
             n_speakers: n_real,
             n_faces,
+            n_centres,
             n_eff,
-            u_spkr,
-            ls_groups,
+            u_spkr: tri.u_spkr,
+            ls_groups: tri.ls_groups,
             layout_inv_mtx,
-            is_dummy,
+            is_dummy: tri.is_dummy,
             mode,
             dummy_rings,
         })
     }
 
-    /// Compute VBAP gains for a single source direction and spread.
-    /// Returns gains for real speakers only (dummy columns are stripped).
-    pub fn vbap_gains(
+    /// The working memory [`Self::vbap_gains_into`] computes on, sized for
+    /// this layout's effective speakers. One per caller, made off the render
+    /// thread.
+    pub fn new_scratch(&self) -> Vbap3dScratch {
+        Vbap3dScratch::new(self.n_eff)
+    }
+
+    /// Compute VBAP gains for a single source direction and spread into
+    /// `out`, on a scratch from [`Self::new_scratch`]: nothing is allocated.
+    /// Writes gains for real speakers only (dummy columns are stripped), as
+    /// many as fit in `out`.
+    pub fn vbap_gains_into(
         &self,
         azimuth_deg: f32,
         elevation_deg: f32,
         spread: f32,
-    ) -> Result<Gains, String> {
+        scratch: &mut Vbap3dScratch,
+        out: &mut [f32],
+    ) {
         let spread_deg = normalized_spread_to_degrees(spread);
-        let src_dirs = [[azimuth_deg, elevation_deg]];
-
-        let gain_vec = vbap3d(
-            &src_dirs,
-            self.n_eff,
+        // The real speakers come first: a buffer cut to their count strips
+        // the dummy speaker columns.
+        let real = out.len().min(self.n_speakers);
+        vbap3d_into(
+            [azimuth_deg, elevation_deg],
             &self.ls_groups,
             spread_deg,
             &self.layout_inv_mtx,
             &self.is_dummy,
             self.mode,
             &self.dummy_rings,
+            scratch,
+            &mut out[..real],
         );
+    }
 
-        // Strip dummy speaker columns — keep only the first n_speakers entries.
-        Ok(Gains::from_slice(&gain_vec[..self.n_speakers]))
+    /// [`Self::vbap_gains_into`] in a vector of its own.
+    #[cfg(test)]
+    pub fn vbap_gains(
+        &self,
+        azimuth_deg: f32,
+        elevation_deg: f32,
+        spread: f32,
+    ) -> Result<Vec<f32>, String> {
+        let mut gains = vec![0.0; self.n_speakers];
+        self.vbap_gains_into(
+            azimuth_deg,
+            elevation_deg,
+            spread,
+            &mut self.new_scratch(),
+            &mut gains,
+        );
+        Ok(gains)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spatial_vbap::vbap_native::vbap3d;
 
     /// Standard horizontal layout (no top/bottom speakers) — exercises both
     /// dummy injections (±90°) so the redistribution path is hit at both poles.
@@ -134,7 +156,7 @@ mod tests {
         ]
     }
 
-    fn rms(g: &Gains) -> f32 {
+    fn rms(g: &[f32]) -> f32 {
         (0..g.len()).map(|i| g[i] * g[i]).sum::<f32>().sqrt()
     }
 
@@ -158,7 +180,9 @@ mod tests {
         let layout = NativeVbapLayout::from_speaker_dirs(&dirs, mode).unwrap();
 
         assert_eq!(layout.n_speakers, dirs.len());
-        assert_eq!(layout.n_eff, dirs.len());
+        // No pole; the planar front and rear quads add their centres.
+        assert_eq!(layout.n_centres, 2);
+        assert_eq!(layout.n_eff, dirs.len() + layout.n_centres);
         assert!(layout.is_dummy.iter().all(|flag| !flag));
     }
 
@@ -289,11 +313,19 @@ mod tests {
             NativeVbapLayout::from_speaker_dirs(&dirs, OutOfHullMode::VirtualPoles).unwrap();
 
         // Zenith is covered by the height ring — only the nadir needs a pole.
+        // The rear quad and the ceiling, both planar, add their centres.
         assert_eq!(layout.n_speakers, dirs.len());
-        assert_eq!(layout.n_eff, dirs.len() + 1);
-        assert_eq!(layout.dummy_rings.len(), 1);
+        assert_eq!(layout.is_dummy.iter().filter(|pole| **pole).count(), 1);
+        assert_eq!(layout.n_centres, 2);
+        assert_eq!(layout.n_eff, dirs.len() + 1 + layout.n_centres);
+        let poles: Vec<&DummyRing> = layout
+            .dummy_rings
+            .iter()
+            .filter(|ring| layout.is_dummy[ring.dummy])
+            .collect();
+        assert_eq!(poles.len(), 1);
         // The nadir pole downmixes onto bed-ring speakers only.
-        for &s in &layout.dummy_rings[0].ring {
+        for &s in &poles[0].ring {
             assert!(
                 dirs[s][1].abs() < 1e-3,
                 "nadir ring member {s} should be a bed speaker, got el={}",
@@ -382,7 +414,7 @@ mod tests {
 
         // Higher power concentrates the image: the number of speakers carrying
         // significant gain must not grow as power rises.
-        let count_active = |g: &Gains| (0..g.len()).filter(|&i| g[i] > 0.05).count();
+        let count_active = |g: &[f32]| (0..g.len()).filter(|&i| g[i] > 0.05).count();
         let wide = below(1.0);
         let sharp = below(64.0);
         assert!(
@@ -421,5 +453,439 @@ mod tests {
             rms_at(-45.0)
         );
         assert!(rms_at(-90.0) < 1e-3, "nadir must be silent in Fade mode");
+    }
+
+    /// Four loudspeakers at 0° and four over them at 35°, at ±45° and ±135°:
+    /// a cube. Every side and the ceiling are planar quads.
+    fn cube_4_4_layout() -> [[f32; 2]; 8] {
+        [
+            [45.0, 0.0],
+            [-45.0, 0.0],
+            [135.0, 0.0],
+            [-135.0, 0.0],
+            [45.0, 35.0],
+            [-45.0, 35.0],
+            [135.0, 35.0],
+            [-135.0, 35.0],
+        ]
+    }
+
+    /// The BBC System G measured set that showed the asymmetry: nine at 0°,
+    /// two heights at ±45° and two at ±110°, all at 40° (SAF azimuths, left
+    /// positive). Its rear quad (±135° at 0°, ±110° at 40°) and its ceiling
+    /// are planar.
+    fn bbc_system_g_layout() -> [[f32; 2]; 13] {
+        [
+            [0.0, 0.0],
+            [45.0, 0.0],
+            [-45.0, 0.0],
+            [30.0, 0.0],
+            [-30.0, 0.0],
+            [90.0, 0.0],
+            [-90.0, 0.0],
+            [135.0, 0.0],
+            [-135.0, 0.0],
+            [45.0, 40.0],
+            [-45.0, 40.0],
+            [110.0, 40.0],
+            [-110.0, 40.0],
+        ]
+    }
+
+    /// The loudspeaker mirrored across the median plane: the one at the
+    /// opposite azimuth and the same elevation.
+    fn mirror_index(dirs: &[[f32; 2]], i: usize) -> usize {
+        dirs.iter()
+            .position(|d| (d[0] + dirs[i][0]).abs() < 1e-3 && (d[1] - dirs[i][1]).abs() < 1e-3)
+            .unwrap_or_else(|| panic!("no mirror of {:?}", dirs[i]))
+    }
+
+    fn modes() -> [OutOfHullMode; 3] {
+        [
+            OutOfHullMode::VirtualPoles,
+            OutOfHullMode::Blend {
+                power: OutOfHullMode::DEFAULT_BLEND_POWER,
+            },
+            OutOfHullMode::Fade,
+        ]
+    }
+
+    #[test]
+    fn coplanar_faces_get_a_virtual_centre_in_every_mode() {
+        for mode in modes() {
+            let cube = NativeVbapLayout::from_speaker_dirs(&cube_4_4_layout(), mode).unwrap();
+            assert_eq!(cube.n_centres, 5, "{mode:?}: four sides and the ceiling");
+            assert!(cube.n_faces >= 20, "{mode:?}: a fan of four per face");
+            let bbc = NativeVbapLayout::from_speaker_dirs(&bbc_system_g_layout(), mode).unwrap();
+            assert_eq!(bbc.n_centres, 2, "{mode:?}: the rear quad and the ceiling");
+            let seven_one_four = NativeVbapLayout::from_speaker_dirs(&layout_714(), mode).unwrap();
+            assert_eq!(
+                seven_one_four.n_centres, 2,
+                "{mode:?}: the rear quad and the ceiling"
+            );
+            // A ring closed by two poles has no planar face.
+            let ring = NativeVbapLayout::from_speaker_dirs(&horizontal_7_layout(), mode).unwrap();
+            assert_eq!(ring.n_centres, 0, "{mode:?}");
+            // Every real loudspeaker is still a vertex of some face, and
+            // alone at its own place.
+            for (name, layout, dirs) in [
+                ("cube", &cube, &cube_4_4_layout()[..]),
+                ("bbc", &bbc, &bbc_system_g_layout()[..]),
+                ("7.1.4", &seven_one_four, &layout_714()[..]),
+                ("ring", &ring, &horizontal_7_layout()[..]),
+            ] {
+                for (i, d) in dirs.iter().enumerate() {
+                    assert!(
+                        layout.ls_groups.iter().any(|face| face.contains(&i)),
+                        "{name} {mode:?}: speaker {i} is on no face"
+                    );
+                    let g = layout.vbap_gains(d[0], d[1], 0.0).unwrap();
+                    assert!(
+                        (g[i] - 1.0).abs() < 1e-3,
+                        "{name} {mode:?}: speaker {i} at its own place got {}",
+                        g[i]
+                    );
+                }
+            }
+        }
+    }
+
+    /// A chain of near-coplanar faces can merge into a concave patch whose
+    /// centre does not see every boundary edge from inside; a fan over it
+    /// would reverse and overlap, and a direction would match the wrong
+    /// face — the first loudspeaker here got 0.145 at its own place, the
+    /// sixth 0.898. Such a group keeps its hull faces. Review of #810.
+    #[test]
+    fn a_concave_flat_patch_keeps_its_faces() {
+        let dirs: [[f32; 2]; 10] = [
+            [0.5, -1.5],
+            [1.0, 2.0],
+            [1.0, -1.0],
+            [-2.0, -1.5],
+            [-2.0, 0.0],
+            [1.0, -2.0],
+            [2.0, -1.0],
+            [0.5, 2.0],
+            [-1.9, -2.0],
+            [-120.0, 0.0],
+        ];
+        for mode in modes() {
+            let layout = NativeVbapLayout::from_speaker_dirs(&dirs, mode).unwrap();
+            for (i, d) in dirs.iter().enumerate() {
+                let g = layout.vbap_gains(d[0], d[1], 0.0).unwrap();
+                assert!(
+                    (g[i] - 1.0).abs() < 1e-3,
+                    "{mode:?}: speaker {i} at its own place got {}",
+                    g[i]
+                );
+            }
+        }
+    }
+
+    /// Each member of the MDAP cloud counts once. Within the hit tolerance
+    /// of a shared edge both faces hold a member, and summing both made the
+    /// cloud's gains step wherever a member crossed an edge: 0.115 in L2
+    /// norm over 0.00003° at the rear quad's new fan edge. Review of #810.
+    #[test]
+    fn spread_sources_are_continuous_across_edges() {
+        let layout =
+            NativeVbapLayout::from_speaker_dirs(&layout_714(), OutOfHullMode::VirtualPoles)
+                .unwrap();
+        let spread = 1.0 / 3.0; // 60°
+        let diff = |a: &[f32], b: &[f32]| {
+            (0..a.len())
+                .map(|i| (a[i] - b[i]) * (a[i] - b[i]))
+                .sum::<f32>()
+                .sqrt()
+        };
+        // A fine sweep across the rear quad's fan edges at the reviewer's
+        // elevation, and a coarse one round the sphere.
+        for (lo, hi, step, bound) in [
+            (-136.0f32, -133.0f32, 0.0005f32, 0.002f32),
+            (-180.0, 180.0, 0.05, 0.02),
+        ] {
+            let mut az = lo;
+            let mut prev = layout.vbap_gains(az, 27.0, spread).unwrap();
+            let mut worst = (0.0f32, az);
+            while az < hi {
+                az += step;
+                let g = layout.vbap_gains(az, 27.0, spread).unwrap();
+                let d = diff(&prev, &g);
+                if d > worst.0 {
+                    worst = (d, az);
+                }
+                prev = g;
+            }
+            assert!(
+                worst.0 < bound,
+                "step {step}°: a jump of {} at azimuth {}",
+                worst.0,
+                worst.1
+            );
+        }
+    }
+
+    /// Four loudspeakers a degree or two around a fifth read as coplanar
+    /// within the tolerance, but the fifth is inside the patch, not on its
+    /// boundary: the patch is a shallow dome, the hull's fan around the fifth
+    /// is right, and a virtual centre would silence it. Review of #810.
+    #[test]
+    fn a_loudspeaker_inside_a_flat_patch_keeps_its_faces() {
+        let dirs: [[f32; 2]; 8] = [
+            [-1.0, -1.0],
+            [1.0, -1.0],
+            [-1.0, 1.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [120.0, 0.0],
+            [-120.0, 0.0],
+            [0.0, 45.0],
+        ];
+        for mode in modes() {
+            let layout = NativeVbapLayout::from_speaker_dirs(&dirs, mode).unwrap();
+            assert!(
+                layout.ls_groups.iter().any(|face| face.contains(&4)),
+                "{mode:?}: the inner loudspeaker is on no face"
+            );
+            let g = layout.vbap_gains(0.0, 0.0, 0.0).unwrap();
+            assert!((g[4] - 1.0).abs() < 1e-3, "{mode:?}: inner got {}", g[4]);
+            for i in (0..dirs.len()).filter(|&i| i != 4) {
+                assert!(g[i].abs() < 1e-3, "{mode:?}: speaker {i} got {}", g[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_virtual_centre_plays_its_face_at_equal_power() {
+        let dirs = cube_4_4_layout();
+        let unit = |[az, el]: [f32; 2]| {
+            let (a, e) = (az.to_radians(), el.to_radians());
+            [e.cos() * a.cos(), e.cos() * a.sin(), e.sin()]
+        };
+        let centre_of = |face: [usize; 4]| {
+            let mut sum = [0.0f32; 3];
+            for i in face {
+                for (acc, x) in sum.iter_mut().zip(unit(dirs[i])) {
+                    *acc += x;
+                }
+            }
+            let horiz = (sum[0] * sum[0] + sum[1] * sum[1]).sqrt();
+            (
+                sum[1].atan2(sum[0]).to_degrees(),
+                sum[2].atan2(horiz).to_degrees(),
+            )
+        };
+        for mode in modes() {
+            let layout = NativeVbapLayout::from_speaker_dirs(&dirs, mode).unwrap();
+            // The ceiling's centre is the zenith; the front face's is ahead.
+            for face in [[4, 5, 6, 7], [0, 1, 4, 5]] {
+                let (az, el) = centre_of(face);
+                let g = layout.vbap_gains(az, el, 0.0).unwrap();
+                for i in 0..dirs.len() {
+                    let want = if face.contains(&i) { 0.5 } else { 0.0 };
+                    assert!(
+                        (g[i] - want).abs() < 1e-3,
+                        "{mode:?} ({az:.1}, {el:.1}): speaker {i} got {}, wanted {want}",
+                        g[i]
+                    );
+                }
+            }
+        }
+    }
+
+    /// Before: the hull split each planar quad along one diagonal, so an
+    /// object dead centre at the rear of the BBC set played 0.81 / 0.30 on
+    /// the two backs and 0.50 / 0 on the two top backs, and a direction and
+    /// its mirror did not get mirrored gains.
+    #[test]
+    fn gains_are_mirror_symmetric_across_coplanar_faces() {
+        let bbc = bbc_system_g_layout();
+        let seven_one_four = layout_714();
+        let cube = cube_4_4_layout();
+        let probes: [(f32, f32); 11] = [
+            (180.0, 20.0),
+            (160.0, 25.0),
+            (150.0, 10.0),
+            (0.0, 90.0),
+            (20.0, 70.0),
+            (170.0, 60.0),
+            (100.0, 50.0),
+            (0.0, 20.0),
+            (60.0, 30.0),
+            (180.0, -30.0),
+            (90.0, 38.0),
+        ];
+        for (name, dirs) in [
+            ("bbc", &bbc[..]),
+            ("7.1.4", &seven_one_four[..]),
+            ("cube", &cube[..]),
+        ] {
+            for mode in modes() {
+                let layout = NativeVbapLayout::from_speaker_dirs(dirs, mode).unwrap();
+                for (az, el) in probes {
+                    let g = layout.vbap_gains(az, el, 0.0).unwrap();
+                    let m = layout.vbap_gains(-az, el, 0.0).unwrap();
+                    for i in 0..dirs.len() {
+                        let j = mirror_index(dirs, i);
+                        assert!(
+                            (g[i] - m[j]).abs() < 1e-4,
+                            "{name} {mode:?} ({az}, {el}): speaker {i} {} vs its mirror {j} {}",
+                            g[i],
+                            m[j]
+                        );
+                    }
+                    if !matches!(mode, OutOfHullMode::Fade) || el >= 0.0 {
+                        assert!((rms(&g) - 1.0).abs() < 1e-3, "{name} {mode:?} ({az}, {el})");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_object_dead_centre_at_the_rear_plays_both_backs_alike() {
+        let dirs = bbc_system_g_layout();
+        let (bl, br, tsl, tsr) = (7, 8, 11, 12);
+        for mode in modes() {
+            let layout = NativeVbapLayout::from_speaker_dirs(&dirs, mode).unwrap();
+            // Inside the rear quad: all four of its loudspeakers, in pairs.
+            let g = layout.vbap_gains(180.0, 20.0, 0.0).unwrap();
+            assert!(
+                (g[bl] - g[br]).abs() < 1e-5 && g[bl] > 0.1,
+                "{mode:?}: {} / {}",
+                g[bl],
+                g[br]
+            );
+            assert!(
+                (g[tsl] - g[tsr]).abs() < 1e-5 && g[tsl] > 0.1,
+                "{mode:?}: {} / {}",
+                g[tsl],
+                g[tsr]
+            );
+            // On its bottom edge: the pairwise VBAP as before, nothing above.
+            let g = layout.vbap_gains(180.0, 0.0, 0.0).unwrap();
+            let half = std::f32::consts::FRAC_1_SQRT_2;
+            assert!(
+                (g[bl] - half).abs() < 1e-3 && (g[br] - half).abs() < 1e-3,
+                "{mode:?}"
+            );
+            assert!(g[tsl] < 1e-4 && g[tsr] < 1e-4, "{mode:?}");
+        }
+    }
+
+    /// In `Fade` the fold's attenuation is the point, and the pure path
+    /// skips the energy normalise so it survives. The centre downmix adds
+    /// power to loudspeakers already playing, which amplified a source
+    /// below the hull by 1.02 dB instead of fading it: the downmix now keeps
+    /// the power the folded gains came with. Review of #810.
+    #[test]
+    fn the_fade_survives_the_centre_downmix() {
+        let dirs: [[f32; 2]; 8] = [
+            [45.0, 0.0],
+            [-45.0, 0.0],
+            [135.0, 0.0],
+            [-135.0, 0.0],
+            [45.0, 15.0],
+            [-45.0, 15.0],
+            [135.0, 15.0],
+            [-135.0, 15.0],
+        ];
+        let layout = NativeVbapLayout::from_speaker_dirs(&dirs, OutOfHullMode::Fade).unwrap();
+        assert!(layout.n_centres > 0, "the rear quad has a centre");
+        let power = |g: &[f32]| (0..g.len()).map(|i| g[i] * g[i]).sum::<f32>();
+        // Just below the hull behind the right back: the parent's fade,
+        // 0.977 (-0.10 dB), not the 1.265 (+1.02 dB) the downmix made of it.
+        let g = layout.vbap_gains(-151.0, -4.0, 0.0).unwrap();
+        let p = power(&g);
+        assert!(
+            (p - 0.9767).abs() < 2e-3,
+            "power {p}, wanted the parent's 0.9767"
+        );
+        for i in 0..g.len() {
+            assert!(g[i] <= 1.0, "speaker {i} at {}", g[i]);
+        }
+        // Deeper below, the fade keeps decaying.
+        let deeper = power(&layout.vbap_gains(-151.0, -30.0, 0.0).unwrap());
+        assert!(deeper < p, "deeper {deeper} vs {p}");
+        // Above the hull's horizon the direction is in a face: unit power.
+        let inside = power(&layout.vbap_gains(-151.0, 4.0, 0.0).unwrap());
+        assert!((inside - 1.0).abs() < 1e-3, "inside {inside}");
+    }
+
+    /// A sweep of the sphere, below the hull included, as bit patterns: for
+    /// comparing gains exactly.
+    fn sweep() -> Vec<[f32; 2]> {
+        let mut dirs = Vec::new();
+        for el in (-90..=90).step_by(15) {
+            for az in (-180..180).step_by(20) {
+                dirs.push([az as f32 + 3.5, el as f32]);
+            }
+        }
+        dirs
+    }
+
+    fn bits(gains: &[f32]) -> Vec<u32> {
+        gains.iter().map(|gain| gain.to_bits()).collect()
+    }
+
+    /// The scratch is working memory only: what one direction left in it
+    /// does not reach the next. A scratch kept across a sweep gives, bit for
+    /// bit, the gains of a fresh one per direction, and the gains the batch
+    /// `vbap3d` (the table path) computes for the same directions, in every
+    /// out-of-hull mode, with and without spread, on layouts with virtual
+    /// poles and virtual centres.
+    #[test]
+    fn a_kept_scratch_changes_no_gain() {
+        let layouts: [&[[f32; 2]]; 3] = [&horizontal_7_layout(), &layout_714(), &cube_4_4_layout()];
+        let sweep = sweep();
+        for dirs in layouts {
+            for mode in modes() {
+                let layout = NativeVbapLayout::from_speaker_dirs(dirs, mode).unwrap();
+                for spread in [0.0, 0.05, 0.4, 1.0] {
+                    let batch = vbap3d(
+                        &sweep,
+                        layout.n_eff,
+                        &layout.ls_groups,
+                        normalized_spread_to_degrees(spread),
+                        &layout.layout_inv_mtx,
+                        &layout.is_dummy,
+                        layout.mode,
+                        &layout.dummy_rings,
+                    );
+                    let mut kept = layout.new_scratch();
+                    let mut gains = vec![0.0; layout.n_speakers];
+                    for (&[az, el], row) in sweep.iter().zip(batch.chunks_exact(layout.n_eff)) {
+                        // Whatever the buffer held before must not survive.
+                        gains.fill(f32::NAN);
+                        layout.vbap_gains_into(az, el, spread, &mut kept, &mut gains);
+                        let fresh = layout.vbap_gains(az, el, spread).unwrap();
+                        let at = format!("{mode:?}, spread {spread}, az {az}, el {el}");
+                        assert_eq!(bits(&gains), bits(&fresh), "{at}");
+                        assert_eq!(bits(&gains), bits(&row[..layout.n_speakers]), "{at}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A scratch made for another layout is fitted to this one rather than
+    /// indexed out of bounds, and gives the same gains.
+    #[test]
+    fn a_scratch_of_another_layout_is_fitted() {
+        let small =
+            NativeVbapLayout::from_speaker_dirs(&horizontal_7_layout(), OutOfHullMode::Fade)
+                .unwrap();
+        let large =
+            NativeVbapLayout::from_speaker_dirs(&layout_714(), OutOfHullMode::Fade).unwrap();
+        assert_ne!(small.n_eff, large.n_eff);
+        for (made_for, used_on) in [(&small, &large), (&large, &small)] {
+            let mut scratch = made_for.new_scratch();
+            let mut gains = vec![0.0; used_on.n_speakers];
+            for spread in [0.0, 0.4] {
+                used_on.vbap_gains_into(-151.0, -30.0, spread, &mut scratch, &mut gains);
+                let own = used_on.vbap_gains(-151.0, -30.0, spread).unwrap();
+                assert_eq!(bits(&gains), bits(&own), "spread {spread}");
+            }
+        }
     }
 }

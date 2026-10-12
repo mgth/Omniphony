@@ -1,0 +1,46 @@
+name: Listened
+
+# A pull request into `release` that changes the render or output path needs
+# the `listened` label: CI cannot hear (#683). The rules are in
+# .github/scripts/listened-check.sh; this file only says when it runs.
+#
+# The `listened` job is a required check on `release`. It runs again when a
+# label is added or removed, so labelling the pull request is enough to turn
+# it green, without rerunning CI.
+on:
+  pull_request:
+    branches: [release]
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+
+# One run at a time per pull request, none cancelled: the label is removed
+# and recorded by these runs, and two at once could undo each other. Every run
+# checks everything again, so a run GitHub drops from the queue costs at most
+# a label to add again (see the script).
+concurrency:
+  group: listened-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write  # record the listened head, remove a stale label
+
+jobs:
+  listened:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Full history: the check diffs and logs between the two sides.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the listened label on render or output changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/listened-check.sh

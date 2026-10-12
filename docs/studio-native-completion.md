@@ -216,6 +216,7 @@ separate acceptance work in lot13.
 
 ### Shared wire parser
 
+(The Tauri host this section refers to was removed before 0.7.0, #677.)
 The Tauri host now re-exports the core's OSC parser and event types instead of
 maintaining a second 1,444-line copy. Existing parser tests remain in the core;
 serialization and public event variants are unchanged. Linux CI type-checks the

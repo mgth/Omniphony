@@ -1,294 +1,119 @@
-# Latency Regulation Algorithm
+# Latency regulation
+
+How `orender render` holds its output at a latency target. This is the
+summary of what runs; the design, its measurements and the slices it was
+built in are in [resampling-rework-plan.md](resampling-rework-plan.md).
+
+## The contract
 
-This document describes the current realtime output latency regulation used by `omniphony-renderer`, with emphasis on the shared control model and the backend-specific differences between `ASIO` and `PipeWire`.
+The **latency target** (`latency_target`, ms) is the time between the moment
+audio reaches the renderer and the moment it leaves the output device. It is
+the same number for every source and every backend, and it includes the
+decoder's look-ahead and the render's own delay.
 
-## Goals
-
-The latency controller has four jobs:
-
-1. Keep the audible output close to a configured target latency.
-2. Recover from low-buffer and high-buffer excursions without letting unstable audio leak through.
-3. Support adaptive local resampling when enabled.
-4. Report enough state to the UI so recovery behavior is observable.
-
-The long-term control target is not "minimum latency". It is "stable latency near a requested setpoint, with predictable recovery behavior".
-
-## Core Model
-
-The shared regulation logic lives in [adaptive_runtime.rs](/home/user/dev/spatial-renderer/Omniphony/omniphony-renderer/audio_output/src/adaptive_runtime.rs).
-
-### Domains
-
-Two sample domains matter:
-
-- Input domain: decoded/rendered samples written into the backend ring buffer.
-- Output domain: samples actually consumed by the backend callback after local resampling.
-
-Latency control is intentionally expressed in the input domain so the controller reasons about the same audio inventory regardless of output sample rate.
-
-### Measured Quantities
-
-For each callback, the backend computes:
-
-- `available_input_samples`: current ring-buffer fill.
-- `output_fifo_input_domain_samples`: local resampler FIFO converted back to input-domain samples.
-- `callback_input_domain_samples`: callback size converted to input domain.
-- `control_available`: `ring + output_fifo - callback/2`.
-- `control_latency_ms`: `control_available / (sample_rate * channels)`.
-- `measured_latency_ms`: `control_latency_ms + graph/backend latency estimate`.
-
-`control_latency_ms` is the quantity used for regulation. `measured_latency_ms` is the user-facing total estimate.
-
-### Target Fill
-
-The target latency is converted to a target fill level:
-
-- target fill = `target_latency_ms * input_sample_rate * channel_count / 1000`
-
-This fill is the center of the controller.
-
-## Shared Recovery State Machine
-
-The recovery state machine exposes the UI states:
-
-- `stable`
-- `low-recover`
-- `settling`
-- `high-recover`
-
-### Low Recovery
-
-Low recovery is used when the buffer falls too far below target. It is
-**enabled** by the `hard_recover_low_in_far_mode` switch (or by startup), and
-entry into Refill triggers as soon as
-`control_available < target - low_recover_entry_margin_ms` — the sole low-side
-trigger (no longer gated by the far band, see Near/Far).
-
-State progression:
-
-1. `stable -> low-recover` (Refill)
-2. `low-recover -> settling`
-3. `settling -> stable`
-
-During `low-recover` (Refill phase) output is muted and the ring refills. The
-Refill exit is **predictive**: we move to `settling` as soon as
-`control_available` — or its projection through the refill-speed EMA
-`low_recover_refill_delta_ema` — reaches `target - low_recover_exit_margin_ms`.
-
-**Throughout low-recover (both Refill and Settling) the PI servo is disabled**
-(gated by `low_recover_phase == Inactive` in `pipewire.rs` and `asio.rs`) and
-the ratio is pinned to the base ratio: no clock correction is applied until we
-are back in `stable`.
-
-### Settling
-
-`settling` exists to avoid reopening audio immediately after refill. The goal is to make the effective returned latency less random.
-
-Current behavior:
-
-- output is muted if `force_silence_in_far_mode` is set (default), otherwise it becomes audible again during settling
-- if the level falls below `target - low_recover_settle_margin_ms`, go back to `low-recover`
-- if the level rises above `target + low_recover_settle_margin_ms`, trim the excess
-- if the level stays inside the settling window long enough, transition to `stable`
-
-Current exit timing:
-
-- `low_recover_settle_stable_ms` (default `200 ms`) of **continuously** accumulated stable callback time; any excursion out of band re-arms the counter
-
-Current settling half-window:
-
-- `low_recover_settle_margin_ms` (default `6 ms`), converted to samples and aligned to the audio frame
-
-#### Raw vs smoothed (sawtooth handling)
-
-The settling dwell bounds are tested against the **smoothed** level
-(`smoothed_control_available`, the same IIR low-pass the PI servo sees), **not**
-the raw level. Entry/exit actions (Refill entry, predictive Refill exit,
-hard-recover) stay on the **raw** level to remain responsive — low-passing them
-re-added phase lag that previously drove a slow oscillation.
-
-Why: bursty input arrival (decoder batching) puts a **sawtooth** on
-`control_available` whose amplitude exceeds the `±low_recover_settle_margin_ms`
-half-window. Judged on raw, every sawtooth tooth leaves the band and re-arms the
-timer → warmup never reaches `stable` (whereas once in `stable`, the servo —
-which already works on the smoothed level — holds fine). Judged on smoothed, the
-sawtooth is absorbed and the dwell can mature.
-
-On the `Refill -> Settling` transition the IIR state is **reset** so the
-smoothed level restarts from the real current level instead of a value still
-lagging behind the refill ramp (which would bounce straight back to Refill).
-
-### High Recovery
-
-High recovery is used when the buffer is too far above target.
-
-Behavior:
-
-- aggressively discard buffered audio while muted
-- return toward target faster than the slow servo path
-
-## Near/Far Band Logic
-
-The `near/far` band is derived from buffer error relative to target:
-
-- `near` if `abs(control_available - target_fill) < high_recover_entry_margin_ms`
-- `far` otherwise
-
-> Rename: `near_far_threshold_ms` is now **`high_recover_entry_margin_ms`**
-> ("High-recover entry margin"), forming a clear pair with
-> `low_recover_entry_margin_ms`. The threshold is **symmetric** (`abs_diff`),
-> but for a realistic target latency it can only be reached on the **high**
-> side, so it is the entry for high-side actions (hard-recover-high, far mute).
-> The low-recover **entry** no longer uses this band: it triggers on
-> `low_recover_entry_margin_ms` (low side) whenever `hard_recover_low_in_far_mode`
-> (or startup) is active. The old names (on-disk config, JSON key
-> `nearFarThresholdMs`, OSC address) are still accepted on read via aliases.
-
-This band is used both for UI and for determining whether far-mode actions are eligible.
-
-The important distinction is:
-
-- the band tells us whether we are near or far from target
-- the recovery state tells us what the recovery machine is currently doing
-
-These are related, but not the same thing.
-
-## Adaptive Local Resampling
-
-When adaptive resampling is enabled, a PI servo nudges the local resampling ratio around the base ratio.
-
-Shared logic lives in:
-
-- [lib.rs](/home/user/dev/spatial-renderer/Omniphony/omniphony-renderer/audio_output/src/lib.rs)
-- [adaptive_runtime.rs](/home/user/dev/spatial-renderer/Omniphony/omniphony-renderer/audio_output/src/adaptive_runtime.rs)
-
-Inputs:
-
-- current control fill
-- target fill
-- configured gains `kp_near`, `ki`
-- `max_adjust`
-- `integral_discharge_ratio`
-
-Outputs:
-
-- effective local resampling ratio
-- displayed rate-adjust value
-- current adaptive band (`near` or `far`)
-
-The PI loop is only one part of the system. It does not replace hard recovery. It attempts to keep the system centered before hard recovery becomes necessary.
-
-## Startup Behavior
-
-### ASIO
-
-ASIO startup now reuses the normal low-recovery state machine instead of using a dedicated pre-fill gate.
-
-Current startup flow:
-
-1. stream starts muted in `low-recover`
-2. refill runs using the same logic as ordinary low-buffer recovery
-3. `settling` stabilizes the returned latency
-4. transition to `stable`
-
-Additionally, when startup recovery finishes, ASIO explicitly resets:
-
-- the local resampler internal state
-- the resampler FIFO
-
-and keeps one extra callback muted before the first audible block. This is intended to avoid startup transients leaking out of the local resampler state.
-
-### PipeWire
-
-PipeWire also forces the startup low-recover: `activate_startup_low_recover()` is called when the stream is created (`pipewire.rs`), exactly like ASIO. Startup therefore runs the same Refill → Settling → stable state machine. The difference from ASIO is the callback cadence (driven by the graph quantum) and the latency measurement, not the presence of the startup gate.
-
-## ASIO / PipeWire Differences
-
-This is the most important backend-specific section.
-
-### 1. Callback Model
-
-`ASIO`:
-
-- callback size is determined by the driver/CPAL backend
-- can be relatively coarse and backend-specific
-- this makes threshold-based recovery more sensitive to callback granularity
-
-`PipeWire`:
-
-- callback cadence is tied to the graph quantum
-- tends to be more regular
-- makes settling and servo behavior easier to tune
-
-### 2. Latency Measurement
-
-`ASIO`:
-
-- does not currently have a true backend graph-latency measurement
-- uses a midpoint estimate based on callback size
-- total displayed latency is therefore a model, not a direct driver-reported value
-
-`PipeWire`:
-
-- samples downstream graph latency via `pw_stream_get_time()`
-- includes real graph scheduling delay in `measured_latency_ms`
-
-This is why two backends can sound similarly stable while reporting different-looking latency numbers.
-
-### 3. Non-Resampling Behavior
-
-`ASIO`:
-
-- without adaptive local resampling, it still relies on the shared far-mode recovery logic
-- there is no separate backend-native servo equivalent to PipeWire's non-local-resampler path
-
-`PipeWire`:
-
-- has two regimes:
-  - local resampler path
-  - native backend rate/latency servo path when local resampling is not used
-
-This makes PipeWire structurally more flexible, but also means the two backends are not exact mirrors.
-
-### 4. Startup Strategy
-
-`ASIO`:
-
-- startup is now explicitly treated as low recovery
-- mute/recovery/fade behavior is intentionally unified with ordinary low-buffer recovery
-
-`PipeWire`:
-
-- also forces the startup low-recover (`activate_startup_low_recover()`), same state machine as ASIO
-- the graph callback cadence just makes refill/settling more regular to tune
-
-### 5. Sensitivity to Thresholds
-
-`ASIO` is more sensitive to:
-
-- settling window size
-- refill/settling transition thresholds
-- startup transient cleanup
-
-`PipeWire` is more sensitive to:
-
-- graph quantum
-- backend latency reporting
-- the split between local resampler control and native backend rate control
-
-## Current Practical Interpretation
-
-When debugging the system, interpret states as follows:
-
-- `stable`: no active recovery state machine
-- `low-recover`: output is muted because the system is rebuilding latency from below target
-- `settling`: the system confirms stability (on the smoothed level) before handing back to the servo; output is muted if `force_silence_in_far_mode` is set (default)
-- `high-recover`: buffered audio is being dropped because latency is too high
-- `near` / `far`: distance from target, not mute state by itself
-
-If audio is wrong, always inspect both:
-
-- band: `near` / `far`
-- state: `stable` / `low-recover` / `settling` / `high-recover`
-
-The band explains where the controller is relative to target. The state explains what the recovery machine is actively doing.
+A stream that cannot be played at the target (its decoder holds more audio
+than the target leaves room for) is played at the latency it needs instead:
+`/state/audio` says so (`latencyTargetHeldMs`), the Studio shows it under the
+target, and the configured value is left alone.
+
+## What is measured
+
+Everything is stamped against one monotonic clock.
+
+- **In**: source frames received, counted before decoding, on the transport
+  the input arrives in (so a burst that decodes later is already counted).
+- **Played**: source frames that have left the resampler towards the device.
+- **Device delay**: what the backend reports is still in front of the
+  converter.
+
+```
+latency = (in − played) / rate + device delay
+```
+
+No low-pass, pacer or calibration sits between the measurement and the loop.
+
+## The loop
+
+```
+ratio = feed-forward · (1 + u)
+u     = Kp·e + Ki·∫e dt          e = latency − target
+```
+
+- The **feed-forward** is the rate of the source over the rate of the device,
+  each estimated against the monotonic clock. It carries the drift between
+  the two clocks (tens of ppm) with almost no noise.
+- The **PI** only corrects phase. It is set by one number, the loop bandwidth
+  `B`: `ω = 2πB`, `Kp = 2ω`, `Ki = ω²`, integrated per second with the
+  measured interval, so it does not depend on the device's cycle. `u` is
+  clamped to ±500 ppm.
+- A feed-forward more than 1000 ppm from nominal is a clock that is wrong, not
+  drift: it is reported as a mismatch and clamped.
+
+One polyphase resampler applies the ratio, on the device's side of a
+lock-free ring.
+
+## Start and realign
+
+- **Start**: silence until the latency would equal the target, then the first
+  sample on the exact frame.
+- **Realign**: when the error passes the realign threshold, on an underrun or
+  on a full ring, the output fades out, drops or inserts exactly what puts the
+  error back at zero, and fades in. The feed-forward and the integrator are
+  kept: they describe drift, not phase. Each realign is counted.
+
+There is nothing else: no near/far bands, no recovery states, no settling
+dwell.
+
+## The source's clock
+
+`source_clock` says what clock the source runs on. `auto` takes the input's
+own:
+
+| Clock | Input | What the loop does |
+|---|---|---|
+| `own` | the renderer's PipeWire sink | the sink runs on the renderer's clock: nothing to estimate |
+| `follow` | a pipe written at its writer's pace (mpv) | the writer's rate is estimated from when its audio arrives |
+| `none` | a file, a writer faster than real time | the device is the master; the writer is held back to its pace |
+
+A source with a clock is never held back: blocking it would replace its clock
+with the device's. The renderer falls back to the input's own clock when asked
+for one the input cannot have.
+
+## Nothing is lost quietly
+
+Every frame dropped or inserted between the input and the device is an event
+with its position and its cause: a gap in the stream is filled with silence
+for its exact length, an overlap is trimmed, and what a decoder loses or makes
+up is found by an audit of what went in against what came out. The counts are
+published with the diagnostic metrics (`frames_lost`, `frames_filled`,
+`realigns`, `underruns`).
+
+## Settings
+
+| Option | Default | Meaning |
+|---|---|---|
+| `latency_target` | — | the latency to hold, ms |
+| `loop_bandwidth_hz` | 0 | bandwidth of the loop; 0 takes the source's own (0.02 Hz for the sink, 0.005 Hz for a pipe) |
+| `realign_threshold_ms` | 20 | latency error beyond which the output realigns |
+| `source_clock` | `auto` | the clock the source runs on (above) |
+
+All four are host options of the standalone renderer
+([live-options-registry.md](live-options-registry.md)): a config key under
+`render`, a command-line flag, and a control over OSC. In the Studio they are
+in the Latency section, the last three in the advanced view.
+
+## What a client sees
+
+- `/state/latency_instant`: the latency measured; `/state/latency_target`:
+  the target; `/state/resample_ratio`: the ratio applied.
+- The diagnostic metrics (`/state/diag_schema`, `/state/diag_values`): the
+  latency error, the feed-forward and the correction in ppm, and the counts
+  above.
+
+## Configs written for the regulation this replaced
+
+The keys of the adaptive resampler (`enable_adaptive_resampling`,
+`adaptive_resampling_*`) and the shape of the old live input (`live_input`'s
+`backend`, `layout`, `clock_mode`, `channels`, `sample_rate`, `map`,
+`lfe_mode`) are still read. They do nothing: a run says once which of them it
+found, and a save keeps them as they were.

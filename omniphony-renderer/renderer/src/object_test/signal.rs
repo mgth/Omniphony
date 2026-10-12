@@ -27,7 +27,7 @@
 //! setting, so switching signals mid-listen changes what you are judging and
 //! not how loud it is.
 
-use crate::crossover::filter::{BiquadState, biquad, butterworth2_hp, butterworth2_lp};
+use crate::dsp::iir::{BiquadCoeffs, BiquadState, biquad};
 use crate::live_params::ObjectTestSignal;
 use crate::speaker_test::PinkNoise;
 
@@ -99,6 +99,25 @@ pub fn level_divisor_of(signal: ObjectTestSignal) -> f32 {
     }
 }
 
+/// The filtered variants' section coefficients at one sample rate.
+struct FilterCoeffs {
+    low_lp: BiquadCoeffs,
+    high_hp: BiquadCoeffs,
+    band_hp: BiquadCoeffs,
+    band_lp: BiquadCoeffs,
+}
+
+impl FilterCoeffs {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            low_lp: BiquadCoeffs::butterworth2_lp(LOW_HZ, sample_rate),
+            high_hp: BiquadCoeffs::butterworth2_hp(HIGH_HZ, sample_rate),
+            band_hp: BiquadCoeffs::butterworth2_hp(BAND_LO_HZ, sample_rate),
+            band_lp: BiquadCoeffs::butterworth2_lp(BAND_HI_HZ, sample_rate),
+        }
+    }
+}
+
 /// Generator state for every signal, kept in one place so switching between
 /// them is a reset rather than a swap of objects.
 pub struct SignalGen {
@@ -107,6 +126,9 @@ pub struct SignalGen {
     /// keep the "low" signal genuinely free of the level cues the "high" one is
     /// there to test.
     filt: [BiquadState; 4],
+    /// Section coefficients at `sample_rate`, designed once per (re)start
+    /// rather than per sample.
+    coeffs: FilterCoeffs,
     sample_rate: u32,
     /// Sample counter within the burst/click period.
     tick: u32,
@@ -121,6 +143,7 @@ impl SignalGen {
         Self {
             noise: PinkNoise::new(seed),
             filt: Default::default(),
+            coeffs: FilterCoeffs::new(sample_rate.max(1)),
             sample_rate: sample_rate.max(1),
             tick: 0,
             phase: 0.0,
@@ -133,6 +156,7 @@ impl SignalGen {
         self.noise.reset();
         self.filt = Default::default();
         self.sample_rate = sample_rate.max(1);
+        self.coeffs = FilterCoeffs::new(self.sample_rate);
         self.tick = 0;
         self.phase = 0.0;
         self.clip_pos = 0;
@@ -174,20 +198,19 @@ impl SignalGen {
             }
             ObjectTestSignal::PinkLow => {
                 let raw = self.noise.next_sample();
-                let c = butterworth2_lp(LOW_HZ, self.sample_rate);
+                let c = self.coeffs.low_lp;
                 let y = biquad(raw, c, &mut self.filt[0]);
                 biquad(y, c, &mut self.filt[1]) * MAKEUP_LOW
             }
             ObjectTestSignal::PinkHigh => {
                 let raw = self.noise.next_sample();
-                let c = butterworth2_hp(HIGH_HZ, self.sample_rate);
+                let c = self.coeffs.high_hp;
                 let y = biquad(raw, c, &mut self.filt[0]);
                 biquad(y, c, &mut self.filt[1]) * MAKEUP_HIGH
             }
             ObjectTestSignal::PinkBand => {
                 let raw = self.noise.next_sample();
-                let hp = butterworth2_hp(BAND_LO_HZ, self.sample_rate);
-                let lp = butterworth2_lp(BAND_HI_HZ, self.sample_rate);
+                let (hp, lp) = (self.coeffs.band_hp, self.coeffs.band_lp);
                 let y = biquad(raw, hp, &mut self.filt[0]);
                 let y = biquad(y, hp, &mut self.filt[1]);
                 let y = biquad(y, lp, &mut self.filt[2]);

@@ -1,17 +1,14 @@
 use super::*;
 use crate::spatial_vbap::spherical_to_adm;
 
-#[cfg(feature = "saf_vbap")]
+/// A layout preset from the repository's `layouts/` directory.
 fn load_yaml_layout(name: &str) -> crate::speaker_layout::SpeakerLayout {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("layouts")
+        .join("../../layouts")
         .join(name);
     crate::speaker_layout::SpeakerLayout::from_file(path).unwrap()
 }
 
-#[cfg(feature = "saf_vbap")]
 #[test]
 fn test_vbap_panner_creation() {
     // Use a real preset with height speakers so 3D triangulation is valid.
@@ -26,7 +23,6 @@ fn test_vbap_panner_creation() {
     assert!(panner.num_triangles() > 0);
 }
 
-#[cfg(feature = "saf_vbap")]
 #[test]
 fn test_vbap_gain_computation() {
     let layout = load_yaml_layout("7.1.4.yaml");
@@ -47,17 +43,20 @@ fn test_vbap_gain_computation() {
     );
 }
 
-#[cfg(feature = "saf_vbap")]
 #[test]
 fn test_vbap_error_cases() {
     // Too few speakers
     let speakers = vec![[0.0, 0.0], [30.0, 0.0]];
     assert!(VbapPanner::new(&speakers, 5, 5, 0.0, Default::default()).is_err());
 
-    // Invalid resolution
+    // Resolutions outside 1..=360 (azimuth) and 1..=180 (elevation).
     let speakers = vec![[0.0, 0.0], [-30.0, 0.0], [30.0, 0.0]];
-    assert!(VbapPanner::new(&speakers, 0, 5, 0.0, Default::default()).is_err());
-    assert!(VbapPanner::new(&speakers, 15, 5, 0.0, Default::default()).is_err());
+    for (az, el) in [(0, 5), (361, 5), (5, 0), (5, 181)] {
+        assert!(
+            VbapPanner::new(&speakers, az, el, 0.0, Default::default()).is_err(),
+            "resolution az={az} el={el} must be refused"
+        );
+    }
 }
 
 #[test]
@@ -245,21 +244,4 @@ fn test_edge_cases() {
         "Below horizon elevation should be negative: {}",
         el
     );
-}
-
-#[test]
-fn test_yaml_speaker_order() {
-    let yaml_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("layouts/8.0.yaml");
-    if !yaml_path.exists() {
-        println!("Skipping: layouts/8.0.yaml not found");
-        return;
-    }
-    let layout = crate::speaker_layout::SpeakerLayout::from_file(&yaml_path).unwrap();
-    println!("YAML speaker order ({} speakers):", layout.speakers.len());
-    for (i, s) in layout.speakers.iter().enumerate() {
-        println!(
-            "  [{}] {} (az={}, el={}, spat={})",
-            i, s.name, s.azimuth, s.elevation, s.spatialize
-        );
-    }
 }

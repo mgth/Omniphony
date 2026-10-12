@@ -23,6 +23,7 @@ const CONFIG_ERROR: egui::Color32 = egui::Color32::from_rgb(0xff, 0x76, 0x76);
 struct RendererFacts {
     version: Option<String>,
     abi: Option<String>,
+    bridge_api: Option<String>,
     executable: Option<String>,
     config_path: Option<String>,
     config_status: Option<String>,
@@ -75,6 +76,7 @@ impl StudioSpike {
             RendererFacts {
                 version: live.app.render_version.clone(),
                 abi: live.app.render_abi.clone(),
+                bridge_api: live.app.render_bridge_api.clone(),
                 executable: live.app.render_executable.clone(),
                 config_path: live.app.render_config_path.clone(),
                 config_status: live.app.render_config_status.clone(),
@@ -129,9 +131,11 @@ impl StudioSpike {
     }
 }
 
-/// Which renderer, and which ABI it speaks. The executable's path is the
-/// tooltip rather than a line of its own: it is long, and it only matters once
-/// the version raises a question.
+/// Which renderer, which ABI it speaks, and which `bridge_api` a decoder bridge
+/// must be built against to load in it — the version to compare a bridge's
+/// against when everything is installed and nothing plays. The executable's
+/// path is the tooltip rather than a line of its own: it is long, and it only
+/// matters once the version raises a question.
 fn renderer_version(ui: &mut Ui, facts: &RendererFacts) {
     let Some(version) = facts.version.as_deref().filter(|v| !v.is_empty()) else {
         ui.label(RichText::new("—").color(theme::TEXT_FAINT));
@@ -141,6 +145,10 @@ fn renderer_version(ui: &mut Ui, facts: &RendererFacts) {
     if let Some(abi) = facts.abi.as_deref().filter(|a| !a.is_empty()) {
         text.push_str(" · ABI ");
         text.push_str(abi);
+    }
+    if let Some(bridge_api) = facts.bridge_api.as_deref().filter(|b| !b.is_empty()) {
+        text.push_str(" · bridge_api ");
+        text.push_str(bridge_api);
     }
     let label = ui.label(RichText::new(&text).monospace());
     if let Some(executable) = facts.executable.as_deref().filter(|e| !e.is_empty()) {
@@ -170,11 +178,20 @@ fn config_path(ui: &mut Ui, facts: &RendererFacts) {
 /// known at all.
 fn config_line(path: &str, status: &str, connected: bool) -> (String, egui::Color32, bool) {
     let failure = match status {
-        "missing" => Some(t("about.configMissing")),
         "parse_error" => Some(t("about.configParseError")),
+        "newer_schema" => Some(t("about.configNewerSchema")),
         _ => None,
     };
     if !path.is_empty() {
+        // No file yet is what every first start looks like: nothing has gone
+        // wrong, the first Save writes it. Said plainly, not as an alarm.
+        if status == "missing" {
+            return (
+                format!("{path} — {}", t("about.configMissing")),
+                theme::TEXT_MUTED,
+                true,
+            );
+        }
         return match failure {
             Some(reason) => (format!("{path} — {reason}"), CONFIG_ERROR, true),
             None => (path.to_owned(), theme::TEXT, true),
@@ -219,13 +236,18 @@ mod tests {
         let (text, colour, _) = config_line("/etc/omniphony/config.yaml", "ok", true);
         assert_eq!(text, "/etc/omniphony/config.yaml");
         assert_eq!(colour, theme::TEXT);
-        // A path it could not read: the path *and* what went wrong, in red.
+        // No file yet (a first start): the path and "not saved yet", muted,
+        // since nothing went wrong.
         let (text, colour, _) = config_line("/etc/omniphony/config.yaml", "missing", true);
         assert!(text.starts_with("/etc/omniphony/config.yaml — "));
         assert!(text.ends_with(t("about.configMissing")));
-        assert_eq!(colour, CONFIG_ERROR);
+        assert_eq!(colour, theme::TEXT_MUTED);
+        // A path it could not read: the path *and* what went wrong, in red.
         let (text, _, _) = config_line("/x.yaml", "parse_error", true);
         assert!(text.ends_with(t("about.configParseError")));
+        let (text, colour, _) = config_line("/x.yaml", "newer_schema", true);
+        assert!(text.ends_with(t("about.configNewerSchema")));
+        assert_eq!(colour, CONFIG_ERROR);
         // Connected with no path at all: running on built-in defaults, which
         // is worth an amber warning.
         let (text, colour, _) = config_line("", "", true);

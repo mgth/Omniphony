@@ -121,7 +121,7 @@ pub fn format_cutoff_hz(hz: f64) -> String {
 /// A non-spatialized feed is framed in black rather than grey: it sits outside
 /// the room model altogether, and a thumbnail that looked like the others would
 /// claim it is placed somewhere it is not.
-pub fn position_icon(ui: &mut Ui, position: [f64; 3], spatialize: bool) {
+pub fn position_icon(ui: &mut Ui, position: [f64; 3], spatialize: bool, virtual_speaker: bool) {
     let (rect, response) = ui.allocate_exact_size(vec2(ICON, ICON), egui::Sense::hover());
     if !ui.is_rect_visible(rect) {
         return;
@@ -132,19 +132,33 @@ pub fn position_icon(ui: &mut Ui, position: [f64; 3], spatialize: bool) {
         rect.min + vec2(0.6 * unit, 0.6 * unit),
         rect.min + vec2(15.4 * unit, 15.4 * unit),
     );
-    painter.rect_stroke(
-        frame,
-        1.2 * unit,
-        Stroke::new(
-            0.9 * unit,
-            if spatialize {
-                ICON_STROKE
-            } else {
-                Color32::BLACK
-            },
-        ),
-        egui::StrokeKind::Inside,
+    let stroke = Stroke::new(
+        0.9 * unit,
+        if spatialize {
+            ICON_STROKE
+        } else {
+            Color32::BLACK
+        },
     );
+    if virtual_speaker {
+        // A headphone room's speaker: the frame dashed, as the scene draws
+        // its cube in wire.
+        let inset = frame.shrink(0.45 * unit);
+        painter.add(egui::Shape::dashed_line(
+            &[
+                inset.left_top(),
+                inset.right_top(),
+                inset.right_bottom(),
+                inset.left_bottom(),
+                inset.left_top(),
+            ],
+            stroke,
+            1.6 * unit,
+            1.1 * unit,
+        ));
+    } else {
+        painter.rect_stroke(frame, 1.2 * unit, stroke, egui::StrokeKind::Inside);
+    }
     let cx = 2.0 + ((position[0].clamp(-1.0, 1.0) + 1.0) / 2.0) * 12.0;
     let cy = 2.0 + ((1.0 - position[1].clamp(-1.0, 1.0)) / 2.0) * 12.0;
     let centre = rect.min + vec2(cx as f32 * unit, cy as f32 * unit);

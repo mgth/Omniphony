@@ -12,8 +12,6 @@ use log::{error, info};
 use std::ffi::OsString;
 
 mod cli;
-mod input;
-pub(crate) mod timestamp;
 
 fn normalize_cli_args<I>(args: I) -> Vec<OsString>
 where
@@ -26,8 +24,8 @@ where
 
     let known_subcommands = [
         OsString::from("render"),
-        OsString::from("input-live"),
         OsString::from("generate-vbap"),
+        OsString::from("wrap-iec61937"),
         #[cfg(target_os = "windows")]
         OsString::from("list-asio-devices"),
         #[cfg(target_os = "macos")]
@@ -149,7 +147,7 @@ fn main() -> Result<()> {
 
     let base_level = cli.loglevel.to_level_filter();
 
-    sys::live_log::init_logger(base_level, matches!(cli.log_format, LogFormat::Json))?;
+    live_log::init_logger(base_level, matches!(cli.log_format, LogFormat::Json))?;
     std::panic::set_hook(Box::new(|panic_info| {
         let location = panic_info
             .location()
@@ -166,17 +164,15 @@ fn main() -> Result<()> {
 
     info!("{}", cli::command::VERSION_INFO);
 
-    let result: Result<()> = (|| match cli.command {
+    let result: Result<()> = match cli.command {
         Commands::Render(ref args) => cmd_render(args, &cli, &parsed.render_sources()),
-        Commands::InputLive(_) => {
-            anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
-        }
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
+        Commands::WrapIec61937(ref args) => cli::wrap_iec61937::cmd_wrap_iec61937(args),
         #[cfg(target_os = "windows")]
         Commands::ListAsioDevices => cmd_list_asio_devices(),
         #[cfg(target_os = "macos")]
         Commands::ListCoreaudioDevices => cmd_list_coreaudio_devices(),
-    })();
+    };
 
     if let Err(ref err) = result {
         error!("orender exiting with error: {err:#}");

@@ -18,25 +18,36 @@
 //!
 //! `compute_gains` runs in the realtime audio thread, once per object per band
 //! per frame. It MUST NOT panic, allocate on the heap, lock, or block, and it
-//! MUST return exactly [`speaker_count`](GainModel::speaker_count) finite gains.
-//! Do expensive setup (here: normalising the speaker directions) when the model
-//! is built, never in `compute_gains`. See the `GainModel` trait docs.
+//! MUST write every one of the [`speaker_count`](GainModel::speaker_count)
+//! gains it is handed, all finite: the buffer is the caller's and arrives
+//! holding its previous contents, not zeros. Do expensive setup (here:
+//! normalising the speaker directions) when the model is built, never in
+//! `compute_gains`. A backend that needs working memory per call (a second
+//! gain set, a solver's arrays) sizes it once in
+//! [`new_scratch`](GainModel::new_scratch) and gets it back on every call;
+//! this one needs none. See the `GainModel` trait docs.
 //!
 //! ## Selecting it at runtime
 //!
-//! Implement [`BackendFactory`] (see [`ExampleFactory`]) and a host registers it
-//! with `RendererControl::register_backend`; selecting `backend_id = "example"`
-//! then routes a topology rebuild through it — no central enum or `match` to edit.
-//! The backend's identity lives entirely on this crate: its `backend_id`,
-//! `backend_label` and parameter schema come from the [`GainModel`] impl and
-//! [`BackendFactory`], with no closed enum in `renderer` to extend.
+//! Implement [`PluginFactory`] (its id, label and parameter schema — the
+//! contract every plugin shares, object generators included) and
+//! [`BackendFactory`] (how to build it; see [`ExampleFactory`]), and a host
+//! registers it with `RendererControl::register_backend`; selecting
+//! `backend_id = "example"` then routes a topology rebuild through it — no
+//! central enum or `match` to edit. The backend's identity lives entirely on
+//! this crate: its `backend_id`, `backend_label` and parameter schema come from
+//! the [`GainModel`] impl and [`PluginFactory`], with no closed enum in
+//! `renderer` to extend.
 
 use renderer::backend_params::{ParamSpec, ParamValue};
 use renderer::backend_registry::{
     BackendBuildCtx, BackendBuildPlan, BackendFactory, DynamicBackendPlan,
 };
-use renderer::render_backend::{BackendCapabilities, GainModel, RenderRequest, RenderResponse};
-use renderer::spatial_vbap::{Gains, spherical_to_adm};
+use renderer::plugin::PluginFactory;
+use renderer::render_backend::{
+    BackendCapabilities, GainModel, GainScratch, RenderRequest, room_scaled_position,
+};
+use renderer::spatial_vbap::spherical_to_adm;
 use renderer::speaker_layout::SpeakerLayout;
 
 /// Default sharpness of the cosine lobe when the host has not set the param.
@@ -98,24 +109,35 @@ impl GainModel for ExampleBackend {
         self.speaker_dirs.len()
     }
 
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let n = self.speaker_dirs.len();
-        // `Gains` is a fixed-capacity, stack-backed buffer: `zeroed` does not
-        // allocate on the heap, so this stays allocation-free.
-        let mut gains = Gains::zeroed(n);
+    fn compute_gains(&self, req: &RenderRequest, _scratch: &mut GainScratch, gains: &mut [f32]) {
+        // `gains` is the caller's buffer, one gain per speaker: writing it
+        // allocates nothing. This backend needs no working memory beyond it,
+        // so it leaves `new_scratch` at its default and ignores the scratch.
 
-        let dir = normalize([
-            req.adm_position[0] as f32,
-            req.adm_position[1] as f32,
-            req.adm_position[2] as f32,
-        ]);
+        // The speakers were placed in the room the topology pans in (the
+        // factory read them so); the object goes through the same warp,
+        // which the request carries, or a non-unit room would pull it off
+        // the speaker it sits on. Pure arithmetic: still allocation-free.
+        let dir = normalize(room_scaled_position(
+            [
+                req.adm_position[0] as f32,
+                req.adm_position[1] as f32,
+                req.adm_position[2] as f32,
+            ],
+            req.room_ratio,
+            req.room_ratio_rear,
+            req.room_ratio_lower,
+            req.room_ratio_center_blend,
+        ));
 
         // Pass 1: raw cosine weights into the gain buffer, accumulating energy.
+        // Every gain is written: what the buffer held before is not ours.
+        let n = gains.len();
         let mut sum_sq = 0.0f32;
-        for (i, sd) in self.speaker_dirs.iter().enumerate() {
+        for (gain, sd) in gains.iter_mut().zip(&self.speaker_dirs) {
             let dot = dir[0] * sd[0] + dir[1] * sd[1] + dir[2] * sd[2];
             let w = dot.max(0.0).powf(self.sharpness);
-            gains[i] = w;
+            *gain = w;
             sum_sq += w * w;
         }
 
@@ -133,8 +155,6 @@ impl GainModel for ExampleBackend {
                 *g = eq;
             }
         }
-
-        RenderResponse { gains }
     }
 
     fn save_to_file(&self, _path: &std::path::Path, _layout: &SpeakerLayout) -> anyhow::Result<()> {
@@ -153,7 +173,7 @@ impl GainModel for ExampleBackend {
 /// [`BackendBuildPlan::Dynamic`] whose closure builds the model from the layout.
 pub struct ExampleFactory;
 
-impl BackendFactory for ExampleFactory {
+impl PluginFactory for ExampleFactory {
     fn id(&self) -> &'static str {
         "example"
     }
@@ -170,12 +190,19 @@ impl BackendFactory for ExampleFactory {
                 .help("Cosine-lobe exponent: higher = tighter localisation, lower = more spread."),
         ]
     }
+}
 
+impl BackendFactory for ExampleFactory {
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
         // Capture the spatializable speaker directions now (build thread), so the
         // model builder closure owns everything it needs and the hot path does no
-        // layout lookups. Azimuth/elevation pairs are converted to unit vectors.
-        let (azimuth_elevation, _spatializable_indices) = ctx.layout.spatializable_positions();
+        // layout lookups. Read in the room the topology pans in, as the
+        // objects are warped with it (a cartesian speaker is a fraction of
+        // that room). Azimuth/elevation pairs are converted to unit vectors.
+        let room = ctx.room;
+        let (azimuth_elevation, _spatializable_indices) = ctx
+            .layout
+            .spatializable_positions_for_room(room.ratio, room.rear, room.lower, room.center_blend);
         let speaker_positions: Vec<[f32; 3]> = azimuth_elevation
             .iter()
             .map(|[az, el]| {
@@ -246,10 +273,69 @@ mod tests {
         gains.iter().map(|g| g * g).sum()
     }
 
+    /// Built through the factory on cartesian speakers in a non-unit room,
+    /// the object is warped as the speakers were: an object on a speaker's
+    /// place favours that speaker. Read raw against warped speakers, A's
+    /// object favoured B (#803 review).
+    #[test]
+    fn the_object_is_warped_like_the_speakers() {
+        use renderer::backend_registry::{BackendBuildCtx, BackendRegistry};
+        use renderer::live_params::RoomRatios;
+        use renderer::speaker_layout::Speaker;
+
+        let layout = SpeakerLayout::from_speakers(vec![
+            Speaker::from_cartesian("A", 1.0, 1.0, 0.0, true, 0.0),
+            Speaker::from_cartesian("B", 1.0, 0.5, 0.0, true, 0.0),
+            Speaker::from_cartesian("C", -1.0, -1.0, 0.0, true, 0.0),
+        ])
+        .expect("three speakers");
+        let room = RoomRatios {
+            ratio: [1.0, 2.0, 1.0],
+            rear: 2.0,
+            lower: 1.0,
+            center_blend: 0.5,
+        };
+        let control = renderer::test_support::fixture_control();
+        let registry = BackendRegistry::builtin();
+        let params = std::collections::HashMap::new();
+        let live = control.live.read();
+        let ctx = BackendBuildCtx {
+            layout: &layout,
+            live: &live,
+            room,
+            backend_rebuild_params: None,
+            registry: &registry,
+            backend_params: &params,
+        };
+        let model = ExampleFactory
+            .build_plan(&ctx)
+            .expect("a plan")
+            .build_gain_model()
+            .expect("the model");
+        let gains_at = |p: [f64; 3]| {
+            let mut req = request(p);
+            req.room_ratio = room.ratio;
+            req.room_ratio_rear = room.rear;
+            req.room_ratio_lower = room.lower;
+            req.room_ratio_center_blend = room.center_blend;
+            model.gains_at(&req).to_vec()
+        };
+        let on_a = gains_at([1.0, 1.0, 0.0]);
+        assert!(
+            on_a[0] > on_a[1] && on_a[0] > on_a[2],
+            "on A, A is favoured: {on_a:?}"
+        );
+        let on_c = gains_at([-1.0, -1.0, 0.0]);
+        assert!(
+            on_c[2] > on_c[0] && on_c[2] > on_c[1],
+            "on C, C is favoured: {on_c:?}"
+        );
+    }
+
     #[test]
     fn returns_one_finite_gain_per_speaker() {
         let backend = quad();
-        let gains = backend.compute_gains(&request([0.7, 0.7, 0.0])).gains;
+        let gains = backend.gains_at(&request([0.7, 0.7, 0.0]));
         assert_eq!(gains.len(), 4);
         assert!(gains.iter().all(|g| g.is_finite()));
     }
@@ -258,7 +344,7 @@ mod tests {
     fn normalises_to_unit_energy() {
         let backend = quad();
         for pos in [[0.7, 0.7, 0.0], [1.0, 0.0, 0.0], [-0.3, 0.9, 0.0]] {
-            let gains = backend.compute_gains(&request(pos)).gains;
+            let gains = backend.gains_at(&request(pos));
             assert!(
                 (energy(&gains) - 1.0).abs() < 1e-4,
                 "energy at {pos:?} was {}",
@@ -270,7 +356,7 @@ mod tests {
     #[test]
     fn centre_falls_back_to_equal_power() {
         let backend = quad();
-        let gains = backend.compute_gains(&request([0.0, 0.0, 0.0])).gains;
+        let gains = backend.gains_at(&request([0.0, 0.0, 0.0]));
         assert!((energy(&gains) - 1.0).abs() < 1e-4);
         // Equal power: every speaker gets the same gain.
         let first = gains[0];
@@ -294,7 +380,7 @@ mod tests {
     fn favours_the_aligned_speaker() {
         let backend = quad();
         // Object towards speaker 0 ([1,1,0]); it should get the largest gain.
-        let gains = backend.compute_gains(&request([1.0, 1.0, 0.0])).gains;
+        let gains = backend.gains_at(&request([1.0, 1.0, 0.0]));
         let max_idx = gains
             .iter()
             .enumerate()

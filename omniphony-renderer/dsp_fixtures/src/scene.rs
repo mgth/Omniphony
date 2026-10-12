@@ -13,9 +13,9 @@ use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
 // that crate (the `--test` build), whose `RampMode` is a distinct type from the
 // rlib one these fixtures are compiled against. Callers must name the type
 // through this crate or the argument types will not match.
-pub use renderer::live_params::RampMode;
-use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
-use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
+pub use renderer::live_params::{CrossoverType, RampMode};
+use renderer::spatial_renderer::{RendererSpec, SpatialChannelEvent, SpatialRenderer};
+use renderer::spatial_vbap::VbapTableMode;
 use renderer::speaker_layout::SpeakerLayout;
 
 /// Samples per access unit fed to `render_frame`. Measured from a real TrueHD
@@ -82,40 +82,20 @@ pub fn build_renderer_binaural(
             LiveEvaluationMode::PrecomputedPolar,
         )
     };
-    SpatialRenderer::new(
-        layout,
-        SAMPLE_RATE,
-        15, // az_res_deg — coarse: the binaural path never reads the VBAP table
-        15, // el_res_deg
-        0.0,
-        2.0,
+    SpatialRenderer::new(RendererSpec {
+        sample_rate: SAMPLE_RATE,
+        az_res_deg: 15, // az_res_deg — coarse: the binaural path never reads the VBAP table
+        el_res_deg: 15,
         table_mode,
-        false, // allow_negative_z
-        position_interpolation,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,           // log_object_positions
-        [1.0, 2.0, 0.5], // room_ratio
-        2.0,
-        0.5,
-        0.0,
-        0.0,   // master_gain_db
-        false, // auto_gain
-        false, // use_loudness
-        false, // distance_diffuse
-        1.0,
-        1.0,
-        preferred,
-        initial,
-        31,
-        31,
-        15,
-        15,
-    )
+        vbap_position_interpolation: position_interpolation,
+        preferred_evaluation_mode: preferred,
+        initial_evaluation_mode: initial,
+        cartesian_default_x_size: 31,
+        cartesian_default_y_size: 31,
+        cartesian_default_z_size: 15,
+        cartesian_default_z_neg_size: 15,
+        ..renderer::test_support::spec(layout)
+    })
     .expect("renderer build")
 }
 
@@ -142,40 +122,18 @@ pub fn build_renderer(
             LiveEvaluationMode::PrecomputedPolar,
         )
     };
-    SpatialRenderer::new(
-        layout,
-        SAMPLE_RATE,
-        1, // az_res_deg
-        1, // el_res_deg
-        0.0,
-        2.0,
+    SpatialRenderer::new(RendererSpec {
+        sample_rate: SAMPLE_RATE,
         table_mode,
-        false, // allow_negative_z
-        position_interpolation,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,           // log_object_positions
-        [1.0, 2.0, 0.5], // room_ratio
-        2.0,
-        0.5,
-        0.0,
-        0.0,   // master_gain_db
-        false, // auto_gain
-        false, // use_loudness
-        false, // distance_diffuse
-        1.0,
-        1.0,
-        preferred,
-        initial,
-        31,
-        31,
-        15,
-        15,
-    )
+        vbap_position_interpolation: position_interpolation,
+        preferred_evaluation_mode: preferred,
+        initial_evaluation_mode: initial,
+        cartesian_default_x_size: 31,
+        cartesian_default_y_size: 31,
+        cartesian_default_z_size: 15,
+        cartesian_default_z_neg_size: 15,
+        ..renderer::test_support::spec(layout)
+    })
     .expect("renderer build")
 }
 
@@ -283,8 +241,7 @@ pub fn prepared(
     let mut r = make_renderer(preset, position_interpolation, cartesian);
     {
         let ctrl = r.renderer_control();
-        ctrl.set_requested_ramp_mode(ramp_mode);
-        ctrl.live.write().ramp_mode = ramp_mode;
+        ctrl.live.write().options.ramp_mode = ramp_mode;
     }
     let pcm = make_pcm(n_objects);
     let init = move_events(n_objects, 0);
@@ -318,9 +275,8 @@ pub fn prepared_binaural(n_objects: usize, ramp_mode: RampMode) -> (SpatialRende
     let mut r = make_renderer("7.1.4", true, false);
     {
         let ctrl = r.renderer_control();
-        ctrl.set_requested_ramp_mode(ramp_mode);
         let mut live = ctrl.live.write();
-        live.ramp_mode = ramp_mode;
+        live.options.ramp_mode = ramp_mode;
         live.binaural.output_mode = OutputMode::Binaural;
     }
     let pcm = make_pcm(n_objects);
@@ -346,9 +302,8 @@ pub fn prepared_binaural_cascaded(
     let mut r = make_renderer("7.1.4", true, false);
     {
         let ctrl = r.renderer_control();
-        ctrl.set_requested_ramp_mode(ramp_mode);
         let mut live = ctrl.live.write();
-        live.ramp_mode = ramp_mode;
+        live.options.ramp_mode = ramp_mode;
         live.binaural.output_mode = OutputMode::Binaural;
         live.binaural.mode = BinauralMode::Cascaded;
     }
@@ -370,8 +325,7 @@ pub fn prepared_crossover(n_objects: usize, ramp_mode: RampMode) -> (SpatialRend
     let mut r = build_renderer(crossover_layout(), true, false);
     {
         let ctrl = r.renderer_control();
-        ctrl.set_requested_ramp_mode(ramp_mode);
-        ctrl.live.write().ramp_mode = ramp_mode;
+        ctrl.live.write().options.ramp_mode = ramp_mode;
     }
     let pcm = make_pcm(n_objects);
     let init = move_events(n_objects, 0);
@@ -509,9 +463,8 @@ pub fn render_single_object_binaural_at(
     );
     {
         let ctrl = r.renderer_control();
-        ctrl.set_requested_ramp_mode(RampMode::Frame);
         let mut live = ctrl.live.write();
-        live.ramp_mode = RampMode::Frame;
+        live.options.ramp_mode = RampMode::Frame;
         live.binaural.output_mode = OutputMode::Binaural;
         live.binaural.hrir_source = hrir_source.clone();
     }
@@ -528,7 +481,7 @@ pub fn render_single_object_binaural_at(
 
     let mut buf = Vec::new();
 
-    let mut render_one = |r: &mut SpatialRenderer, buf: Vec<f32>, seed: usize| {
+    let render_one = |r: &mut SpatialRenderer, buf: Vec<f32>, seed: usize| {
         let f = r
             .render_frame(&make_pcm_block(1, seed), 1, &event, buf, false)
             .expect("binaural ITD render");

@@ -159,7 +159,7 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
     v.max(min).min(max)
 }
 
-// Coordinate conversions come from `omniphony-geometry`, which the renderer
+// Coordinate conversions come from `omniphony_geometry`, which the renderer
 // shares. They used to live here, and applied the Three.js scene-space formula
 // (`az = atan2(z, x)`, elevation off +Y) to layout files written in the ADM
 // frame the renderer uses (`az = atan2(x, y)`, elevation off +Z). The axes were
@@ -578,6 +578,21 @@ pub fn crossover_cutoffs(speakers: &[Speaker]) -> Vec<f64> {
     cutoffs
 }
 
+/// The crossover bands a layout renders, lowest first, as `(low, high)` in
+/// hertz: from `0` to the first cutoff, …, from the last cutoff to infinity.
+/// One full-range band without a crossover.
+pub fn crossover_bands(speakers: &[Speaker]) -> Vec<(f64, f64)> {
+    let cutoffs = crossover_cutoffs(speakers);
+    let mut bands = Vec::with_capacity(cutoffs.len() + 1);
+    let mut low = 0.0;
+    for cutoff in cutoffs {
+        bands.push((low, cutoff));
+        low = cutoff;
+    }
+    bands.push((low, f64::INFINITY));
+    bands
+}
+
 /// Default export file name for a speaker set, as `spatialized.non.height`.
 ///
 /// The Studio's naming convention: how many spatialized speakers sit at or
@@ -639,7 +654,7 @@ pub fn sanitize_export_name(name: &str) -> String {
 /// the rules for a valid stored speaker lived in two places — and the one that
 /// mattered on *import* (`normalize_speaker`) was not the one applied on
 /// export. Both now clamp the same way and derive the missing coordinate
-/// representation through `omniphony-geometry`.
+/// representation through `omniphony_geometry`.
 pub fn normalize_for_export(speaker: &mut Speaker) {
     speaker.x = clamp(speaker.x, -1.0, 1.0);
     speaker.y = clamp(speaker.y, -1.0, 1.0);
@@ -752,9 +767,9 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Layout, RawSpeaker, Speaker, crossover_cutoffs, default_export_name, load_layout_file,
-        normalize_for_export, normalize_speaker, parse_yaml_layout, sanitize_export_name,
-        save_layout_file,
+        Layout, RawSpeaker, Speaker, crossover_bands, crossover_cutoffs, default_export_name,
+        load_layout_file, normalize_for_export, normalize_speaker, parse_yaml_layout,
+        sanitize_export_name, save_layout_file,
     };
 
     /// A cartesian speaker must derive its angles in the ADM frame the layout
@@ -807,6 +822,16 @@ mod tests {
             banded("hi", Some(4000.0), None, 1),
         ];
         assert_eq!(crossover_cutoffs(&speakers), vec![120.0, 4000.0]);
+        assert_eq!(
+            crossover_bands(&speakers),
+            vec![(0.0, 120.0), (120.0, 4000.0), (4000.0, f64::INFINITY)]
+        );
+    }
+
+    #[test]
+    fn a_layout_with_no_crossover_is_one_full_range_band() {
+        let speakers = vec![spk("L", -1.0, 1.0, 0.0, 1)];
+        assert_eq!(crossover_bands(&speakers), vec![(0.0, f64::INFINITY)]);
     }
 
     /// Two speakers meeting at "the same" cutoff rarely agree to the last
@@ -1000,10 +1025,11 @@ mod tests {
             normalize_for_export(speaker);
         }
 
-        let path = std::env::temp_dir().join("omniphony-export-roundtrip.yaml");
+        // A directory of the test's own: several checkouts run this suite at once.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("export-roundtrip.yaml");
         save_layout_file(&path, &layout).expect("export must succeed");
         let reparsed = load_layout_file(&path).expect("exported YAML must parse");
-        let _ = std::fs::remove_file(&path);
 
         assert_eq!(reparsed.speakers.len(), 3);
         assert!((reparsed.radius_m - 1.5).abs() < 1e-9);
