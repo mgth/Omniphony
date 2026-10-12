@@ -32,11 +32,12 @@ Our implementation lives in three repos:
 | Reader | mpv fork `workflows/integration/mpv/demux/demux_mkv.c`, `audio/decode/ad_orender.c` | `mgth/mpv`, branches `orender` **and** `orender-master`; then `mpv-omniphony` patch sets (`scripts/regenerate-patches.sh`, `scripts/regenerate-patches-master.sh`) |
 | Decoder | `workflows/integration/harletty-bridge/bridge-family-iamf` (iamf-rs) | harletty, `harletty/harletty-bridge` |
 
-Test material: libiamf vectors in `dumps/eclipsa/aomedia-libiamf-tests/`
+Test material: the libiamf conformance vectors (AOMediaCodec/libiamf `tests/`,
+kept locally)
 (`test_000220.iamf`, `test_000220_s.mp4`, the fMP4 form, and the reference
 renders `test_000220_rendered_id_42_sub_mix_0_layout_{0,1}.wav`;
 `test_000082` LPCM, `test_000006` temporal delimiters, `test_000116` reserved
-OBUs). Tron's IAMF export (AtmosFer) is the real-content case.
+OBUs). An AtmosFer export of a real master is the real-content case.
 
 Rules that apply throughout: everything in English; branch names generic
 (no codec brand names); never `gh pr merge --auto`; never claim a listening
@@ -113,19 +114,19 @@ Changes:
    `a_standstill_knows_when_it_ends` with one test that parses the written
    OBUs and checks the invariant over a sequence with a long standstill, a
    move, and the flush unit. Keep the existing byte-exact tests passing.
-4. Size: report `account.blocks_written` and the output size on Tron before
+4. Size: report `account.blocks_written` and the output size on the real master before
    and after; expect roughly 15–20 bytes per object per unit (about 10 kB/s
    for 13 objects). Note the numbers in the PR.
 
 Verification:
 
 - `cargo test -p hz-iamf -p hz-cli` (never `cargo fmt --all` on this repo).
-- Full Tron re-encode (`iamf --objects`, same options AtmosFer uses) then
+- Full re-encode of the real master (`iamf --objects`, same options AtmosFer uses) then
   decode with the integration `harletty --codec iamf decode` (built
-  `--features iamf`): the audio stays byte-exact against `vf.atmos.audio`,
+  `--features iamf`): the audio stays byte-exact against the master's audio,
   and the position changes stay at lag 0 on the 256-sample grid (the
   comparison scripts were in a session scratchpad; the reference slices are
-  in `dumps/harlettizer/iamf-timing/`; rewrite `lag.py` if needed — it
+  kept locally beside the earlier encodes; rewrite `lag.py` if needed — it
   compares the decoded position events to the master's events by sample).
 - Seek test (new): cut the standalone `.iamf` at a unit boundary inside a
   former standstill span, keep the descriptors in front, decode, and check
@@ -272,7 +273,7 @@ wants to push the registration.
 
 ## 4. Checklist per repo
 
-- harlettizer: `cargo test -p hz-iamf -p hz-cli`; Tron re-encode and decode
+- harlettizer: `cargo test -p hz-iamf -p hz-cli`; re-encode and decode of the real master
   comparison; `mkvinfo`; rebuild `--features opus`; re-export existing IAMF
   `.mka` files (seek bug).
 - Omniphony: `python3 -I scripts/iamf2mka.py` on the four vectors and

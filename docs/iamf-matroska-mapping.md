@@ -100,9 +100,10 @@ unsigned int (8 x configOBUs_size) configOBUs;
   size field to the end of the `CodecPrivate`. A reader **MUST** reject a
   `CodecPrivate` whose `configOBUs_size` does not match the element's length;
   it **MUST NOT** read past the element.
-* The IAMF profiles bound every OBU at 2 MiB (__[obu_size]__ at most
-  2^21 bytes); that bound applies to each OBU in `configOBUs` as it does to
-  the OBUs in `Blocks`.
+* The IAMF profiles bound every complete OBU — header, size field and
+  payload — at 2 MiB (2^21 bytes, so an __[obu_size]__ of at most 2^21 − 4
+  with the shortest leb128); that bound applies to each OBU in `configOBUs`
+  as it does to the OBUs in `Blocks`.
 
 Reusing the box payload rather than bare OBUs keeps a version byte for
 future extension and makes conversion from ISO-BMFF a copy. The profile bytes
@@ -176,6 +177,10 @@ EBML Path: `\Segment\Cluster\BlockGroup\DiscardPadding`
         DiscardPadding = trimmed_end_samples * 1,000,000,000 / SamplingFrequency
 
   In a conforming IA Sequence only the last `Temporal Unit` trims its end.
+  Such a `BlockGroup` **MUST** carry a `BlockDuration` (in Track Ticks)
+  when the `TrackEntry` states a `DefaultDuration`, as RFC 9559 requires of
+  every `BlockGroup` on such a track, and a `ReferenceBlock` when its
+  Temporal Unit is not a key frame (see [Keyframes](#keyframes)).
 * A `DiscardPadding` **MUST NOT** state anything other than the OBUs' own
   end trim. A reader that decodes the track **MUST NOT** apply it on top of
   the decoder's trimming (see above).
@@ -218,14 +223,20 @@ Lacing **MUST NOT** be used: a `Block` has one keyframe flag, and every
 Temporal Unit needs its own (see [Keyframes](#keyframes)).
 
 ## Timestamps
-`Block` timestamps are the Temporal Unit's decode time in Matroska Ticks,
-rounded to the nearest tick. Frame durations such as 1024 samples at 48 kHz
-(21.333 ms) do not fall on `TimestampScale` ticks, so consecutive timestamps
-jitter by up to half a tick. Readers **SHOULD** reconstruct the sample-exact
-timeline from the decoded sample counts (every unit is
-__[num_samples_per_frame]__ samples, less the in-band trims) or from
-`DefaultDuration`, and use the `Block` timestamps only to place the first
-unit after a seek or a discontinuity.
+A `Block` stores its timestamp as a signed 16-bit offset, in Track Ticks,
+from its `Cluster`'s timestamp; the sum, scaled by `TimestampScale` and the
+track's `TrackTimestampScale`, is the Temporal Unit's decode time in
+nanoseconds, rounded to the nearest tick (RFC 9559, "Timestamps"). With the
+default `TimestampScale` of 1 000 000 a tick is one millisecond, and frame
+durations such as 1024 samples at 48 kHz (21.333 ms) do not fall on ticks,
+so consecutive block timestamps jitter by up to half a tick. Readers
+**SHOULD** reconstruct the sample-exact timeline from the decoded sample
+counts (every unit is __[num_samples_per_frame]__ samples, less the in-band
+trims) or from `DefaultDuration`, and use the `Block` timestamps only to
+place the first unit after a seek or a discontinuity. The elements this
+mapping values in nanoseconds — `CodecDelay`, `SeekPreRoll`,
+`DefaultDuration`, `DiscardPadding` — are not Track Ticks; `BlockDuration`
+and `ReferenceBlock` are.
 
 ## Keyframes
 A Temporal Unit is a key frame when a decoder that starts from it has every
@@ -300,8 +311,8 @@ described by the `CodecPrivate`, and a reader allocates by what it reads:
 * Every OBU carries __[obu_size]__, and `CodecPrivate` carries
   `configOBUs_size`. A reader **MUST** check each against the bytes actually
   present (the `Block` or the element) before allocating or reading, and
-  **MUST** honour the 2 MiB bound the IAMF profiles put on an OBU rather than
-  trust a larger stated size.
+  **MUST** honour the 2 MiB bound the IAMF profiles put on a complete OBU
+  rather than trust a larger stated size.
 * The Descriptors bound what a `Block` may contain: the number of coded
   substreams (and so of `Audio Frame OBUs` a Temporal Unit holds) and the
   parameter ids a `Parameter Block OBU` may name follow from the
@@ -394,9 +405,11 @@ These are not part of the mapping. In the Omniphony stack, as of v0.2:
 * `Channels`: **MUST** be 2 and **MUST NOT** be relied on (was **SHOULD**,
   with alternatives open).
 * Trimming: the container restates the in-band trims, `DiscardPadding` on
-  the blocks that trim their end; a player applies exactly one of the two
-  (v0.1 said `DiscardPadding` **SHOULD NOT** be written).
-* Timestamps: readers reconstruct continuity from sample counts.
+  the blocks that trim their end, in a `BlockGroup` with its `BlockDuration`;
+  a player applies exactly one of the two (v0.1 said `DiscardPadding`
+  **SHOULD NOT** be written).
+* Timestamps: block offsets are Track Ticks from the `Cluster`; readers
+  reconstruct continuity from sample counts.
 * Keyframes: `Blocks` **SHOULD** be key frames and encoders **SHOULD**
   restate parameter state per unit; lacing **MUST NOT** be used (was
   **MAY**); the ISO-BMFF `stss` contradiction noted.

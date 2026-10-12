@@ -12,7 +12,9 @@ The track: CodecID A_IAMF; CodecPrivate = IAConfigurationBox payload
 Temporal Delimiter or Descriptor OBUs, keyframe flag from is_not_key_frame;
 CodecDelay = the in-band start trim; a unit whose Audio Frame OBUs trim their
 end is a BlockGroup whose DiscardPadding restates that trim (the OBUs stay
-authoritative: a player applies one of the two, never both); SeekPreRoll from
+authoritative: a player applies one of the two, never both), with the
+BlockDuration the track's DefaultDuration makes mandatory and, for a unit that
+is not a key frame, a ReferenceBlock to the last one that is; SeekPreRoll from
 audio_roll_distance; DefaultDuration = one frame; Channels 2 (ignored).
 
 Only the standard library. Holds one cluster at a time in memory; the output
@@ -401,7 +403,7 @@ FLAG_LACING, LANGUAGE, CODEC_ID, CODEC_PRIVATE = 0x9C, 0x22B59C, 0x86, 0x63A2
 CODEC_DELAY, SEEK_PRE_ROLL, DEFAULT_DURATION = 0x56AA, 0x56BB, 0x23E383
 AUDIO, SAMPLING_FREQUENCY, CHANNELS, BIT_DEPTH = 0xE1, 0xB5, 0x9F, 0x6264
 CLUSTER, CLUSTER_TIMESTAMP, SIMPLE_BLOCK = 0x1F43B675, 0xE7, 0xA3
-BLOCK_GROUP, BLOCK, DISCARD_PADDING = 0xA0, 0xA1, 0x75A2
+BLOCK_GROUP, BLOCK, BLOCK_DURATION, REFERENCE_BLOCK, DISCARD_PADDING = 0xA0, 0xA1, 0x9B, 0xFB, 0x75A2
 CUES, CUE_POINT, CUE_TIME, CUE_TRACK_POSITIONS = 0x1C53BB6B, 0xBB, 0xB3, 0xB7
 CUE_TRACK, CUE_CLUSTER_POSITION, VOID = 0xF7, 0xF1, 0xEC
 
@@ -498,6 +500,7 @@ def mux(config, units, out_path):
         cues = []
         cluster = []
         cluster_ms = None
+        last_key_ms = None
         for index, unit in enumerate(units):
             ms = round(index * config.frame_size * 1000 / sr)
             # Clusters start on keyframes, the only blocks the Cues point at;
@@ -514,13 +517,22 @@ def mux(config, units, out_path):
             if unit.trim_end:
                 # The end trim, restated for the container: a BlockGroup's
                 # Block (same header, the flags byte without the keyframe
-                # bit, which SimpleBlock alone carries) and DiscardPadding.
+                # bit, which SimpleBlock alone carries), its BlockDuration
+                # (mandatory once the track states DefaultDuration, in Track
+                # Ticks), a ReferenceBlock to the last key frame when the
+                # unit is not one (a group without one is a key frame), and
+                # DiscardPadding.
                 block = b"\x81" + struct.pack(">h", ms - cluster_ms) + b"\x00" + unit.data
-                padding = sint(DISCARD_PADDING, unit.trim_end * 1_000_000_000 // sr)
-                cluster.append(element(BLOCK_GROUP, element(BLOCK, block) + padding))
+                group = element(BLOCK, block) + uint(BLOCK_DURATION, round(config.frame_size * 1000 / sr))
+                if not unit.keyframe and last_key_ms is not None:
+                    group += sint(REFERENCE_BLOCK, last_key_ms - ms)
+                group += sint(DISCARD_PADDING, unit.trim_end * 1_000_000_000 // sr)
+                cluster.append(element(BLOCK_GROUP, group))
             else:
                 block = b"\x81" + struct.pack(">h", ms - cluster_ms) + bytes([0x80 if unit.keyframe else 0]) + unit.data
                 cluster.append(element(SIMPLE_BLOCK, block))
+            if unit.keyframe:
+                last_key_ms = ms
         if cluster:
             f.write(element(CLUSTER, b"".join(cluster)))
 
