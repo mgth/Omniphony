@@ -26,13 +26,30 @@ pub struct SyncOutputConfig {
     pub target: Option<String>,
     /// Channels the ring holds.
     pub channels: u32,
-    /// Their positions (`FL`, `FR`, …), where the audio system routes by
-    /// them (PipeWire). Ignored elsewhere: a device's channels are in order.
-    pub positions: Option<Vec<String>>,
+    /// How the audio system is to route them to the device's ports, where
+    /// it routes by position (PipeWire). Ignored elsewhere: a device's
+    /// channels are in order.
+    pub channel_map: ChannelMap,
     /// The rate asked for (Hz).
     pub rate: u32,
     /// The cycle asked for (frames at `rate`), where it can be (PipeWire).
     pub quantum: u32,
+}
+
+/// How the stream's channels are tagged for the audio system to route them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelMap {
+    /// No tags: the audio system links the channels in order, where it can.
+    Unpositioned,
+    /// The device's own channel map, in order: channel N is tagged with the
+    /// device's position N, so that port N carries it. On a device that
+    /// states no map, or one the audio system cannot route by, the channels
+    /// stay untagged.
+    DeviceOrder,
+    /// One position per channel (`FL`, `FR`, …): the audio system routes
+    /// each to the device port of that position. A name it does not know
+    /// leaves its channel untagged.
+    Named(Vec<String>),
 }
 
 /// A device that agreed to a format, not started yet.
@@ -97,15 +114,21 @@ pub fn output_host_label() -> Option<&'static str> {
 mod imp {
     use anyhow::Result;
 
-    use super::SyncOutputConfig;
+    use super::{ChannelMap, SyncOutputConfig};
+    use crate::pipewire::{channel_position_id, sink_channel_map};
     use crate::sync_output::core::OutputCore;
     use crate::sync_output::pipewire::{PipewireSyncOutput, PipewireSyncOutputConfig};
 
-    pub struct Negotiated(SyncOutputConfig);
+    pub struct Negotiated {
+        config: SyncOutputConfig,
+        /// The positions the channels are tagged with, from the map asked
+        /// for; `None` leaves them untagged.
+        positions: Option<Vec<String>>,
+    }
 
     impl Negotiated {
         pub fn rate(&self) -> u32 {
-            self.0.rate
+            self.config.rate
         }
 
         pub fn host_label(&self) -> Option<&'static str> {
@@ -113,13 +136,13 @@ mod imp {
         }
 
         pub fn start(self, core: OutputCore) -> Result<Output> {
-            let config = self.0;
+            let Self { config, positions } = self;
             PipewireSyncOutput::start(
                 PipewireSyncOutputConfig {
                     node_name: config.node_name,
                     target: config.target,
                     channels: config.channels,
-                    positions: config.positions,
+                    positions,
                     rate: config.rate,
                     quantum: config.quantum,
                 },
@@ -127,6 +150,41 @@ mod imp {
             )
             .map(Output)
         }
+    }
+
+    /// The tags for `channels` channels played in order on `target`, whose
+    /// map is `map`: its first `channels` positions. None when the device
+    /// states no map, or one made of names PipeWire cannot route by (a null
+    /// sink's `1 2 3 …`): the session manager then links in order, which is
+    /// the same thing. A device with fewer channels than the stream is
+    /// refused: a channel left without a port of its own is not dropped by
+    /// the session manager but put on whatever port is free, a MIDI one
+    /// included, and the whole stream fails with it.
+    fn device_order_positions(
+        target: &str,
+        map: Option<&[String]>,
+        channels: u32,
+    ) -> Result<Option<Vec<String>>> {
+        let Some(map) = map else {
+            return Ok(None);
+        };
+        if map.iter().any(|name| channel_position_id(name).is_none()) {
+            log::info!(
+                "PipeWire sync output: {target} has a channel map PipeWire does not route by \
+                 ({}): the channels are linked in order, untagged",
+                map.join(" ")
+            );
+            return Ok(None);
+        }
+        let needed = channels as usize;
+        if map.len() < needed {
+            anyhow::bail!(
+                "{target} has {} channels; this output needs {needed} (by index, port N \
+                 carries speaker N)",
+                map.len()
+            );
+        }
+        Ok(Some(map[..needed].to_vec()))
     }
 
     pub struct Output(PipewireSyncOutput);
@@ -141,9 +199,43 @@ mod imp {
         }
     }
 
-    /// PipeWire plays any rate: there is nothing to agree on.
+    /// PipeWire plays any rate: nothing to agree on but the tags the
+    /// channels carry, which a device named by the config may give.
     pub fn negotiate(config: &SyncOutputConfig) -> Result<Negotiated> {
-        Ok(Negotiated(config.clone()))
+        let positions = match &config.channel_map {
+            ChannelMap::Unpositioned => None,
+            ChannelMap::Named(names) => Some(names.clone()),
+            ChannelMap::DeviceOrder => match config.target.as_deref() {
+                // The session's default sink is whichever the session
+                // manager picks: no map to read until a device is named.
+                None => None,
+                Some(target) => {
+                    // A daemon that does not answer is not a reason to play
+                    // nothing: the stream goes out untagged, as before.
+                    let map = sink_channel_map(target).unwrap_or_else(|e| {
+                        log::warn!(
+                            "PipeWire sync output: the channel map of {target} could not be \
+                             read ({e:#}); the channels are left untagged"
+                        );
+                        None
+                    });
+                    let positions =
+                        device_order_positions(target, map.as_deref(), config.channels)?;
+                    if let Some(positions) = &positions {
+                        log::info!(
+                            "PipeWire sync output: {target} routes by position; the channels take \
+                             its map in order ({})",
+                            positions.join(" ")
+                        );
+                    }
+                    positions
+                }
+            },
+        };
+        Ok(Negotiated {
+            config: config.clone(),
+            positions,
+        })
     }
 
     pub fn list_output_devices() -> Vec<(String, String)> {
@@ -152,6 +244,62 @@ mod imp {
 
     pub fn output_host_label() -> Option<&'static str> {
         None
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::device_order_positions;
+
+        fn names(list: &[&str]) -> Vec<String> {
+            list.iter().map(|s| s.to_string()).collect()
+        }
+
+        /// A device's map, in order, as far as the stream is wide.
+        #[test]
+        fn the_channels_take_the_devices_map_in_order() {
+            let sink = names(&[
+                "FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR", "AUX0", "AUX1", "AUX2", "AUX3",
+                "AUX4", "AUX5", "AUX6", "AUX7",
+            ]);
+            assert_eq!(
+                device_order_positions("nj2-sink", Some(&sink), 16).unwrap(),
+                Some(sink.clone())
+            );
+            // A narrower stream takes the first ports: a binaural pair on
+            // FL and FR.
+            assert_eq!(
+                device_order_positions("nj2-sink", Some(&sink), 2).unwrap(),
+                Some(names(&["FL", "FR"]))
+            );
+        }
+
+        /// No map, or one PipeWire cannot route by: untagged, linked in
+        /// order by the session manager.
+        #[test]
+        fn a_map_pipewire_does_not_know_leaves_the_channels_untagged() {
+            assert_eq!(device_order_positions("sink", None, 16).unwrap(), None);
+            let router = names(&["1", "2", "3", "4"]);
+            assert_eq!(
+                device_order_positions("truehdd_router", Some(&router), 4).unwrap(),
+                None
+            );
+            let partly = names(&["FL", "FR", "3", "4"]);
+            assert_eq!(
+                device_order_positions("sink", Some(&partly), 4).unwrap(),
+                None
+            );
+        }
+
+        /// A device too narrow for the stream is refused, and the message
+        /// says by how much.
+        #[test]
+        fn a_device_with_fewer_channels_is_refused() {
+            let stereo = names(&["FL", "FR"]);
+            let error = device_order_positions("usb-dac", Some(&stereo), 16).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("usb-dac has 2 channels"), "{message}");
+            assert!(message.contains("needs 16"), "{message}");
+        }
     }
 }
 
