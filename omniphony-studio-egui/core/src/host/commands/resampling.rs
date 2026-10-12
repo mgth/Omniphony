@@ -65,6 +65,13 @@ pub fn source_clock(state: &SharedState) -> String {
         .unwrap_or_else(|| SOURCE_CLOCKS[0].to_owned())
 }
 
+/// The one clock the input in use has, when it has only one: the renderer's
+/// own on its PipeWire sink. There the choice changes nothing, and a client
+/// shows this instead of offering it.
+pub fn fixed_source_clock(state: &SharedState) -> Option<&'static str> {
+    (state.read().app.input_active_mode.as_deref() == Some("pipewire")).then_some("own")
+}
+
 /// Ask for another source clock: shown at once and sent. A name that is not
 /// one of [`SOURCE_CLOCKS`] is not sent.
 pub fn set_source_clock(state: &SharedState, clock: &str) {
@@ -179,6 +186,20 @@ mod sync_setting_tests {
             sent[1].1[0],
             rosc::OscType::String("loop_bandwidth_hz".into())
         );
+    }
+
+    /// On the renderer's sink the clock is the renderer's, whatever was
+    /// asked for; on a pipe it is the one asked for.
+    #[test]
+    fn the_sink_has_one_clock() {
+        let (state, _rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        assert_eq!(fixed_source_clock(&state), None);
+        state.inner.lock().unwrap().app.input_active_mode = Some("pipewire".into());
+        set_source_clock(&state, "follow");
+        assert_eq!(fixed_source_clock(&state), Some("own"));
+        state.inner.lock().unwrap().app.input_active_mode = Some("pipe_bridge".into());
+        assert_eq!(fixed_source_clock(&state), None);
+        assert_eq!(source_clock(&state), "follow");
     }
 
     /// The source clock is one of the renderer's names: shown at once, sent

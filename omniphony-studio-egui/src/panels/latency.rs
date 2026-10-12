@@ -113,21 +113,25 @@ impl StudioSpike {
                 " ms",
             ),
         ];
-        // The clock the source runs on: taken at once, like a choice.
+        // The clock the source runs on: taken at once, like a choice. Where
+        // the input has only one, that one is shown and nothing is offered.
         let clock = resampling::source_clock(&self.host);
+        let fixed = resampling::fixed_source_clock(&self.host);
         let mut chosen = clock.clone();
         let label_of = |name: &str| t(&format!("sync.sourceClock.{name}"));
         widgets::label_row_help(ui, t("sync.sourceClock"), "help.sync.sourceClock", |ui| {
-            widgets::bounded_combo(ui, 200.0, |ui, width| {
-                egui::ComboBox::from_id_salt("sync-source-clock")
-                    .selected_text(label_of(&clock))
-                    .width(width)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        for name in resampling::SOURCE_CLOCKS {
-                            ui.selectable_value(&mut chosen, name.to_owned(), label_of(name));
-                        }
-                    })
+            ui.add_enabled_ui(fixed.is_none(), |ui| {
+                widgets::bounded_combo(ui, 200.0, |ui, width| {
+                    egui::ComboBox::from_id_salt("sync-source-clock")
+                        .selected_text(label_of(fixed.unwrap_or(&clock)))
+                        .width(width)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for name in resampling::SOURCE_CLOCKS {
+                                ui.selectable_value(&mut chosen, name.to_owned(), label_of(name));
+                            }
+                        })
+                });
             });
         });
         if chosen != clock {
