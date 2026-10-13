@@ -247,34 +247,49 @@ compensation at 0.5.2). Source lives in `mgth/mpv-omniphony`; its tag build
 publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
 (via the `OMNIPHONY_RELEASE_TOKEN` secret).
 
-1. The fork's `orender` branch (main tree `workflows/integration/mpv`, based
-   on the pinned `v0.41.0`) carries everything to ship and is pushed.
+1. The mpv-side code lives in the fork `mgth/mpv` and nowhere else
+   (mgth/mpv-omniphony#82): mpv-omniphony holds no patches and no copy of the
+   decoder, its builds compile a fork tag named in `mpv-fork.env`. The fork's
+   `orender` branch (main tree `workflows/integration/mpv`, based on the
+   pinned `v0.41.0`) carries everything to ship and is pushed, and
+   `orender-master` (the master track, for the FEL beta) carries the same
+   commits.
+   - If `orender_ffi/include/orender.h` changed since the last player
+     release, copy the generated header over the fork's
+     `common/orender_abi.h`, below its leading comment, on **both** branches.
+     mpv-omniphony's CI diffs the two and the release build refuses a
+     difference.
+   - Tag both heads and push the tags. A fork tag is never moved: the first
+     tags of a player version are `orender-vX.Y.Z` and
+     `orender-master-vX.Y.Z`, later ones add `.1`, `.2`, ….
 2. In `mpv-omniphony`:
-   - `scripts/regenerate-patches.sh <fork-path>` — regenerates `patches/`
-     from `v0.41.0..orender`. (`patches-master/` is the separate series for
-     the local Dolby Vision FEL build; it has its own regenerate script whose
-     default base ref is stale — base it on the parent of the first fork
-     commit — and it is NOT part of this release.)
-   - `cp <fork>/audio/decode/ad_orender.c src/ad_orender.c` (kept in sync as
-     the regenerate scripts remind).
+   - Update the two tags and their commits in `mpv-fork.env` (and
+     `MPV_MASTER_BASE` when `orender-master` was rebased). The scripts refuse
+     a tag that does not resolve to the commit recorded next to it.
    - Bump `OMNIPHONY_REF` in `.github/workflows/release.yml` to the new
-     Omniphony tag — the build compiles liborender **from source at that
-     ref**, so the Omniphony `vX.Y.Z` tag must exist before this repo's tag
-     build runs.
+     Omniphony tag, and the tagged-beta ref in `build-master-beta.yml` with
+     it — the build compiles liborender **from source at that ref**, so the
+     Omniphony `vX.Y.Z` tag must exist before this repo's tag build runs.
+     Until it does, the pull request's header check runs against `main`.
    - If the liborender ABI gained symbols, extend
      `.github/scripts/stub-liborender.sh` (successor of the old
      mock-liborender): dlsym-optional symbols only degrade gracefully in the
      CI loader tests, but the stub should stay representative of the real
      surface.
-   - `build-master.yml`, the master track's daily drift check, runs on the
-     PR too and fails as soon as mpv master has moved under
-     `patches-master/` — it had been red for four days before 0.6.0. Only
+   - The `fork-glue` job of its CI replays the fork's delta as two patch
+     series (ASIO, then orender) on the upstream base of each track, and
+     fails on a commit that mixes the two or on a vendored header that has
+     drifted. The series are attached to the release as
+     `…-patches.tar.gz`; nothing is committed.
+   - `build-master.yml`, the master track's daily drift check, merges the
+     fork's master tag into mpv master HEAD and fails as soon as mpv master
+     has moved under it — it had been red for four days before 0.6.0. Only
      `build-mpv` gates the stable bundle, so merge on that; but before the
      FEL beta tag, rebase the fork's `orender-master` onto
-     `upstream/master`, regenerate `patches-master/` with that base
-     (`scripts/regenerate-patches-master.sh <fork> <base>`) and merge it as
-     its own PR — `v0.6.0-fel-beta.2` was tagged after it (beta.1 died on an unreachable download host, see below), and the
-     AUR `mpv-omniphony-fel` pins the same base as `_mpvcommit`.
+     `upstream/master`, tag it, and update `mpv-fork.env` with the new tag
+     and `MPV_MASTER_BASE` as its own PR — `v0.6.0-fel-beta.2` was tagged
+     after such a rebase (beta.1 died on an unreachable download host, see
+     below).
 3. PR to its `main`; merge when its CI is green. Pushing workflow-file
    changes needs the SSH remote (`git@github.com-mgth:mgth/mpv-omniphony.git`);
    the HTTPS token lacks the `workflow` scope.
@@ -302,11 +317,13 @@ publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
    because the old x265 4.1 pin outlived its reason (ffmpeg had been rebuilt
    against the current x265) — the pin is gone; if the pairing breaks again
    the fix is a new pin or its removal, per the step's message.
-7. The local FEL build (`mpvo-fel`, `patches-master/`,
-   `scripts/build-fel-local.sh`) is a dev-only artifact, never released;
-   regenerate it locally whenever the fork's `orender` branch moves
-   (`FEL_RENDERER_DIR` selects which renderer checkout provides the
-   link-time liborender).
+7. The local FEL build (`mpvo-fel`, `scripts/build-fel-local.sh`) is a
+   dev-only artifact, never released. It assembles its tree with
+   mpv-omniphony's `scripts/mpv-source.sh master`, so it builds the fork's
+   tagged master track; to build fork work that is not tagged yet, point it
+   at the checkout (`MPV_FORK_URL=<fork> MPV_SOURCE_REF=orender-master`).
+   `FEL_RENDERER_DIR` selects which renderer checkout provides the link-time
+   liborender.
 
 ## 8. AUR packages — systematic, part of the release
 
@@ -319,8 +336,8 @@ truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
 | `orender` | every `v*` release |
 | `omniphony-studio` | every `v*` release (template in `packaging/arch/omniphony-studio`, depends on `orender` and links its layouts). From 0.7.0 it builds the native Studio and `provides`/`replaces` `omniphony-studio-egui`; up to 0.6.0 it built the Tauri Studio |
 | `omniphony-studio-egui` | no longer bumped from 0.7.0: the native Studio's separate package (0.6.0 only), folded into `omniphony-studio`. Ask the AUR for a merge into `omniphony-studio` once that package ships 0.7.0 |
-| `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
-| `mpv-omniphony-fel` | with mpv-omniphony; `_tag` names the tag whose `patches-master/` apply to `_mpvcommit` — at 0.6.0 the FEL beta tag `v0.6.0-fel-beta.2` (the master-track rebase), with `pkgver=0.6.0` — and `_mpvcommit` the mpv master SHA those patches were rebased on and a build verified (`makepkg -fCd` itself, or `scripts/build-fel-local.sh`) |
+| `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `_forktag` (the `MPV_FORK_STABLE_TAG` of `mpv-fork.env` at that tag: the package builds the fork's tag archive, nothing is patched), `depends=('orender>=X.Y.Z')` (the release-train couple) |
+| `mpv-omniphony-fel` | with mpv-omniphony; `_tag` names the mpv-omniphony tag (for `patches-libplacebo/` and the licence texts) and `_forktag` the fork's master-track tag at that tag (`MPV_FORK_MASTER_TAG`), whose archive replaces the mpv master snapshot plus `patches-master/` the package used up to 0.6.0; a build verified (`makepkg -fCd` itself, or `scripts/build-fel-local.sh`) |
 | `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag, fetched as the `v<_omniver>` archive (directory `Omniphony-<_omniver>`) — not a `liborender-v*` tag, which the PKGBUILD used to fetch and which no longer exists past 0.4.3 |
 
 The templates in `packaging/arch/` are kept in step with the AUR clones (the
