@@ -18,21 +18,30 @@ fi
 paths=()
 while IFS= read -r line; do paths+=("$line"); done < "$manifest"
 
-# The service first, if this installer wrote its unit: stopped and disabled
-# before its binary goes.
+# The service first, stopped and disabled before its binary goes: the unit
+# this installer wrote, or one Studio's "Install service" wrote for the
+# orender being removed, which would be left starting a file that is gone.
+ours=0
 for path in "${paths[@]}"; do
-    if [ "$path" = "$unit" ] && systemctl --user show-environment >/dev/null 2>&1; then
-        systemctl --user disable --now omniphony-renderer 2>/dev/null || true
-    fi
+    [ "$path" != "$unit" ] || ours=1
 done
+if [ "$ours" -eq 0 ] && [ -f "$unit" ] && grep -q "^ExecStart=\"\{0,1\}$root/studio/orender\"\{0,1\} " "$unit"; then
+    ours=1
+    paths+=("$unit")
+fi
+if [ "$ours" -eq 1 ] && systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user disable --now omniphony-renderer 2>/dev/null || true
+fi
 
 for path in "${paths[@]}"; do
     case "$path" in
         */) rm -rf "${path:?}" ;;
         "$HOME/.local/bin"/*)
-            # A command link the user has since replaced with a file of their
-            # own is theirs.
-            [ ! -L "$path" ] || rm -f "$path" ;;
+            # A command link the user has since replaced with a file or a link
+            # of their own is theirs.
+            case "$(readlink "$path" 2>/dev/null || true)" in
+                "$root"/*) rm -f "$path" ;;
+            esac ;;
         *)  rm -f "$path" ;;
     esac
 done

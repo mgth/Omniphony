@@ -54,7 +54,7 @@ unit="$unit_dir/omniphony-renderer.service"
 manifest="$root/installed.txt"
 
 # The player AppImage needs glibc 2.38, Studio and orender 2.35.
-glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}' || true)"
 if [ -n "$glibc" ] && [ "$(printf '%s\n' 2.38 "$glibc" | sort -V | head -n1)" != 2.38 ]; then
     echo "warning: glibc $glibc is older than the 2.38 the player needs;" >&2
     echo "         it will not start on this system (docs/install/linux.md)." >&2
@@ -86,16 +86,17 @@ systemd_reachable() { systemctl --user show-environment >/dev/null 2>&1; }
 # The renderer the unit runs: the real file, as Studio's "Install service"
 # names it, not the link in ~/.local/bin.
 orender="$root/studio/orender"
-# systemd reads ExecStart with its own quoting: the escapes Studio applies
-# (space, tab, newline, backslash, quotes).
-exec_start="ExecStart="
-for ((i = 0; i < ${#orender}; i++)); do
-    ch="${orender:i:1}"
-    case "$ch" in
-        ' '|$'\t'|$'\n'|'\'|'"'|"'") exec_start+="\\$ch" ;;
-        *) exec_start+="$ch" ;;
-    esac
-done
+# As the packaged unit has it for a plain path. A path with a space or another
+# character systemd reads specially goes between double quotes: systemd
+# refuses a backslash-escaped space in the executable's path.
+case "$orender" in
+    *[!A-Za-z0-9_./@:+-]*)
+        quoted="${orender//\\/\\\\}"
+        quoted="${quoted//\"/\\\"}"
+        exec_start="ExecStart=\"$quoted\"" ;;
+    *)
+        exec_start="ExecStart=$orender" ;;
+esac
 runs_this_orender() { [ -f "$unit" ] && grep -qF "$exec_start " "$unit"; }
 
 # A renderer service that runs this orender is restarted once the files are
@@ -131,10 +132,16 @@ done
 link() {
     local target="$1" name="$2"
     mkdir -p "$bin"
-    if [ -e "$bin/$name" ] && [ ! -L "$bin/$name" ]; then
-        echo "warning: $bin/$name exists and is not a link: left as it is." >&2
-        echo "         This release's is $target" >&2
-        return
+    # Replaced only when it is this installer's own link: a file, or a link
+    # to another build, is the user's.
+    if [ -e "$bin/$name" ] || [ -L "$bin/$name" ]; then
+        case "$(readlink "$bin/$name" 2>/dev/null || true)" in
+            "$root"/*) ;;
+            *)
+                echo "warning: $bin/$name exists and is not this installer's link: left as it is." >&2
+                echo "         This release's is $target" >&2
+                return ;;
+        esac
     fi
     ln -sfn "$target" "$bin/$name"
     record "$bin/$name"
@@ -147,7 +154,17 @@ link "$root/studio/omniphony-studio-egui" omniphony-studio-egui
 desktop() {
     local src="$1" dst="$apps/$2"
     mkdir -p "$apps"
-    sed "s|@BIN@|$bin|g" "$src" > "$dst.omniphony-new"
+    # The Exec key takes a quoted path, with its own escapes inside.
+    local escaped="$bin"
+    escaped="${escaped//\\/\\\\}"
+    escaped="${escaped//\"/\\\"}"
+    escaped="${escaped//\$/\\\$}"
+    escaped="${escaped//\`/\\\`}"
+    BIN="$escaped" awk '{
+        while ((i = index($0, "@BIN@")) > 0)
+            $0 = substr($0, 1, i - 1) ENVIRON["BIN"] substr($0, i + 5)
+        print
+    }' "$src" > "$dst.omniphony-new"
     mv -f "$dst.omniphony-new" "$dst"
     record "$dst"
 }
@@ -168,7 +185,9 @@ put "$here/uninstall.sh" "$root/uninstall.sh" 755
 # replace the other's. Kept from an earlier --service run on an upgrade.
 had_unit=0
 for line in ${previous[@]+"${previous[@]}"}; do
-    [ "$line" = "$unit" ] && had_unit=1
+    # Still there: a unit removed since (Studio's "Uninstall service") is not
+    # written again by an upgrade.
+    if [ "$line" = "$unit" ] && [ -f "$unit" ]; then had_unit=1; fi
 done
 if [ "$service" -eq 1 ] || [ "$had_unit" -eq 1 ]; then
     # A unit that already starts this orender is kept as it is: Studio may
@@ -199,9 +218,11 @@ for old in ${previous[@]+"${previous[@]}"}; do
         case "$old" in
             */) rm -rf "${old:?}" ;;
             "$bin"/*)
-                # A command link the user has since replaced with a file of
-                # their own is theirs.
-                [ ! -L "$old" ] || rm -f "$old" ;;
+                # A command link the user has since replaced with a file or a
+                # link of their own is theirs.
+                case "$(readlink "$old" 2>/dev/null || true)" in
+                    "$root"/*) rm -f "$old" ;;
+                esac ;;
             *)  rm -f "$old" ;;
         esac
     fi

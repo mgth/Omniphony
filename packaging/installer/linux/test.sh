@@ -97,7 +97,7 @@ has "$HOME/.local/share/icons/hicolor/128x128/apps/omniphony-studio-egui.png"
 [ "$(cat "$lib/liborender.so.0")" = "engine v1.0" ] || fail "engine not in the per-user folder"
 [ "$("$HOME/.local/bin/mpv-omniphony")" = "player v1.0" ] || fail "player link"
 [ "$("$HOME/.local/bin/omniphony-studio-egui")" = "studio v1.0" ] || fail "Studio link"
-grep -q "^Exec=$HOME/.local/bin/omniphony-studio-egui$" \
+grep -q "^Exec=\"$HOME/.local/bin/omniphony-studio-egui\"$" \
     "$HOME/.local/share/applications/omniphony-studio-egui.desktop" || fail "Studio menu entry"
 hasnt "$unit"
 hasnt "$HOME/.config/omniphony"
@@ -109,6 +109,9 @@ mkdir -p "$HOME/.config/omniphony"
 echo "render: {}" > "$HOME/.config/omniphony/config.yaml"
 rm "$HOME/.local/bin/orender"
 echo mine > "$HOME/.local/bin/orender"
+# ... and a link of the user's own, to a build of theirs.
+echo "#!/bin/sh" > "$HOME/my-studio"
+ln -sfn "$HOME/my-studio" "$HOME/.local/bin/omniphony-studio-egui"
 
 echo "== upgrade to 2.0, with the service"
 make_assets v2.0
@@ -119,6 +122,7 @@ second="$(bundle v2.0)"
 hasnt "$root/studio/only-in-1.0"
 hasnt "$root/studio.omniphony-old"
 [ "$(cat "$HOME/.local/bin/orender")" = mine ] || fail "the user's own orender was replaced"
+[ "$(readlink "$HOME/.local/bin/omniphony-studio-egui")" = "$HOME/my-studio" ] || fail "the user's own link was replaced"
 grep -q "loaded: $lib/libtest_bridge.so" "$work/install-2.log" || fail "the bridge check did not run"
 has "$unit"
 asked "--user enable --now omniphony-renderer"
@@ -155,8 +159,18 @@ echo "== a home directory with a space in its name"
     : > "$work/systemctl.log"
     "$second/install.sh" --service > /dev/null 2>&1 || fail "install with a space in HOME"
     asked "--user enable --now omniphony-renderer"
-    grep -qF "ExecStart=$work/home\\ dir/.local/lib/omniphony/studio/orender render " \
-        "$HOME/.config/systemd/user/omniphony-renderer.service" || fail "unit path not escaped"
+    spaced="$HOME/.config/systemd/user/omniphony-renderer.service"
+    grep -qF "ExecStart=\"$work/home dir/.local/lib/omniphony/studio/orender\" render " "$spaced" \
+        || fail "unit path not quoted"
+    grep -qF "Exec=\"$work/home dir/.local/bin/mpv-omniphony\" --ad=orender" \
+        "$HOME/.local/share/applications/mpv-omniphony.desktop" || fail "menu entry path not quoted"
+    if command -v systemd-analyze >/dev/null 2>&1; then
+        # systemd refuses a backslash-escaped space in the executable's path.
+        mkdir -p "$work/run2"
+        cp "$spaced" "$work/spaced.service"
+        verify="$(XDG_RUNTIME_DIR="$work/run2" systemd-analyze --user verify "$work/spaced.service" 2>&1 || true)"
+        ! grep -q "spaced.service" <<<"$verify" || { echo "$verify"; fail "systemd-analyze rejects the unit of a path with a space"; }
+    fi
     "$HOME/.local/lib/omniphony/uninstall.sh" > /dev/null || fail "uninstall with a space in HOME"
 )
 
@@ -166,7 +180,6 @@ echo "== uninstall"
 asked "--user disable --now omniphony-renderer"
 hasnt "$root"
 hasnt "$HOME/.local/bin/mpv-omniphony"
-hasnt "$HOME/.local/bin/omniphony-studio-egui"
 hasnt "$lib/liborender.so.0"
 hasnt "$unit"
 hasnt "$HOME/.local/share/applications/mpv-omniphony.desktop"
@@ -174,6 +187,20 @@ hasnt "$HOME/.local/share/icons/hicolor/128x128/apps/omniphony-studio-egui.png"
 has "$HOME/.config/omniphony/config.yaml"
 has "$lib/libtest_bridge.so"
 [ "$(cat "$HOME/.local/bin/orender")" = mine ] || fail "the user's own orender was removed"
+[ "$(readlink "$HOME/.local/bin/omniphony-studio-egui")" = "$HOME/my-studio" ] || fail "the user's own link was removed"
+
+echo "== a unit removed since is not written again; one Studio wrote goes with the uninstall"
+"$second/install.sh" --service > /dev/null 2>&1 || fail "install with the service"
+has "$unit"
+rm "$unit"
+"$second/install.sh" > /dev/null 2>&1 || fail "upgrade after the unit was removed"
+hasnt "$unit"
+# Studio's "Install service": the same unit, never recorded by the installer.
+printf '[Service]\nExecStart=%s render /tmp/orender.pipe --osc-port 9100\n' "$root/studio/orender" > "$unit"
+: > "$work/systemctl.log"
+"$root/uninstall.sh" > /dev/null 2>&1 || fail "uninstall with Studio's unit"
+asked "--user disable --now omniphony-renderer"
+hasnt "$unit"
 
 echo "== an orender older than check-bridges is never asked to run it"
 make_assets v0.9

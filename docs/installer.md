@@ -471,7 +471,10 @@ it differs from the text above:
   not the link in `~/.local/bin`: it is the path Studio's *Install service*
   writes for this install (it resolves its own executable), so the two units
   are the same text, and a `~/.local/bin/orender` of the user's own is not
-  what the service runs.
+  what the service runs. One exception to "the same text": a path with a
+  space or another special character goes between double quotes, because
+  systemd refuses the backslash-escaped space Studio writes for it (a defect
+  of Studio's own, outside this step).
 - **No decoder bridge** (decision C below). `install.sh` ends with
   `orender check-bridges` (step 4) and prints its report, or, with an orender
   that predates it, lists the bridge files next to the engine.
@@ -483,8 +486,11 @@ it differs from the text above:
   build now publishes the plain Studio archive too
   (`omniphony-studio-egui/scripts/stage-archive.sh`, shared with `release.yml`).
 - `uninstall.sh` is installed next to the program
-  (`~/.local/lib/omniphony/uninstall.sh`), and a command link the user has
-  replaced with a file of their own is left alone on upgrade and uninstall.
+  (`~/.local/lib/omniphony/uninstall.sh`). A command in `~/.local/bin` that
+  is not this installer's link (a file, or a link to another build) is left
+  alone on install, upgrade and uninstall. A unit removed since it was
+  installed is not written again by an upgrade, and a unit that starts the
+  `orender` being removed is disabled and removed with it, whoever wrote it.
 
 ## Decisions
 
