@@ -28,7 +28,6 @@
 
 pkgname=harletty-bridge
 # The first harletty release that ships the family plugins (bridge_api 0.6).
-# Its tag is not out yet: confirm the number, then refresh sha256sums.
 pkgver=0.9.0
 pkgrel=1
 pkgdesc="Format-decoder bridge plugins for the orender engine, one per codec family (loaded via dlopen at runtime)"
@@ -55,9 +54,8 @@ _families=(dolby dts iamf)
 
 source=("harletty-bridge-$pkgver.tar.gz::https://github.com/harletty/harletty-bridge/archive/refs/tags/v$pkgver.tar.gz"
         "omniphony-$_omniver.tar.gz::https://github.com/mgth/Omniphony/archive/refs/tags/v$_omniver.tar.gz")
-# Placeholders until both tags exist: run updpkgsums.
-sha256sums=('SKIP'
-            'SKIP')
+sha256sums=('a4e40f5a98991bd0c466ac054525756d35e66511084365019aab9f09c05b3b45'
+            'ad1a093ddbd83e71ed6182a49009f66b7b5c421efdd25915cc72451c33844f38')
 
 _bridge="harletty-bridge-$pkgver"
 
