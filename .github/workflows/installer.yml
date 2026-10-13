@@ -65,8 +65,12 @@ jobs:
           set -euo pipefail
           not_ready() { echo "::notice::$1"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
           has_asset() { # release, pattern
-            gh release view "$1" --repo "$GITHUB_REPOSITORY" --json assets \
-              --jq '.assets[].name' 2>/dev/null | grep -Eq "$2"
+            # Captured, then searched: `grep -q` leaving a pipe at its first
+            # match kills the writer, and pipefail turns a match into a miss.
+            local names
+            names="$(gh release view "$1" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' 2>/dev/null)" || return 1
+            grep -Eq "$2" <<<"$names"
           }
 
           player=
@@ -98,6 +102,13 @@ jobs:
           fi
           if [ "$EVENT" = release ] && [ "$RELEASE_TAG" != "$tag" ] && [ "$RELEASE_TAG" != "$player" ]; then
             not_ready "Omniphony $tag pairs with $player, not with $RELEASE_TAG: no installer."
+          fi
+          # The player's publication must not attach installers to an
+          # Omniphony release that is still a draft, or is a pre-release.
+          if [ "$EVENT" = release ]; then
+            state="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease \
+              --jq '"\(.isDraft) \(.isPrerelease)"' 2>/dev/null || true)"
+            [ "$state" = "false false" ] || not_ready "Omniphony $tag is not a published stable release: no installer."
           fi
           for asset in 'linux-x86_64\.tar\.gz' 'windows-x86_64\.zip'; do
             has_asset "$tag" "^omniphony-studio-egui-.*-$asset\$" \
@@ -140,6 +151,20 @@ jobs:
           gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
             --pattern 'mpv-omniphony-*-linux-x86_64.AppImage'
           ls -la assets
+
+      # The scripts are this ref's; the unit is the release's own, so a manual
+      # run for an older release installs the command line its orender takes.
+      - name: Take the renderer's unit from the release
+        run: |
+          set -euo pipefail
+          unit=packaging/systemd/omniphony-renderer.service
+          if git fetch --quiet --depth 1 origin "refs/tags/$TAG" \
+            && git cat-file -e "FETCH_HEAD:$unit" 2>/dev/null; then
+            git show "FETCH_HEAD:$unit" > "$unit"
+          else
+            echo "::notice::$TAG has no $unit: this ref's is used."
+          fi
+          git diff --stat -- "$unit"
 
       - name: Compose the installer
         run: |
