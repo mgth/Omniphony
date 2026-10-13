@@ -315,9 +315,9 @@ reports from the receiver turned into the reported output delay.
    never rendered as audio, the stated carrier byte rate for the transport
    count, and a decision on which clock the netjack2 manager's stream is
    slaved to on the audio machine.
-4. **Done on the fork's `orender` branch.** mpv: `--ad=iamf-iec61937`,
-   `AF_FORMAT_S_IAMF`, `ao_pcm` and `ao_pipewire`. Left: `orender-master`
-   and the mpv-omniphony patch sets.
+4. **Done.** mpv: `--ad=iamf-iec61937`, `AF_FORMAT_S_IAMF`, `ao_pcm` and
+   `ao_pipewire`, on both branches of the fork (`orender`, `orender-master`)
+   and in both mpv-omniphony patch sets.
 5. Audio machine: orender installed there with an `iamf` bridge, local config
    and layout; netjack2 channel plan (split or widen); link null test; fixed
    `--audio-delay`; listening.
