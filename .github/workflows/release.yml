@@ -200,8 +200,7 @@ jobs:
       - name: Build the renderer and the engine library
         working-directory: omniphony-renderer
         run: |
-          cargo build --release --locked
-          cargo build --release --locked -p orender_ffi
+          cargo build --release --locked -p omniphony-renderer -p orender_ffi
 
       # What the archives and installers below ship must start on a Windows
       # without the Visual C++ Redistributable (static C runtime, each
