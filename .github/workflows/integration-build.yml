@@ -133,8 +133,7 @@ jobs:
       - name: Build the renderer and the engine library
         working-directory: omniphony-renderer
         run: |
-          cargo build --release --locked
-          cargo build --release --locked -p orender_ffi
+          cargo build --release --locked -p omniphony-renderer -p orender_ffi
 
       # The Studio's installers (#677), with the orender and engine library
       # built above. Its own build tree and toolchain (rust-toolchain.toml in

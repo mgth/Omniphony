@@ -145,12 +145,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir assets
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+          mkdir release-files
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
             --pattern 'omniphony-studio-egui-*-linux-x86_64.tar.gz'
-          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
             --pattern 'mpv-omniphony-*-linux-x86_64.AppImage'
-          ls -la assets
+          ls -la release-files
 
       # The scripts are this ref's; the unit is the release's own, so a manual
       # run for an older release installs the command line its orender takes.
@@ -170,8 +170,8 @@ jobs:
         run: |
           set -euo pipefail
           bundle="$(packaging/installer/linux/build.sh "$TAG" \
-            assets/omniphony-studio-egui-*-linux-x86_64.tar.gz \
-            assets/mpv-omniphony-*-linux-x86_64.AppImage out)"
+            release-files/omniphony-studio-egui-*-linux-x86_64.tar.gz \
+            release-files/mpv-omniphony-*-linux-x86_64.AppImage out)"
           echo "bundle=$bundle" >> "$GITHUB_ENV"
 
       # A plain user in a container with only what a desktop always has: the
@@ -256,18 +256,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir assets
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+          mkdir release-files
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
             --pattern 'omniphony-studio-egui-*-windows-x86_64.zip'
-          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
             --pattern 'mpv-omniphony-*-windows-x86_64.zip'
-          ls -la assets
+          ls -la release-files
 
       - name: Compose the installer
         run: |
           packaging/installer/windows/build.sh "$TAG" \
-            assets/omniphony-studio-egui-*-windows-x86_64.zip \
-            assets/mpv-omniphony-*-windows-x86_64.zip out
+            release-files/omniphony-studio-egui-*-windows-x86_64.zip \
+            release-files/mpv-omniphony-*-windows-x86_64.zip out
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
