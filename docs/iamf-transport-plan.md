@@ -244,9 +244,11 @@ sample (`word / 32768`, which a 32-bit float holds exactly).
   IAMF burst until one has given audio.
 - The FIFO and a file needed nothing beyond the bridge arm.
 
-Not done: no control in the Studio for `carrier_channels` (the config file,
-the command line and the option over OSC set it); the applied input state
-does not say that the stream is a carrier.
+In the Studio, the Audio Input panel has the carrier sink's switch and its
+channels in the PipeWire group, for an engine that declares the option, and
+its status line says when the sink that runs is a carrier sink. Not done:
+nothing says that a carrier is being recognised on the plain sink, beyond
+the engine's log.
 
 Checked, with an isolated renderer on a sink of its own and mpv
 (`--ad=iamf-iec61937`) as the sender. A render is compared, as a file, with

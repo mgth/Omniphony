@@ -123,6 +123,58 @@ pub fn set_live_input_description(state: &SharedState, description: String) {
     send_input_document(state, false);
 }
 
+/// The option that makes the renderer's sink a carrier sink
+/// (`docs/iamf-transport-plan.md`): its channels, or unset for the sink that
+/// takes audio.
+const CARRIER_CHANNELS_OPTION: &str = "live_input_carrier_channels";
+/// The channels a carrier sink can have, as the renderer bounds them, and
+/// what switching one on asks for: the width of the sender's default.
+pub const CARRIER_CHANNELS: std::ops::RangeInclusive<u16> = 4..=64;
+pub const DEFAULT_CARRIER_CHANNELS: u16 = 8;
+
+/// Whether the renderer's sink can be made a carrier sink: its engine
+/// declares the option. One that does not would take the write for nothing.
+pub fn carrier_sink_offered(state: &SharedState) -> bool {
+    state.read().declares_option(CARRIER_CHANNELS_OPTION)
+}
+
+/// The carrier sink asked for, by its channels; `None` is the sink that
+/// takes audio.
+pub fn carrier_channels(state: &SharedState) -> Option<u16> {
+    state
+        .read()
+        .host_option_f64(CARRIER_CHANNELS_OPTION)
+        .map(|channels| channels.round() as u16)
+        .filter(|channels| CARRIER_CHANNELS.contains(channels))
+}
+
+/// Ask for a carrier sink of `channels` (bounded), or with `None` for the
+/// sink that takes audio: shown at once and sent, to take at the next Apply
+/// like the rest of the input.
+pub fn set_carrier_channels(state: &SharedState, channels: Option<u16>) {
+    let channels =
+        channels.map(|channels| channels.clamp(*CARRIER_CHANNELS.start(), *CARRIER_CHANNELS.end()));
+    state.inner.lock().unwrap().set_host_option(
+        CARRIER_CHANNELS_OPTION,
+        channels.map_or(serde_json::Value::Null, |channels| {
+            serde_json::json!(channels)
+        }),
+    );
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_OPTION.to_string(),
+            args: vec![
+                rosc::OscType::String(CARRIER_CHANNELS_OPTION.to_owned()),
+                // (No value unsets an optional option.)
+                channels.map_or(rosc::OscType::Nil, |channels| {
+                    rosc::OscType::Int(i32::from(channels))
+                }),
+            ],
+        },
+    );
+}
+
 /// A single bridge library path; empty means "auto-detect". The list of one
 /// it is, sent as the list to an engine that has one.
 pub fn set_render_bridge_path(state: &SharedState, path: String) {
@@ -172,6 +224,56 @@ mod apply_tests {
             ]
         );
         assert_eq!(state.read().app.input_apply_pending, Some(1));
+    }
+
+    /// A carrier sink is asked for through the option, bounded as the
+    /// renderer bounds it, and unset with no value; the model shows what was
+    /// asked at once. It is offered only by an engine that declares it.
+    #[test]
+    fn a_carrier_sink_is_an_option_write() {
+        let (state, rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        assert!(!carrier_sink_offered(&state));
+        state.inner.lock().unwrap().options_schema = Some(serde_json::json!([
+            {"key": CARRIER_CHANNELS_OPTION, "group": {"key": "live_input", "mode": "staged"}}
+        ]));
+        assert!(carrier_sink_offered(&state));
+        assert_eq!(carrier_channels(&state), None);
+
+        let sent = |rx: &std::sync::mpsc::Receiver<crate::osc::Control>| {
+            rx.try_iter()
+                .filter_map(|control| match control {
+                    crate::osc::Control::Send { address, args }
+                        if address == osc_contract::CONTROL_OPTION =>
+                    {
+                        Some(args)
+                    }
+                    _ => None,
+                })
+                .last()
+                .expect("an option was written")
+        };
+        set_carrier_channels(&state, Some(16));
+        assert_eq!(carrier_channels(&state), Some(16));
+        assert_eq!(
+            sent(&rx),
+            [
+                rosc::OscType::String(CARRIER_CHANNELS_OPTION.into()),
+                rosc::OscType::Int(16)
+            ]
+        );
+        set_carrier_channels(&state, Some(500));
+        assert_eq!(carrier_channels(&state), Some(64));
+        set_carrier_channels(&state, Some(1));
+        assert_eq!(carrier_channels(&state), Some(4));
+        set_carrier_channels(&state, None);
+        assert_eq!(carrier_channels(&state), None);
+        assert_eq!(
+            sent(&rx),
+            [
+                rosc::OscType::String(CARRIER_CHANNELS_OPTION.into()),
+                rosc::OscType::Nil
+            ]
+        );
     }
 
     /// The document carries what the renderer's input takes: the mode and

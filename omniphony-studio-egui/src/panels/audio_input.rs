@@ -33,7 +33,7 @@ impl StudioSpike {
     pub(crate) fn audio_input_section(&mut self, ui: &mut Ui) {
         let policy = crate::host::capabilities::ActionPolicy::of(&self.host);
         let bridges = bridges::Snapshot::read(&self.host);
-        let (mode, active, pipe, error, node, description, pending) = {
+        let (mode, active, pipe, error, node, description, pending, applied_channels) = {
             let live = self.host.read();
             (
                 live.app
@@ -46,8 +46,13 @@ impl StudioSpike {
                 live.app.live_input.node.clone().unwrap_or_default(),
                 live.app.live_input.description.clone().unwrap_or_default(),
                 live.app.input_apply_pending.unwrap_or(0) != 0,
+                live.app.input_channels,
             )
         };
+        // The carrier sink: whether this engine has one to offer, and the
+        // channels of the one asked for.
+        let carrier_offered = input::carrier_sink_offered(&self.host);
+        let carrier = input::carrier_channels(&self.host);
         let pipewire = mode == "pipewire";
         let summary = tf(
             if pipewire {
@@ -90,6 +95,16 @@ impl StudioSpike {
                         ),
                     ],
                 );
+                // (The sink that runs states its channels when it is a carrier
+                // sink: the one that takes audio has the stream's.)
+                if let Some(channels) =
+                    applied_channels.filter(|_| active.as_deref() == Some("pipewire"))
+                {
+                    status.push_str(&tf(
+                        "input.status.carrier",
+                        &[("channels", &channels.to_string())],
+                    ));
+                }
                 if let Some(error) = &error {
                     status.push_str(&tf("input.status.error", &[("error", error)]));
                 }
@@ -162,6 +177,34 @@ impl StudioSpike {
                                 "Omniphony Bridge Input",
                             ) {
                                 input::set_live_input_description(&self.host, description);
+                            }
+                            // A carrier sink: its switch, then the channels
+                            // it gates.
+                            if carrier_offered {
+                                let mut on = carrier.is_some();
+                                if widgets::switch_row_help(
+                                    ui,
+                                    t("input.carrierSink"),
+                                    "help.input.carrierChannels",
+                                    &mut on,
+                                ) {
+                                    input::set_carrier_channels(
+                                        &self.host,
+                                        on.then_some(input::DEFAULT_CARRIER_CHANNELS),
+                                    );
+                                }
+                                if let Some(mut channels) = carrier {
+                                    widgets::label_row(ui, t("input.carrierChannels"), |ui| {
+                                        let field = egui::DragValue::new(&mut channels)
+                                            .speed(0.1)
+                                            .range(input::CARRIER_CHANNELS);
+                                        if widgets::number_field(ui, widgets::FIELD_WIDTH, field)
+                                            .changed()
+                                        {
+                                            input::set_carrier_channels(&self.host, Some(channels));
+                                        }
+                                    });
+                                }
                             }
                         });
                     } else {
