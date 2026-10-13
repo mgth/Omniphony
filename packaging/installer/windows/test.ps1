@@ -77,11 +77,24 @@ Has $startup
 $link = (New-Object -ComObject WScript.Shell).CreateShortcut($startup)
 if ($link.TargetPath -ne "$dir\studio\orender.exe") { Fail "logon start target: $($link.TargetPath)" }
 if ($link.Arguments -ne $renderArgs) { Fail "logon start arguments: $($link.Arguments)" }
+if ($link.WorkingDirectory -ne "$dir\studio") { Fail "logon start folder: $($link.WorkingDirectory)" }
+$studioLink = (New-Object -ComObject WScript.Shell).CreateShortcut("$menu\Omniphony\Omniphony Studio.lnk")
+if ($studioLink.WorkingDirectory -ne "$dir\studio") { Fail "Studio shortcut folder: $($studioLink.WorkingDirectory)" }
 if ((UninstallValue CurrentUser 'DisplayVersion') -ne 'v2.0') { Fail 'uninstall entry not upgraded' }
 
 Write-Host '== an upgrade without the switch keeps the logon start'
 if ((Setup $v2 @('/S')) -ne 0) { Fail 'second install of 2.0' }
 Has $startup
+
+Write-Host '== a program still running refuses the uninstall, and nothing is removed'
+$held = [System.IO.File]::Open("$dir\studio\orender.exe", 'Open', 'Read', 'Read')
+try {
+    # In place (_?=), so the exit code is the uninstaller's own.
+    $code = Setup "$dir\uninstall.exe" @('/S', "_?=$dir")
+    if ($code -eq 0) { Fail 'the uninstaller ran with a file in use' }
+} finally { $held.Close() }
+Has "$dir\player\mpv.exe"; Has "$lib\orender.dll"; Has $startup; Has "$dir\uninstall.exe"
+if ((UninstallValue CurrentUser 'DisplayVersion') -ne 'v2.0') { Fail 'uninstall entry removed by a refused uninstall' }
 
 Write-Host '== per user: uninstall'
 Uninstall $dir

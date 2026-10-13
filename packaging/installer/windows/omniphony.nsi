@@ -14,8 +14,10 @@
 ; Switches (after /S for a silent run):
 ;   /STARTUP          start the renderer when the user logs on (the unchecked
 ;                     component of the wizard)
-;   /ALLUSERS         per machine, under %ProgramFiles%\Omniphony (elevates).
-;                     Not offered by the wizard.
+;   /ALLUSERS         per machine, under %ProgramFiles%\Omniphony. The wizard
+;                     does not offer it; started with it, it elevates through
+;                     UAC. A silent run must already be elevated (exit code 2
+;                     otherwise).
 ;   /SERVICE          with /ALLUSERS: install the renderer as a Windows
 ;   /SERVICE=auto     service, started on demand, or at boot with =auto.
 ;                     Not offered by the wizard: audio output from session 0
@@ -91,18 +93,27 @@ Var WasRunning     ; "1" when the service was stopped for an upgrade
   Abort "${MESSAGE}"
 !macroend
 
-; Per machine needs an administrator: ask once, through UAC, with the same
-; command line.
-!macro ElevateIfMachine UN
+; Per machine needs an administrator. A wizard asks once, through UAC, and
+; waits for the elevated copy; a silent run is refused instead, since it could
+; neither answer the prompt nor hand back that copy's exit code. TARGET is the
+; program to start again: the uninstaller runs from a temporary copy, which
+; cannot be started a second time.
+!macro ElevateIfMachine TARGET KEEP_DIR
   ${If} $Machine == "1"
     UserInfo::GetAccountType
     Pop $0
     ${If} $0 != "Admin"
-      ${GetParameters} $1
       ${If} ${Silent}
-        StrCpy $1 "/S $1"
+        SetErrorLevel 2
+        Quit
       ${EndIf}
-      ExecShell "runas" "$EXEPATH" "$1"
+      ${GetParameters} $1
+      ; NSIS has already taken /D= off the command line.
+      ${If} "${KEEP_DIR}" == "1"
+      ${AndIf} $INSTDIR != ""
+        StrCpy $1 "$1 /D=$INSTDIR"
+      ${EndIf}
+      ExecShellWait "runas" "${TARGET}" "$1"
       Quit
     ${EndIf}
   ${EndIf}
@@ -121,60 +132,94 @@ Var WasRunning     ; "1" when the service was stopped for an upgrade
   ${EndIf}
 !macroend
 
-; "1" on the stack when the renderer service exists and runs.
-!macro ServiceRunning RESULT
+; The renderer service: "" when there is none, "stopped", or "active" while it
+; runs, starts or stops. A stopping service still holds orender.exe. Asked of
+; the service manager itself rather than read from the text sc.exe prints.
+!macro ServiceState RESULT
   StrCpy ${RESULT} ""
-  nsExec::ExecToStack 'sc.exe query ${SERVICE_NAME}'
-  Pop $R0
-  Pop $R1
-  ${If} $R0 == 0
-    ClearErrors
-    ${WordFind} "$R1" "RUNNING" "E+1{" $R2
-    ${IfNot} ${Errors}
-      StrCpy ${RESULT} "1"
+  ; SC_MANAGER_CONNECT, then SERVICE_QUERY_STATUS: both open to a plain user.
+  System::Call 'advapi32::OpenSCManagerW(p 0, p 0, i 0x0001) p .R0'
+  ${If} $R0 P<> 0
+    System::Call 'advapi32::OpenServiceW(p R0, w "${SERVICE_NAME}", i 0x0004) p .R1'
+    ${If} $R1 P<> 0
+      StrCpy ${RESULT} "active"
+      ; SERVICE_STATUS, seven DWORDs: dwCurrentState is the second,
+      ; SERVICE_STOPPED is 1.
+      System::Call '*(i 0, i 0, i 0, i 0, i 0, i 0, i 0) p .R7'
+      System::Call 'advapi32::QueryServiceStatus(p R1, p R7) i .R8'
+      System::Call '*$R7(i, i .R2)'
+      System::Free $R7
+      ${If} $R8 != 0
+      ${AndIf} $R2 == 1
+        StrCpy ${RESULT} "stopped"
+      ${EndIf}
+      System::Call 'advapi32::CloseServiceHandle(p R1)'
     ${EndIf}
+    System::Call 'advapi32::CloseServiceHandle(p R0)'
   ${EndIf}
 !macroend
 
-!macro StopService
+; Stop the service and wait until it has stopped: orender answers the stop
+; request at once and takes up to its 30 s to end. OK is "1" once it is
+; stopped, "" when it could not be (no rights to stop it, or it never ended).
+!macro StopService OK
+  StrCpy ${OK} ""
   nsExec::ExecToLog 'sc.exe stop ${SERVICE_NAME}'
-  Pop $R0
-  ; Windows refuses to replace a running executable: wait for it to go.
+  Pop $R6
   StrCpy $R3 0
   ${Do}
-    Sleep 500
-    !insertmacro ServiceRunning $R4
-    IntOp $R3 $R3 + 1
-    ${If} $R4 == ""
-    ${OrIf} $R3 > 40
+    !insertmacro ServiceState $R4
+    ${If} $R4 != "active"
+      StrCpy ${OK} "1"
       ${ExitDo}
     ${EndIf}
+    ; Refused (a per-user run cannot stop a service): waiting changes nothing.
+    ${If} $R6 != 0
+    ${AndIf} $R3 >= 4
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R3 > 80
+      ${ExitDo}
+    ${EndIf}
+    Sleep 500
+    IntOp $R3 $R3 + 1
   ${Loop}
 !macroend
 
-; ── Install ──────────────────────────────────────────────────────────────────
+!define SERVICE_HINT "Stop it from Omniphony Studio, or with `sc stop ${SERVICE_NAME}` from an administrator prompt, then run this again."
 
 ; A file that exists and cannot be opened for writing is loaded by a running
-; program: Windows would refuse to replace it.
+; program: Windows would refuse to replace or delete it. A service stopped
+; for the occasion goes back to running before the message.
 !macro RefuseIfLocked FILE
   ${If} ${FileExists} "${FILE}"
     ClearErrors
     FileOpen $R0 "${FILE}" a
     ${If} ${Errors}
-      !insertmacro Fail "In use: ${FILE}. Close mpv, Omniphony Studio and the renderer, then run the installer again."
+      ${If} $WasRunning == "1"
+        nsExec::ExecToLog 'sc.exe start ${SERVICE_NAME}'
+        Pop $R0
+      ${EndIf}
+      !insertmacro Fail "In use: ${FILE}. Close mpv, Omniphony Studio and the renderer, then run this again. A renderer running as a service: ${SERVICE_HINT}"
     ${EndIf}
     FileClose $R0
   ${EndIf}
 !macroend
 
+; ── Install ──────────────────────────────────────────────────────────────────
+
 Section "Player, Studio and engine" SecCore
   SectionIn RO
 
-  ; The renderer service of an earlier install holds orender.exe.
+  ; The renderer service of an earlier install, or Studio's, holds orender.exe.
   StrCpy $WasRunning ""
-  !insertmacro ServiceRunning $WasRunning
-  ${If} $WasRunning == "1"
-    !insertmacro StopService
+  !insertmacro ServiceState $0
+  ${If} $0 == "active"
+    !insertmacro StopService $1
+    ${If} $1 != "1"
+      !insertmacro Fail "The renderer service (${SERVICE_NAME}) is running and could not be stopped from here. ${SERVICE_HINT}"
+    ${EndIf}
+    StrCpy $WasRunning "1"
   ${EndIf}
   !insertmacro RefuseIfLocked "$INSTDIR\player\mpv.exe"
   !insertmacro RefuseIfLocked "$INSTDIR\studio\omniphony-studio-egui.exe"
@@ -182,7 +227,15 @@ Section "Player, Studio and engine" SecCore
   !insertmacro RefuseIfLocked "$EngineDir\orender.dll"
 
   ; What the release this one replaces installed and this one no longer has.
-  ${If} ${FileExists} "$INSTDIR\uninstall.exe"
+  ; Only this product's own uninstaller, the one the registry names for this
+  ; folder: any other uninstall.exe found there is someone else's.
+  ${If} $Machine == "1"
+    ReadRegStr $0 HKLM "${UNINST_KEY}" "InstallLocation"
+  ${Else}
+    ReadRegStr $0 HKCU "${UNINST_KEY}" "InstallLocation"
+  ${EndIf}
+  ${If} $0 == "$INSTDIR"
+  ${AndIf} ${FileExists} "$INSTDIR\uninstall.exe"
     ExecWait '"$INSTDIR\uninstall.exe" /S /UPGRADE _?=$INSTDIR'
   ${EndIf}
 
@@ -228,10 +281,14 @@ SectionEnd
 
 Section "Start menu shortcuts" SecShortcuts
   CreateDirectory "$SMPROGRAMS\${PRODUCT}"
+  ; A shortcut starts in the output folder of the moment.
+  SetOutPath "$INSTDIR\studio"
   CreateShortCut "$SMPROGRAMS\${PRODUCT}\Omniphony Studio.lnk" "$INSTDIR\studio\omniphony-studio-egui.exe"
   ; The player's own default decoders are left alone: this entry asks for
   ; Omniphony's.
+  SetOutPath "$INSTDIR\player"
   CreateShortCut "$SMPROGRAMS\${PRODUCT}\mpv-omniphony.lnk" "$INSTDIR\player\mpv.exe" "--ad=orender --player-operation-mode=pseudo-gui"
+  SetOutPath "$INSTDIR"
   CreateShortCut "$SMPROGRAMS\${PRODUCT}\Uninstall Omniphony.lnk" "$INSTDIR\uninstall.exe"
 SectionEnd
 
@@ -239,17 +296,25 @@ SectionEnd
 ; per-user engine folder. A minimized console window, since orender is a
 ; console program; closing it stops the renderer.
 Section /o "Start the renderer when I log on" SecStartup
+  SetOutPath "$INSTDIR\studio"
   CreateShortCut "$SMSTARTUP\${STARTUP_LINK}" "$INSTDIR\studio\orender.exe" "${RENDER_ARGS}" "" 0 SW_SHOWMINIMIZED
+  SetOutPath "$INSTDIR"
+SectionEnd
+
+; Unticked in the wizard on an upgrade: the logon start goes. A silent upgrade
+; finds it ticked when it exists (.onInit) and keeps it.
+Section "-Logon start off"
+  ${IfNot} ${SectionIsSelected} ${SecStartup}
+    Delete "$SMSTARTUP\${STARTUP_LINK}"
+  ${EndIf}
 SectionEnd
 
 ; Per machine with /SERVICE only. The service Studio's "Install service"
 ; creates: same name, same command line.
 Section "-Renderer service"
   ${If} $Service != ""
-    nsExec::ExecToStack 'sc.exe query ${SERVICE_NAME}'
-    Pop $0
-    Pop $1
-    ${If} $0 == 0
+    !insertmacro ServiceState $0
+    ${If} $0 != ""
       nsExec::ExecToLog 'sc.exe config ${SERVICE_NAME} binPath= "\"$INSTDIR\studio\orender.exe\" ${RENDER_ARGS}" start= $Service DisplayName= "Omniphony Renderer"'
     ${Else}
       nsExec::ExecToLog 'sc.exe create ${SERVICE_NAME} binPath= "\"$INSTDIR\studio\orender.exe\" ${RENDER_ARGS}" start= $Service DisplayName= "Omniphony Renderer"'
@@ -328,7 +393,7 @@ Function .onInit
     !insertmacro SelectSection ${SecStartup}
   ${EndIf}
 
-  !insertmacro ElevateIfMachine ""
+  !insertmacro ElevateIfMachine "$EXEPATH" "1"
   !insertmacro Folders
   ; An upgrade shows the logon start as it is.
   ${If} ${FileExists} "$SMSTARTUP\${STARTUP_LINK}"
@@ -368,7 +433,7 @@ Function un.onInit
   ${IfNot} ${Errors}
     StrCpy $Upgrade "1"
   ${EndIf}
-  !insertmacro ElevateIfMachine "un."
+  !insertmacro ElevateIfMachine "$INSTDIR\uninstall.exe" "0"
   !insertmacro Folders
   ${If} $Machine == "1"
     ReadRegStr $0 HKLM "${UNINST_KEY}" "EngineDir"
@@ -386,7 +451,21 @@ Section "Uninstall"
     ReadRegStr $0 HKLM "${UNINST_KEY}" "Service"
     ${If} $Machine == "1"
     ${AndIf} $0 == "1"
-      !insertmacro StopService
+      !insertmacro StopService $1
+      ${If} $1 != "1"
+        !insertmacro Fail "The renderer service (${SERVICE_NAME}) could not be stopped. ${SERVICE_HINT}"
+      ${EndIf}
+    ${EndIf}
+    ; Nothing is removed while a program of this install runs: a file left
+    ; behind would have no uninstaller any more. That includes a renderer
+    ; started by the logon shortcut, by Studio, or by a service Studio made.
+    !insertmacro RefuseIfLocked "$INSTDIR\player\mpv.exe"
+    !insertmacro RefuseIfLocked "$INSTDIR\studio\omniphony-studio-egui.exe"
+    !insertmacro RefuseIfLocked "$INSTDIR\studio\orender.exe"
+    !insertmacro RefuseIfLocked "$EngineDir\orender.dll"
+    !insertmacro RefuseIfLocked "$INSTDIR\player\orender.dll"
+    ${If} $Machine == "1"
+    ${AndIf} $0 == "1"
       nsExec::ExecToLog 'sc.exe delete ${SERVICE_NAME}'
       Pop $0
     ${EndIf}

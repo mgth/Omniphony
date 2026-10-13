@@ -521,11 +521,24 @@ differs from the text above:
   wizard offers neither. They move into the wizard once audio output from
   session 0 has been checked by hand with WASAPI and with an ASIO driver;
   until then the install page does not mention them.
-- **Running programs**: the installer stops the renderer service for the copy
-  and starts it again after, and refuses to continue while `mpv.exe`, Studio,
-  `orender.exe` or the per-user `orender.dll` is in use. It does not stop a
-  renderer started by the logon shortcut or by Studio: the message asks for
-  it to be closed.
+- **Running programs**: the installer stops the renderer service for the copy,
+  waits until it has stopped (orender answers the stop request at once and
+  takes up to 30 s to end) and starts it again after, also when it gives up.
+  It refuses to continue while `mpv.exe`, Studio, `orender.exe` or the
+  per-user `orender.dll` is in use, or when it may not stop the service (a
+  per-user run and a service Studio installed). It does not stop a renderer
+  started by the logon shortcut or by Studio: the message asks for it to be
+  closed. The uninstaller makes the same checks before it removes anything,
+  so it never leaves files without an uninstaller; it does not stop the logon
+  renderer either, which is where it differs from *Uninstall* above.
+- **Elevation**: per-machine mode started from the wizard, or its uninstaller
+  started from the Start menu, asks once through UAC and waits for the
+  elevated copy. A silent per-machine run must already be elevated and ends
+  with exit code 2 otherwise: it could neither answer the prompt nor hand
+  back that copy's exit code.
+- **An upgrade runs only this product's uninstaller**: the `uninstall.exe` of
+  the folder the registry names as the earlier install, never one that
+  merely happens to be in the chosen folder.
 
 Tests. `test.ps1` runs on `windows-latest` (job `windows-scripts`, on every
 pull request that touches the installer) with stand-in release files: per
