@@ -591,7 +591,7 @@ Each step is one PR, merged before the next is built on it.
 | 7 | harletty-bridge | Release, build scripts, CI matrix, isolation check per plugin; the combined cdylib leaves the release. | harletty/harletty-bridge#137 |
 | 8 | Omniphony | Studio egui bridge list. | #788 |
 | 9 | Omniphony | Packaging, installers, install pages, `wfbuild.sh`. | #789, open |
-| 10 | both | The libraries' names (`harletty_bridge`, `alicia_bridge`, `eclipsa_bridge`); the rule for a request written for harletty's library replaces the combined-library substitution; Save writes `bridge_paths` always. | PRNUM |
+| 10 | both | The libraries' names (`harletty_bridge`, `alicia_bridge`, `eclipsa_bridge`); the rule for a request written for harletty's library replaces the combined-library substitution; Save writes `bridge_paths` always. | #841, harletty/harletty-bridge#151 |
 
 Steps 5 and 8 depend on nothing but their predecessors in the same repo and
 can run alongside 2–4.
