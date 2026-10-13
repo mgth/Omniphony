@@ -478,7 +478,8 @@ it differs from the text above:
 
 Steps 5 and 6 are the pull request that adds this paragraph:
 `packaging/installer/windows/` with `omniphony.nsi`, `build.sh` (composition,
-on Linux or in Git Bash), and the Windows jobs of `installer.yml`. Where it
+with the NSIS of Ubuntu 24.04: the installer is compiled on Linux and checked
+on Windows), and the Windows jobs of `installer.yml`. Where it
 differs from the text above:
 
 - **A hand-written NSIS script, not cargo-packager's template.** cargo-packager

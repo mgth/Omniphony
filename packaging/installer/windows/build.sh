@@ -10,7 +10,8 @@
 #              release the manifest pairs with it
 #
 # Writes OUT_DIR/omniphony-<tag>-windows-x86_64-setup.exe and prints its path.
-# Needs makensis (NSIS 3) and unzip; runs on Linux and in Git Bash. The engine
+# Needs makensis (NSIS 3) and unzip. installer.yml runs it on Linux; it also
+# runs in Git Bash on a Windows that has NSIS. The engine
 # is the one inside the Studio archive (engine/), the bytes Studio itself
 # deploys. No decoder bridge: it is installed apart, and the installer checks it.
 set -euo pipefail
