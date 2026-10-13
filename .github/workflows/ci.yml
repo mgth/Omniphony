@@ -917,6 +917,12 @@ jobs:
       - name: Clippy ratchet
         run: omniphony-renderer/scripts/clippy-ratchet.sh
 
+      # The Linux installer's scripts end to end on stand-in release files, in
+      # a temporary HOME: compose, install, upgrade, the service unit,
+      # uninstall. installer.yml runs them on real release files.
+      - name: Installer scripts
+        run: packaging/installer/linux/test.sh
+
   msrv:
     # The renderer workspace on the minimum Rust it declares
     # (`rust-version` in omniphony-renderer/Cargo.toml, read from there so the

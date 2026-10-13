@@ -1,7 +1,9 @@
 # RFC: one installer for player, engine and Studio
 
-Status: **proposal** for the *Installer* part of #678. Nothing here is built.
-The per-OS install pages (`docs/install/`, #719) describe the manual path and
+Status: **in progress**, for the *Installer* part of #678. The *Plan* section
+says which steps are built and where they differ from the text above it; the
+maintainer's answers to the open questions are recorded in *Decisions*. The
+per-OS install pages (`docs/install/`, #719) describe the manual path and
 stay.
 
 ## Problem
@@ -442,6 +444,50 @@ Left: the clean-VM check by hand. The player's workflow builds `orender.dll`
 with its own `RUSTFLAGS`, which replaces the config file
 (mgth/mpv-omniphony#83 adds the flag there), and the bridge gets the same
 change in harletty/harletty-bridge#134.
+
+Step 3 is the pull request that adds this paragraph: `installer.yml`, and
+`packaging/installer/linux/` with `build.sh` (composition), `install.sh`,
+`uninstall.sh`, a test of the three on stand-in files (`test.sh`, run by the
+`lint` job) and `verify-release.sh`, which installs a composed bundle as a
+plain user in an Ubuntu 24.04 and a Fedora container and checks that the
+player logs the engine from the per-user folder with `(studio install)`. Where
+it differs from the text above:
+
+- **The engine comes from the Studio archive**, not from the `liborender`
+  archive: its `engine/` directory already holds the library under its loader
+  name, the bytes Studio deploys. One asset less to download, and nothing to
+  rename. A Studio archive older than 0.7.0 has no `engine/` and is refused.
+- **The unit names the real file**, `~/.local/lib/omniphony/studio/orender`,
+  not the link in `~/.local/bin`: it is the path Studio's *Install service*
+  writes for this install (it resolves its own executable), so the two units
+  are the same text, and a `~/.local/bin/orender` of the user's own is not
+  what the service runs.
+- **No decoder bridge** (decision C below). `install.sh` ends with
+  `orender check-bridges` (step 4) and prints its report, or, with an orender
+  that predates it, lists the bridge files next to the engine.
+- **The workflow runs when a release is published**, of either kind, and
+  composes once both the Omniphony release and the player release its manifest
+  names carry their files: in practice on `mpv-vX.Y.Z`, which is published
+  last. A pull request that touches the installer composes from the rolling
+  `integration` and `mpv-integration` builds, which is why the integration
+  build now publishes the plain Studio archive too
+  (`omniphony-studio-egui/scripts/stage-archive.sh`, shared with `release.yml`).
+- `uninstall.sh` is installed next to the program
+  (`~/.local/lib/omniphony/uninstall.sh`), and a command link the user has
+  replaced with a file of their own is left alone on upgrade and uninstall.
+
+## Decisions
+
+Answers of the maintainer (2026-10-13) to the open questions below.
+
+- **Bridge distribution: C.** The installer lays down player, engine and
+  Studio; the bridge is installed apart, into the per-user engine folder, and
+  checked.
+- **Windows service:** per user with a start at logon (step 5), and the
+  per-machine service written too (step 6) but not offered until audio output
+  from session 0 has been tested by hand with WASAPI and with an ASIO driver.
+- **Signing:** the Windows installer ships unsigned, as the Studio installers
+  do today; signing plugs in later.
 
 ## Open questions
 

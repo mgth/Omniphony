@@ -1,0 +1,166 @@
+name: Installer
+
+# One installer per OS for the player, the engine and Studio, composed from
+# the files a release already publishes (docs/installer.md). Nothing is built
+# from source here.
+#
+# - A release is published: the installer of the Omniphony release it belongs
+#   to is composed and attached, once both that release and the player release
+#   its manifest names are out. The player's comes last (its build needs the
+#   Omniphony tag), so in practice this runs on `mpv-vX.Y.Z`.
+# - By hand, for any published release, with or without attaching.
+# - A pull request that touches the installer: composed from the rolling
+#   integration builds of `main` (Studio's and the player's) and checked,
+#   nothing attached.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Omniphony release to compose the installer of (vX.Y.Z)
+        required: true
+      player_tag:
+        description: >-
+          Player release to take the player from, when not the one the
+          release's manifest names (e.g. mpv-integration)
+        required: false
+        default: ''
+      attach:
+        description: Attach the installers to the Omniphony release
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'packaging/installer/**'
+      - 'packaging/systemd/**'
+      - '.github/workflows/installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  # Which Omniphony release and which player release, and whether both have
+  # the files an installer is made of.
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      player_tag: ${{ steps.r.outputs.player_tag }}
+      attach: ${{ steps.r.outputs.attach }}
+      ready: ${{ steps.r.outputs.ready }}
+    steps:
+      - name: Resolve the releases
+        id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRE: ${{ github.event.release.prerelease }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PLAYER: ${{ inputs.player_tag }}
+          INPUT_ATTACH: ${{ inputs.attach }}
+        run: |
+          set -euo pipefail
+          not_ready() { echo "::notice::$1"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          has_asset() { # release, pattern
+            gh release view "$1" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' 2>/dev/null | grep -Eq "$2"
+          }
+
+          player=
+          attach=false
+          case "$EVENT" in
+            release)
+              [ "$RELEASE_PRE" != true ] || not_ready "$RELEASE_TAG is a pre-release: no installer."
+              case "$RELEASE_TAG" in
+                mpv-v*) tag="${RELEASE_TAG#mpv-}" ;;
+                v*)     tag="$RELEASE_TAG" ;;
+                *)      not_ready "$RELEASE_TAG is neither an Omniphony nor a player release." ;;
+              esac
+              attach=true ;;
+            workflow_dispatch)
+              tag="$INPUT_TAG"; player="$INPUT_PLAYER"; attach="$INPUT_ATTACH" ;;
+            pull_request)
+              tag=integration; player=mpv-integration ;;
+          esac
+
+          # The player the release pairs with: its manifest says (#676);
+          # releases older than the manifest used the same number.
+          if [ -z "$player" ]; then
+            if gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                --pattern "omniphony-$tag-manifest.json" --output manifest.json 2>/dev/null; then
+              player="$(python3 -c 'import json; print(json.load(open("manifest.json"))["player"])')"
+            else
+              player="mpv-$tag"
+            fi
+          fi
+          if [ "$EVENT" = release ] && [ "$RELEASE_TAG" != "$tag" ] && [ "$RELEASE_TAG" != "$player" ]; then
+            not_ready "Omniphony $tag pairs with $player, not with $RELEASE_TAG: no installer."
+          fi
+          has_asset "$tag" '^omniphony-studio-egui-.*-linux-x86_64\.tar\.gz$' \
+            || not_ready "Omniphony $tag is not published with its Studio archive yet."
+          has_asset "$player" '^mpv-omniphony-.*-linux-x86_64\.AppImage$' \
+            || not_ready "The player release $player is not published with its AppImage yet: the installer of $tag is composed when it is."
+
+          echo "Omniphony $tag with the player of $player (attach: $attach)"
+          {
+            echo "tag=$tag"
+            echo "player_tag=$player"
+            echo "attach=$attach"
+            echo "ready=true"
+          } >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: resolve
+    if: needs.resolve.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      PLAYER_TAG: ${{ needs.resolve.outputs.player_tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Download the release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern 'omniphony-studio-egui-*-linux-x86_64.tar.gz'
+          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern 'mpv-omniphony-*-linux-x86_64.AppImage'
+          ls -la assets
+
+      - name: Compose the installer
+        run: |
+          set -euo pipefail
+          bundle="$(packaging/installer/linux/build.sh "$TAG" \
+            assets/omniphony-studio-egui-*-linux-x86_64.tar.gz \
+            assets/mpv-omniphony-*-linux-x86_64.AppImage out)"
+          echo "bundle=$bundle" >> "$GITHUB_ENV"
+
+      # A plain user in a container with only what a desktop always has: the
+      # engine in the per-user folder, the player loading it from there, the
+      # unit, an uninstall that keeps the config.
+      - name: Install it on Ubuntu 24.04
+        run: packaging/installer/linux/verify-release.sh "$bundle" ubuntu:24.04
+
+      - name: Install it on Fedora
+        run: packaging/installer/linux/verify-release.sh "$bundle" fedora:latest
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-linux
+          path: ${{ env.bundle }}
+
+      - name: Attach the installer to the release
+        if: needs.resolve.outputs.attach == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$bundle" --clobber --repo "$GITHUB_REPOSITORY"

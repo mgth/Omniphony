@@ -6,6 +6,55 @@ Omniphony, through **mpv-omniphony** (the player) and the **harletty bridge**
 
 Other systems: [Windows](windows.md) · [macOS](macos.md).
 
+## The installer
+
+When the release page lists `omniphony-<version>-linux-x86_64.tar.gz`, that one
+download holds the player, the engine and Studio of that release, and puts
+each where the others look for it. It needs no root and writes no config file.
+It runs on any x86_64 distribution with glibc 2.38 or newer and PipeWire.
+
+```bash
+tar -xzf ~/Downloads/omniphony-<version>-linux-x86_64.tar.gz
+cd omniphony-<version>-linux-x86_64
+./install.sh
+```
+
+| Installed | Where |
+| --- | --- |
+| The player, as `mpv-omniphony` | `~/.local/lib/omniphony/mpv-omniphony.AppImage`, linked from `~/.local/bin/` |
+| Studio and `orender` | `~/.local/lib/omniphony/studio/`, linked from `~/.local/bin/` |
+| The engine | `~/.local/share/omniphony/lib/`, where the player, Studio and `orender` look before their own copy |
+| Menu entries | Omniphony Studio, and mpv-omniphony started with `--ad=orender` |
+
+The distribution's own `mpv` is untouched: the player is `mpv-omniphony`.
+
+**The decoder bridge is not in the installer.** Take it as in
+[step 2](#2-the-decoder-bridge) and put the library into
+`~/.local/share/omniphony/lib/`, next to the engine: every host finds it
+there without any option. The installer ends by saying whether it found a
+bridge the engine accepts; run it again after adding one, or ask directly:
+
+```bash
+orender check-bridges
+```
+
+```text
+host: bridge_api 0.6.x
+loaded: /home/you/.local/share/omniphony/lib/libharletty_dolby_bridge.so (dolby)
+```
+
+**The renderer as a service.** `./install.sh --service` also installs and
+starts `omniphony-renderer` as a systemd user service, the same unit Studio's
+*Install service* writes. Most setups do not need it: the player carries its
+own engine. Without it, nothing runs in the background.
+
+**Upgrade** by running the `install.sh` of the newer release. **Remove** with
+`~/.local/lib/omniphony/uninstall.sh`: it deletes what the installer wrote and
+keeps `config.yaml`, Studio's preferences, `mpv.conf` and the bridge.
+
+Then go to [step 3](#3-headphones-or-speakers). The rest of this page is the
+same install by hand.
+
 ## What you download
 
 | Piece | Asset | From |
