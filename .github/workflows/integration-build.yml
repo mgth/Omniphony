@@ -133,8 +133,7 @@ jobs:
       - name: Build the renderer and the engine library
         working-directory: omniphony-renderer
         run: |
-          cargo build --release --locked
-          cargo build --release --locked -p orender_ffi
+          cargo build --release --locked -p omniphony-renderer -p orender_ffi
 
       # The Studio's installers (#677), with the orender and engine library
       # built above. Its own build tree and toolchain (rust-toolchain.toml in
@@ -189,6 +188,13 @@ jobs:
           copy_one "$N/*.AppImage"           "Omniphony-Studio-integration-linux-x86_64.AppImage"
           copy_one "$N/*.msi"                "Omniphony-Studio-integration-windows-x86_64.msi"
           copy_one "$N/*-setup.exe"          "Omniphony-Studio-integration-windows-x86_64-setup.exe"
+          # The plain archive, as a release has it: what the combined
+          # installer is composed from (installer.yml), so its pull requests
+          # and a manual run can be checked on the files of `main`.
+          if [ "$RUNNER_OS" != macOS ]; then
+            archive="$(omniphony-studio-egui/scripts/stage-archive.sh integration archive-staging)"
+            cp "$archive" staging/
+          fi
           ls -la staging/
 
       - name: Upload bundles
@@ -228,4 +234,7 @@ jobs:
             NOT a stable release. Rebuilt daily and on demand; assets here are
             replaced each run. File names carry `integration` rather than a version
             so they can't be confused with the official release.
+
+            `omniphony-studio-egui-integration-…` is the same Studio as a plain
+            archive: unpack and run, nothing is installed.
           files: dist/*

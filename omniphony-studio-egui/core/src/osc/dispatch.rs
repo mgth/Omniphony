@@ -1614,4 +1614,35 @@ mod panel_event_tests {
         assert_eq!(l.log[0].level, LogLevel::Info);
         assert_eq!(l.log[0].rendered(), "[osc] already tagged");
     }
+
+    /// A registry option switched off by another client arrives as the
+    /// renderer's full state, with the option `false` in its `options` block.
+    /// The model must follow the way back, not only the way up, and an
+    /// explicit `false` must win over a schema default of `true`.
+    #[test]
+    fn a_registry_option_follows_the_renderer_back_to_false() {
+        let mut l = live();
+        l.options_schema = Some(serde_json::json!([
+            { "key": "synthetic_objects_enabled", "kind": "bool", "default": false },
+            { "key": "decode_thread", "kind": "bool", "default": true },
+        ]));
+        let state = |synthetic: bool, decode_thread: bool| OscEvent::StateRenderer {
+            value: serde_json::json!({
+                "syntheticObjectsEnabled": synthetic,
+                "options": {
+                    "synthetic_objects_enabled": synthetic,
+                    "decode_thread": decode_thread,
+                },
+            })
+            .to_string(),
+        };
+
+        assert_eq!(l.option_bool("synthetic_objects_enabled"), Some(false));
+        assert_eq!(apply_event(&mut l, state(true, true)), Change::Snapshot);
+        assert_eq!(l.option_bool("synthetic_objects_enabled"), Some(true));
+        assert_eq!(l.option_bool("decode_thread"), Some(true));
+        assert_eq!(apply_event(&mut l, state(false, false)), Change::Snapshot);
+        assert_eq!(l.option_bool("synthetic_objects_enabled"), Some(false));
+        assert_eq!(l.option_bool("decode_thread"), Some(false));
+    }
 }

@@ -1,7 +1,9 @@
 # RFC: one installer for player, engine and Studio
 
-Status: **proposal** for the *Installer* part of #678. Nothing here is built.
-The per-OS install pages (`docs/install/`, #719) describe the manual path and
+Status: **in progress**, for the *Installer* part of #678. The *Plan* section
+says which steps are built and where they differ from the text above it; the
+maintainer's answers to the open questions are recorded in *Decisions*. The
+per-OS install pages (`docs/install/`, #719) describe the manual path and
 stay.
 
 ## Problem
@@ -442,6 +444,129 @@ Left: the clean-VM check by hand. The player's workflow builds `orender.dll`
 with its own `RUSTFLAGS`, which replaces the config file
 (mgth/mpv-omniphony#83 adds the flag there), and the bridge gets the same
 change in harletty/harletty-bridge#134.
+
+Step 4 is the pull request that adds this paragraph. `orender --version`
+prints two more lines, `liborender ABI: <major>.<minor>` and
+`bridge_api: <major>.<minor>.x` (`-V` keeps the one line), and
+`orender check-bridges` resolves and loads the bridges the way `render` does
+(`--bridge-path`, else `render.bridge_path(s)`, else auto-discovery), prints
+one `loaded:` or `refused:` line per library and exits non-zero, with the
+reason, when none loads. It tells nothing about the player: mpv-omniphony
+resolves its bridges from `mpv.conf` first, and its engine is the liborender
+it loads, not this binary.
+
+Step 3 is the pull request that adds this paragraph: `installer.yml`, and
+`packaging/installer/linux/` with `build.sh` (composition), `install.sh`,
+`uninstall.sh`, a test of the three on stand-in files (`test.sh`, run by the
+`lint` job) and `verify-release.sh`, which installs a composed bundle as a
+plain user in an Ubuntu 24.04 and a Fedora container and checks that the
+player logs the engine from the per-user folder with `(studio install)`. Where
+it differs from the text above:
+
+- **The engine comes from the Studio archive**, not from the `liborender`
+  archive: its `engine/` directory already holds the library under its loader
+  name, the bytes Studio deploys. One asset less to download, and nothing to
+  rename. A Studio archive older than 0.7.0 has no `engine/` and is refused.
+- **The unit names the real file**, `~/.local/lib/omniphony/studio/orender`,
+  not the link in `~/.local/bin`: it is the path Studio's *Install service*
+  writes for this install (it resolves its own executable), so the two units
+  are the same text, and a `~/.local/bin/orender` of the user's own is not
+  what the service runs. A path with a space or another character systemd
+  reads specially goes between double quotes, with `\`, `"` and `%` escaped
+  inside, in both: systemd refuses a backslash-escaped space in the
+  executable's path. Studio's `systemd_quote_word` and the `exec_start` of
+  `install.sh` and `uninstall.sh` follow one rule, so an upgrade or an
+  uninstall recognises the unit Studio wrote for this install. systemd
+  refuses an executable whose path holds a quote or a backslash however it
+  is written: from such a folder the unit does not start.
+- **No decoder bridge** (decision C below). `install.sh` ends with
+  `orender check-bridges` (step 4) and prints its report, or, with an orender
+  that predates it, lists the bridge files next to the engine.
+- **The workflow runs when a release is published**, of either kind, and
+  composes once both the Omniphony release and the player release its manifest
+  names carry their files: in practice on `mpv-vX.Y.Z`, which is published
+  last. A pull request that touches the installer composes from the rolling
+  `integration` and `mpv-integration` builds, which is why the integration
+  build now publishes the plain Studio archive too
+  (`omniphony-studio-egui/scripts/stage-archive.sh`, shared with `release.yml`).
+- `uninstall.sh` is installed next to the program
+  (`~/.local/lib/omniphony/uninstall.sh`). A command in `~/.local/bin` that
+  is not this installer's link (a file, or a link to another build) is left
+  alone on install, upgrade and uninstall. A unit removed since it was
+  installed is not written again by an upgrade, and a unit that starts the
+  `orender` being removed is disabled and removed with it, whoever wrote it.
+
+Steps 5 and 6 are the pull request that adds this paragraph:
+`packaging/installer/windows/` with `omniphony.nsi`, `build.sh` (composition,
+with the NSIS of Ubuntu 24.04: the installer is compiled on Linux and checked
+on Windows), and the Windows jobs of `installer.yml`. Where it
+differs from the text above:
+
+- **A hand-written NSIS script, not cargo-packager's template.** cargo-packager
+  builds the installer of one crate from that crate's packager configuration;
+  this one is composed from two published archives into three folders, with a
+  per-machine mode and a service. The Studio's own installers are unchanged.
+- **The engine comes from the Studio archive's `engine\`**, as on Linux.
+- **The uninstaller removes the files this release installed, one by one**
+  (`build.sh` writes the list from the staged tree), not the folders: a bridge
+  put next to `mpv.exe` or `orender.exe` stays, with its folder. An upgrade
+  first runs the installed uninstaller with `/UPGRADE`, which removes the
+  program files only, so a file the new release no longer has does not
+  linger, and shortcuts, the logon start and the service stay.
+- **Logon start is a shortcut in the Startup folder**, minimized, not a `Run`
+  key: `orender.exe` is a console program, and a `Run` key would open its
+  window in the foreground at every logon. Hiding it altogether needs a
+  windowless launcher, which nothing here ships.
+- **Step 6 is written and reachable from the command line only**:
+  `/ALLUSERS` installs under `%ProgramFiles%\Omniphony` (elevating once) with
+  the engine also next to `mpv.exe`, and `/ALLUSERS /SERVICE` (or
+  `/SERVICE=auto`) creates the `omniphony-renderer` service with the command
+  line Studio's *Install service* uses, start type Manual (or Automatic). The
+  wizard offers neither. They move into the wizard once audio output from
+  session 0 has been checked by hand with WASAPI and with an ASIO driver;
+  until then the install page does not mention them.
+- **Running programs**: the installer stops the renderer service for the copy,
+  waits until it has stopped (orender answers the stop request at once and
+  takes up to 30 s to end) and starts it again after, also when it gives up.
+  It refuses to continue while `mpv.exe`, Studio, `orender.exe` or the
+  per-user `orender.dll` is in use, or when it may not stop the service (a
+  per-user run and a service Studio installed). It does not stop a renderer
+  started by the logon shortcut or by Studio: the message asks for it to be
+  closed. The uninstaller makes the same checks before it removes anything,
+  so it never leaves files without an uninstaller; it does not stop the logon
+  renderer either, which is where it differs from *Uninstall* above.
+- **Elevation**: per-machine mode started from the wizard, or its uninstaller
+  started from the Start menu, asks once through UAC and waits for the
+  elevated copy. A silent per-machine run must already be elevated and ends
+  with exit code 2 otherwise: it could neither answer the prompt nor hand
+  back that copy's exit code.
+- **An upgrade runs only this product's uninstaller**: the `uninstall.exe` of
+  the folder the registry names as the earlier install, never one that
+  merely happens to be in the chosen folder.
+
+Tests. `test.ps1` runs on `windows-latest` (job `windows-scripts`, on every
+pull request that touches the installer) with stand-in release files: per
+user, install, a file in use, upgrade with the logon start, uninstall with a
+bridge and a `config.yaml` left in place; per machine, the service's command
+line, its start type, its reconfiguration and its removal. `verify-release.ps1`
+(job `windows`) installs the composed installer of real files silently and
+checks that the player logs the engine from `%LOCALAPPDATA%\omniphony\lib`
+with `(studio install)` and that `orender.exe` starts. Not covered: the bridge
+discovery with the reference bridge (it would have to be built from source at
+the tag), the wizard's pages, and the clean-VM check by hand.
+
+## Decisions
+
+Answers of the maintainer (2026-10-13) to the open questions below.
+
+- **Bridge distribution: C.** The installer lays down player, engine and
+  Studio; the bridge is installed apart, into the per-user engine folder, and
+  checked.
+- **Windows service:** per user with a start at logon (step 5), and the
+  per-machine service written too (step 6) but not offered until audio output
+  from session 0 has been tested by hand with WASAPI and with an ASIO driver.
+- **Signing:** the Windows installer ships unsigned, as the Studio installers
+  do today; signing plugs in later.
 
 ## Open questions
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=mpv-omniphony
+GenericName=Media Player
+Comment=Play films with their sound rendered by Omniphony
+Exec="@BIN@/mpv-omniphony" --ad=orender --player-operation-mode=pseudo-gui -- %U
+Icon=mpv
+Terminal=false
+Categories=AudioVideo;Audio;Video;Player;
+MimeType=video/x-matroska;video/mp4;video/mp2t;video/quicktime;video/webm;audio/x-matroska;

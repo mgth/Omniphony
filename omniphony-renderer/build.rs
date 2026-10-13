@@ -80,6 +80,33 @@ fn emit_git_rerun_triggers() {
     }
 }
 
+// The liborender ABI built from this tree, for `--version`: the two constants
+// of orender_ffi/src/lib.rs, read the way that crate's own build script and
+// scripts/release_version.py read them. This binary does not link that crate.
+fn emit_liborender_abi() -> Result<()> {
+    let source_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("orender_ffi/src/lib.rs");
+    println!("cargo:rerun-if-changed={}", source_path.display());
+    println!("cargo:rerun-if-changed=build.rs");
+    let source = std::fs::read_to_string(&source_path)?;
+    let constant = |name: &str| -> Result<u32> {
+        let prefix = format!("pub const {name}: u32 =");
+        source
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("{name} not found in {}", source_path.display()))?
+            .trim()
+            .trim_end_matches(';')
+            .parse()
+            .map_err(|e| anyhow::anyhow!("{name} is not a plain integer literal: {e}"))
+    };
+    println!(
+        "cargo:rustc-env=ORENDER_LIBORENDER_ABI={}.{}",
+        constant("ORENDER_ABI_MAJOR")?,
+        constant("ORENDER_ABI_MINOR")?
+    );
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // Only trust git when `.git` exists at the expected repo root; vergen and
     // `git rev-parse` both search upward from the crate dir, so the nearest
@@ -118,6 +145,8 @@ fn main() -> Result<()> {
             env::var("CARGO_PKG_VERSION")?
         );
     }
+
+    emit_liborender_abi()?;
 
     // Add build timestamp
     let now = match env::var("SOURCE_DATE_EPOCH") {
