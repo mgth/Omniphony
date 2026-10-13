@@ -1267,7 +1267,7 @@ gets from that:
 
 | | From |
 |---|---|
-| Source | `render.input_mode`: `pipewire` is the `own` sink, under `live_input.node` / `description` (default `omniphony`); otherwise the input pipe (`render.input_pipe` in continuous mode, else INPUT), followed on its writer's clock |
+| Source | `render.input_mode`: `pipewire` is the `own` sink, under `live_input.node` / `description` (default `omniphony`), a carrier sink with `live_input.carrier_channels` (§30); otherwise the input pipe (`render.input_pipe` in continuous mode, else INPUT), followed on its writer's clock |
 | Latency target | `render.latency_target`, else 150 ms |
 | Output | `render.output_device`; `--pw-quantum` |
 | OSC | As resolved for `render`: `--osc`, host and ports, `--osc-yield` |
@@ -2423,3 +2423,34 @@ box.
 - **Listening.** The real session was listened to by its user as it ran;
   no verdict is recorded here.
 - The audit on TrueHD through a pipe (above).
+
+## 30. A burst carrier on the sink's linear PCM (2026-10-13)
+
+Not a phase of this plan: the receiving end of
+[iamf-transport-plan.md](iamf-transport-plan.md), on this host.
+
+- The capture's pump passes the sink's linear PCM through a gate
+  (`sync_host::carrier`). PCM that holds IAMF bursts of the private IEC
+  61937 type (16-bit words, one per float sample) is handed over as the
+  words it carries, as an IEC 958 carrier with the capture's transport
+  count: another stream of the same capture, which the host deframes and
+  counts like any other. It is never rendered as audio.
+- `render.live_input.carrier_channels` (option
+  `live_input_carrier_channels`, in the staged `live_input` group) makes the
+  sink a carrier sink: that many unpositioned channels in place of the 7.1
+  map, a carrier and nothing else.
+- The zeros between two bursts are not handed over: the chunk that follows
+  says how much of the carrier idled (`skipped`), as after a cycle a player
+  gave nothing for (§25). The source's clock is published on a burst's
+  bytes only, so a carrier whose player stopped does not read as a source
+  that keeps sending with nothing delivered; without that, the half second
+  before the stream ends raised the floor to 500 ms.
+- Ports of another node linked into the sink bring that node's driver: the
+  sink's group, its timer driver included, then runs on it (§6.1's "driver
+  merge"). The cycle stamps are that driver's, on the same monotonic clock,
+  and the servo follows them as it follows its own: 45 s on a null sink's
+  driver held the target with no realign.
+- The count of an IAMF stream starts at the first burst that gives audio
+  (`counts_from`): a receiver that missed the stream's descriptors drops
+  the units before their next copy, which is not a decoder holding them.
+  Counted from the first burst seen, they raised the floor to a second.

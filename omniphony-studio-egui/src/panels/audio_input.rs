@@ -48,6 +48,11 @@ impl StudioSpike {
                 live.app.input_apply_pending.unwrap_or(0) != 0,
             )
         };
+        // The carrier sink: whether this engine has one to offer, the
+        // channels of the one asked for, and of the one that runs.
+        let carrier_offered = input::carrier_sink_offered(&self.host);
+        let carrier = input::carrier_channels(&self.host);
+        let running_carrier = input::running_carrier_channels(&self.host);
         let pipewire = mode == "pipewire";
         let summary = tf(
             if pipewire {
@@ -90,6 +95,12 @@ impl StudioSpike {
                         ),
                     ],
                 );
+                if let Some(channels) = running_carrier {
+                    status.push_str(&tf(
+                        "input.status.carrier",
+                        &[("channels", &channels.to_string())],
+                    ));
+                }
                 if let Some(error) = &error {
                     status.push_str(&tf("input.status.error", &[("error", error)]));
                 }
@@ -162,6 +173,34 @@ impl StudioSpike {
                                 "Omniphony Bridge Input",
                             ) {
                                 input::set_live_input_description(&self.host, description);
+                            }
+                            // A carrier sink: its switch, then the channels
+                            // it gates.
+                            if carrier_offered {
+                                let mut on = carrier.is_some();
+                                if widgets::switch_row_help(
+                                    ui,
+                                    t("input.carrierSink"),
+                                    "help.input.carrierChannels",
+                                    &mut on,
+                                ) {
+                                    input::set_carrier_channels(
+                                        &self.host,
+                                        on.then_some(input::DEFAULT_CARRIER_CHANNELS),
+                                    );
+                                }
+                                if let Some(mut channels) = carrier {
+                                    widgets::label_row(ui, t("input.carrierChannels"), |ui| {
+                                        let field = egui::DragValue::new(&mut channels)
+                                            .speed(0.1)
+                                            .range(input::CARRIER_CHANNELS);
+                                        if widgets::number_field(ui, widgets::FIELD_WIDTH, field)
+                                            .changed()
+                                        {
+                                            input::set_carrier_channels(&self.host, Some(channels));
+                                        }
+                                    });
+                                }
                             }
                         });
                     } else {

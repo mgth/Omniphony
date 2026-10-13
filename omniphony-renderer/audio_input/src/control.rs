@@ -6,6 +6,13 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+/// The channels a carrier sink's linear PCM can have
+/// (`docs/iamf-transport-plan.md`): a burst is found by the three words that
+/// open it, which a frame of four channels holds, and PipeWire names 64
+/// unpositioned (`AUX`) channels.
+pub const CARRIER_MIN_CHANNELS: u16 = 4;
+pub const CARRIER_MAX_CHANNELS: u16 = 64;
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum InputMode {
     #[serde(rename = "pipe_bridge", alias = "bridge")]
@@ -32,6 +39,9 @@ pub struct RequestedAudioInputConfig {
     /// The sink's node name and description; `None` is the default one.
     pub node_name: Option<String>,
     pub node_description: Option<String>,
+    /// The sink is a carrier sink of this many channels; `None` is the sink
+    /// that takes audio.
+    pub carrier_channels: Option<u16>,
 }
 
 impl Default for RequestedAudioInputConfig {
@@ -40,6 +50,7 @@ impl Default for RequestedAudioInputConfig {
             mode: InputMode::Bridge,
             node_name: None,
             node_description: None,
+            carrier_channels: None,
         }
     }
 }
@@ -155,6 +166,10 @@ impl InputControl {
 
     pub fn set_requested_node_description(&self, value: Option<String>) {
         self.update_requested(|requested| requested.node_description = value);
+    }
+
+    pub fn set_requested_carrier_channels(&self, value: Option<u16>) {
+        self.update_requested(|requested| requested.carrier_channels = value);
     }
 
     pub fn set_input_state(

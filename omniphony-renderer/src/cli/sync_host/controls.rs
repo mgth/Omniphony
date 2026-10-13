@@ -133,6 +133,7 @@ impl Controls {
         input.set_requested_mode(request.mode);
         input.set_requested_node_name(request.node.clone());
         input.set_requested_node_description(request.description.clone());
+        input.set_requested_carrier_channels(request.carrier_channels);
         let host = Arc::new(HostAudio::new(
             renderer,
             Arc::clone(&audio),
@@ -165,6 +166,7 @@ impl Controls {
             mode: requested.mode,
             node: requested.node_name,
             description: requested.node_description,
+            carrier_channels: requested.carrier_channels,
         }
     }
 
@@ -174,11 +176,14 @@ impl Controls {
             Source::OwnSink {
                 node_name,
                 description,
+                carrier_channels,
                 ..
             } => self.input.set_input_state(
                 InputMode::Pipewire,
                 Some(InputBackend::Pipewire),
-                None,
+                // (A carrier sink's channels are its own; the audio sink's
+                // are the stream's, which the sink negotiates.)
+                *carrier_channels,
                 None,
                 Some(node_name.clone()),
                 Some(description.clone()),
@@ -288,6 +293,7 @@ mod tests {
                 mode: InputMode::Bridge,
                 node: Some("my-sink".into()),
                 description: None,
+                carrier_channels: None,
             },
             input_path: Some("/in".into()),
             drain_pipe: true,
@@ -378,7 +384,8 @@ mod tests {
                 "realign_threshold_ms",
                 "input_mode",
                 "live_input_node",
-                "live_input_description"
+                "live_input_description",
+                "live_input_carrier_channels"
             ]
         );
         let refused = handler.apply_options(&[

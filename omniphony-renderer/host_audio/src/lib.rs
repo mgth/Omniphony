@@ -663,7 +663,8 @@ mod tests {
                 "realign_threshold_ms",
                 "input_mode",
                 "live_input_node",
-                "live_input_description"
+                "live_input_description",
+                "live_input_carrier_channels"
             ]
         );
         let host = host();
@@ -795,6 +796,40 @@ mod tests {
         assert_eq!(
             live.lfe_mode,
             Some(renderer::config::InputLfeModeConfig::Drop)
+        );
+    }
+
+    /// A carrier sink is asked for by its channels, staged like the rest of
+    /// the live input: bounded, unset by a null or by a count too small to
+    /// hold a burst's preamble in a frame, and written by a Save.
+    #[test]
+    fn the_carrier_channels_are_a_staged_row_of_the_live_input() {
+        let host = host();
+        let set = |raw| {
+            host.apply_options(&[("live_input_carrier_channels", raw)]);
+            host.input.requested_snapshot().carrier_channels
+        };
+        assert_eq!(set(RawOptionValue::Number(16.0)), Some(16));
+        assert!(
+            host.option_groups_pending()
+                .into_iter()
+                .any(|(group, pending)| group == options::LIVE_INPUT.key && pending),
+            "staged until the input is applied"
+        );
+        assert_eq!(set(RawOptionValue::Number(200.0)), Some(64));
+        assert_eq!(set(RawOptionValue::Number(2.0)), None);
+        assert_eq!(set(RawOptionValue::Number(8.0)), Some(8));
+        let mut render = renderer::config::RenderConfig::default();
+        host.amend_saved_config(&mut render);
+        assert_eq!(
+            render.live_input.as_ref().and_then(|l| l.carrier_channels),
+            Some(8)
+        );
+        assert_eq!(set(RawOptionValue::Null), None);
+        host.amend_saved_config(&mut render);
+        assert_eq!(
+            render.live_input.as_ref().and_then(|l| l.carrier_channels),
+            None
         );
     }
 

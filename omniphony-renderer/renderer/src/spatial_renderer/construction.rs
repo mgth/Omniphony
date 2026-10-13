@@ -417,7 +417,6 @@ impl SpatialRenderer {
         log::info!("Room ratio rear (depth<0): {}", room_ratio_rear);
         log::info!("Room ratio lower (z<0): {}", room_ratio_lower);
         log::info!("Room ratio center blend: {}", room_ratio_center_blend);
-        log::info!("Ramp mode: {}", ramp_mode.as_str());
         log::info!(
             "VBAP position interpolation: {}",
             if vbap_position_interpolation {
