@@ -187,14 +187,48 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod build_features {
+    /// The features the manifest lists as the package's defaults (a `default`
+    /// written on one line, as it is here).
+    fn default_features(manifest: &str) -> Vec<&str> {
+        manifest
+            .lines()
+            .map(str::trim)
+            .skip_while(|line| *line != "[features]")
+            .skip(1)
+            .take_while(|line| !line.starts_with('['))
+            .find_map(|line| line.strip_prefix("default")?.trim_start().strip_prefix('='))
+            .map(|list| {
+                list.split(['[', ']', ','])
+                    .map(|name| name.trim().trim_matches('"'))
+                    .filter(|name| !name.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The binary reads SOFA files by its own default feature, not because a
     /// sibling package's default (`orender_ffi`) happened to be built in the
     /// same cargo command: the release workflow builds `orender` on its own.
+    ///
+    /// Read from the manifest, not from `cfg!(feature = "sofa")`: that is what
+    /// this run was built with, and a `--no-default-features` test run (the
+    /// embedded configuration) turns it off on purpose.
     #[test]
     fn sofa_support_is_a_default_of_the_binary() {
+        let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let defaults = default_features(manifest);
         assert!(
-            cfg!(feature = "sofa"),
-            "`sofa` is no longer a default feature of the orender binary"
+            defaults.contains(&"sofa"),
+            "`sofa` is no longer a default feature of the orender binary: default = {defaults:?}"
         );
+    }
+
+    #[test]
+    fn default_features_are_read_from_the_features_table() {
+        let manifest = "[package]\ndefault = [\"no\"]\n\n[features]\n# default = [\"no\"]\n\
+                        default = [\"a\", \"b\"]\na = []\n\n[other]\ndefault = [\"no\"]\n";
+        assert_eq!(default_features(manifest), ["a", "b"]);
+        assert!(default_features("[features]\ndefault = []\n").is_empty());
+        assert!(default_features("[features]\nsofa = []\n").is_empty());
     }
 }
