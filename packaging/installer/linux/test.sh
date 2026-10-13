@@ -238,6 +238,22 @@ printf '[Service]\nExecStart=%s render /tmp/orender.pipe --osc-port 9100\n' "$ro
 asked "--user disable --now omniphony-renderer"
 hasnt "$unit"
 
+echo "== a unit that only names this orender in a comment is the user's own"
+"$second/install.sh" > /dev/null 2>&1 || fail "install before the user's own unit"
+# The user went back to a packaged renderer and kept the old command as a
+# comment: the service does not run the orender this installer manages.
+printf '[Service]\n#ExecStart=%s render /tmp/orender.pipe --osc-port 9100\nExecStart=/usr/bin/orender render /tmp/orender.pipe\n' \
+    "$root/studio/orender" > "$unit"
+cp "$unit" "$work/own.service"
+: > "$work/systemctl.log"
+touch "$work/service-active"
+"$second/install.sh" > /dev/null 2>&1 || fail "upgrade next to the user's own unit"
+! grep -q "restart" "$work/systemctl.log" || fail "the user's own service was restarted by an upgrade"
+"$root/uninstall.sh" > /dev/null 2>&1 || fail "uninstall next to the user's own unit"
+! grep -q "disable" "$work/systemctl.log" || fail "the user's own service was disabled by the uninstall"
+cmp -s "$unit" "$work/own.service" || fail "the user's own unit was removed or changed"
+rm "$unit" "$work/service-active"
+
 echo "== an orender older than check-bridges is never asked to run it"
 make_assets v0.9
 cat > "$work/assets-v0.9/omniphony-studio-egui-v0.9-linux-x86_64/orender" <<'OLD'

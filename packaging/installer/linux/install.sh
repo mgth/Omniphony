@@ -103,7 +103,13 @@ case "$orender" in
     *)
         exec_start="ExecStart=$orender" ;;
 esac
-runs_this_orender() { [ -f "$unit" ] && grep -qF "$exec_start " "$unit"; }
+# Only a line that starts with it is the command the unit runs: the same text
+# after a `#` is a comment the user kept.
+runs_this_orender() {
+    [ -f "$unit" ] && exec_start="$exec_start" awk '
+        index($0, ENVIRON["exec_start"] " ") == 1 { found = 1 }
+        END { exit !found }' "$unit"
+}
 
 # A renderer service that runs this orender is restarted once the files are
 # replaced, whoever installed the unit (this script or Studio).
