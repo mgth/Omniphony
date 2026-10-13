@@ -4,9 +4,10 @@
 #
 #   host/install-host.sh --orender PATH [--config PATH] [--args "EXTRA ARGS"]
 #
-#   --orender   the orender binary to run (built with a bridge that has the
-#               harletty-bridge `iamf` feature, set in its config's
-#               render.bridge_path)
+#   --orender   the orender binary to run, with a bridge that decodes IAMF
+#               (harletty's libharletty_iamf_bridge.so, or a combined 0.8.x
+#               bridge built with its `iamf` feature) named in its config's
+#               render.bridge_paths
 #   --config    config.yaml for that orender. Use an isolated copy: the host's
 #               orender runs alongside the live one, so it must not take the
 #               OSC port or the live input pipe (the host already passes

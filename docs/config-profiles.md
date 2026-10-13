@@ -75,7 +75,7 @@ saves keep the new keys through `extra`.
 
 Everything in `render:` — with one carve-out at **switch time**: the
 machine-level input plumbing (`input_mode`, `input_pipe`, `live_input`,
-`bridge_path`) is carried over from the outgoing render section instead of
+`bridge_path` / `bridge_paths`) is carried over from the outgoing render section instead of
 taken from the incoming profile. Profiles describe the *output/listening*
 side; the input side belongs to the machine. Output-side device fields stay
 per-profile on purpose (a different speaker set is often a different DAC).

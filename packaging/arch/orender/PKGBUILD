@@ -83,7 +83,9 @@ package() {
 
     # NB: no config is installed — every host (CLI, Studio, mpv's ad_orender)
     # reads the SAME per-user config (~/.config/omniphony/config.yaml), which
-    # carries render.bridge_path when a decoder bridge is installed.
+    # names decoder bridges (render.bridge_paths) only when the user chose
+    # some: the ones `harletty-bridge` installs in /usr/lib/orender are
+    # discovered without it.
 
     # License text.
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

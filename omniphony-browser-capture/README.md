@@ -43,8 +43,9 @@ tabs are left alone.
    player shows the audio itag (773 for IAMF).
 4. Let it play for as long as you want to capture, then **Save capture**:
    `iamf-capture-<video>-<n>.mp4` and `.iamf` land in your downloads.
-5. Play the `.iamf` through orender with a bridge built with the `iamf`
-   feature (harletty-bridge):
+5. Play the `.iamf` through orender with a bridge that decodes IAMF
+   (harletty's `harletty_iamf_bridge`, or a combined harletty bridge of
+   0.8.x built with its `iamf` feature):
 
    ```
    orender render --config <isolated config> --no-osc --no-continuous --enable-vbap iamf-capture-<video>-0.iamf
@@ -58,8 +59,10 @@ tabs are left alone.
 host/install-host.sh --orender <path to orender> --config <isolated config.yaml>
 ```
 
-The orender must load a harletty-bridge built with its `iamf` feature
-(`render.bridge_path` in that config). Use an isolated copy of your config:
+The orender must load a bridge that decodes IAMF: harletty's
+`libharletty_iamf_bridge.so` (or a combined 0.8.x `libharletty_bridge.so`
+built with its `iamf` feature), named in `render.bridge_paths` in that
+config. Use an isolated copy of your config:
 the host's orender runs alongside the live one (it already passes
 `--no-osc`), so the config must not point it at the live input pipe. The
 installer writes a launcher under `~/.local/share/omniphony/` and the host

@@ -114,7 +114,7 @@ Status: ✅ OK · 🟡 **justified** gap (do not fix) · 🔴 gap **to fix**.
 | `meter_rate` / `diag_rate` (rates) | 🔴 | ✅ | ✅ | 🔴 | no CLI flag. **Out of scope for that round** (to fix later). |
 | `drc_mode` / `drc_weight` | 🔴 | ✅ | ✅ | 🔴 | no CLI flag. **Out of scope for that round.** |
 | `presentation` (substream) | ✅ | — | — | 🟡 | the bridge's *load-time* selection. **Justified.** |
-| `bridge_path` | ✅ | ✅ | (host) | ✅ | editable through `render/bridge_path`. |
+| `bridge_path` / `bridge_paths` | ✅ (`--bridge-path`, repeatable) | ✅ | (host) | ✅ | editable through `render/bridge_path` (one) and `render/bridge_paths` (the list). |
 | `continuous`, `no_drain_pipe`, `log_object_positions` | ✅ | — | — | 🟡 | *load-time* / debug behaviours. **Justified.** |
 
 ---

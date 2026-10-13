@@ -98,13 +98,15 @@ On Linux install `libopenblas-dev` and `liblapacke-dev`; on Windows follow
 
 ## 3. The bridge model
 
-`orender` does not decode formats in the binary itself: it loads a **bridge
-plugin** at runtime that turns your input into PCM + object metadata. Bridge
-lookup order:
+`orender` does not decode formats in the binary itself: it loads **bridge
+plugins** at runtime that turn your input into PCM + object metadata, one or
+several (each stream goes to the bridge that decodes it). Bridge lookup order:
 
-1. `--bridge-path <FILE>`
-2. `render.bridge_path` in the config file
-3. the first `lib*_bridge.{so,dll,dylib}` next to the executable
+1. `--bridge-path <FILE>`, repeatable
+2. `render.bridge_paths` in the config file (a list; a single
+   `render.bridge_path` is read too)
+3. every `*_bridge.{so,dll,dylib}` of the first folder that holds one: next to
+   the executable first (the full order is in the [README](README.md#runtime-model))
 
 The repo ships a **reference bridge** (`reference_bridge/`) that reads a plain
 multichannel WAV — it is what the demo uses, and the smallest example for writing
