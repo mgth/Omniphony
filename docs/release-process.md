@@ -197,18 +197,20 @@ runners (prefer `auto`), and any step that only runs on a tag push. Never cap
   system. At 0.6.0: the Studio (native and, until 0.7.0, Tauri) is built on
   Ubuntu 22.04 (glibc ≥ 2.35; the `orender` beside the Studio also needs a
   system PipeWire); the player zip links Ubuntu 24.04's FFmpeg and libplacebo
-  and runs only there; the bridge is built on Ubuntu 24.04 and needs only glibc
-  (from the release with one library per codec family, its IAMF library also
-  needs the system's `libopus.so.0`).
+  and runs only there; the bridge is built on Ubuntu 24.04 and needs only glibc.
+  From 0.7.0: the player also ships an AppImage (built on Ubuntu 24.04, glibc
+  ≥ 2.38, its own libraries inside), and the bridge's IAMF library needs the
+  system's `libopus.so.0`.
 - After publishing, bump the asset names and release links in
   `docs/install/{linux,windows,macos}.md` on `main` (and the version pairing
-  stated at the top of each page) together with the README download badges.
-  The first release whose engine loads the family bridges
-  (`harletty_{dolby,dts,iamf}_bridge`, `docs/multi-bridge.md`) turns each
-  page's "From the next release" paragraphs about them into the main text and
-  drops the combined `harletty_bridge` instructions.
-  At 0.7.0, also drop the Tauri Studio's row (`Omniphony.Studio_…`) from the
-  Linux page's asset table.
+  stated at the top of each page) together with the README download badges:
+  the player badge at every `mpv-v*` release, the FEL badge only when a FEL
+  beta was cut.
+  0.7.0 made the family bridges (`harletty_{dolby,dts,iamf}_bridge`,
+  `docs/multi-bridge.md`) the pages' main text and kept the combined
+  `harletty_bridge` as an "Upgrading from 0.6.0" note; drop that note at the
+  release whose engine no longer reads the combined name as the family
+  libraries beside it.
 
 ```sh
 gh release edit vX.Y.Z --repo mgth/Omniphony --notes-file notes.md
