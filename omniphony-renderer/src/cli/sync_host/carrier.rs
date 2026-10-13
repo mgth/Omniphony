@@ -95,13 +95,26 @@ impl CarrierGate {
         let channels = channels.max(1) as usize;
         let frame_words = (channels * 2) as u64;
         let frames = (samples.len() / (channels * SAMPLE_BYTES)) as u64;
-        let last_burst = iamf_bursts(samples, channels).last();
+        let chunk_words = frames * frame_words;
+        // The bursts that start in these samples, the last of them and where
+        // it ends (bytes of words from the chunk's start). A burst starts
+        // where the one before it has ended, or later: a preamble inside a
+        // payload is the payload's own bytes, as it is to the deframer.
+        let mut burst_end = self.coming.map_or(0, |coming| coming.burst_left);
+        let mut last_burst = None;
+        for (frame, burst_bytes) in iamf_bursts(samples, channels) {
+            let at = frame as u64 * frame_words;
+            if at >= burst_end {
+                burst_end = at + burst_bytes as u64;
+                last_burst = Some(frame as u64);
+            }
+        }
         // Whether the deframer needs these samples: the end of a burst that
         // started before them, or a burst that starts in them.
         let in_burst =
             last_burst.is_some() || self.coming.is_some_and(|coming| coming.burst_left > 0);
         self.coming = match (last_burst, self.coming) {
-            (Some((frame, burst_bytes)), coming) => {
+            (Some(frame), coming) => {
                 if coming.is_none() {
                     log::info!(
                         "sync host: IAMF bursts on the sink's linear PCM ({channels} channels at \
@@ -112,17 +125,16 @@ impl CarrierGate {
                     self.stray_frames = 0;
                     self.stray_said = false;
                 }
-                let since_burst = frames - frame as u64;
                 Some(Coming {
-                    since_burst,
-                    burst_left: (burst_bytes as u64).saturating_sub(since_burst * frame_words),
+                    since_burst: frames - frame,
+                    burst_left: burst_end.saturating_sub(chunk_words),
                 })
             }
             // No burst for the silence that ends a stream: the carrier is
             // gone, and what comes now is the sink's own again.
             (None, Some(coming)) => Some(Coming {
                 since_burst: coming.since_burst + frames,
-                burst_left: coming.burst_left.saturating_sub(frames * frame_words),
+                burst_left: burst_end.saturating_sub(chunk_words),
             })
             .filter(|coming| (coming.since_burst as f64) < END_OF_STREAM_S * f64::from(rate)),
             (None, None) => None,
@@ -334,6 +346,30 @@ mod tests {
         let payloads = payloads(&takes);
         assert_eq!(payloads.len(), 6);
         assert!(payloads.iter().all(|p| *p == vec![0u8; payload]));
+    }
+
+    /// A preamble inside a burst's payload is the payload's: it does not
+    /// start a burst, and the cycles of that payload that follow it are
+    /// still handed over, zeros included.
+    #[test]
+    fn a_preamble_inside_a_payload_is_not_a_burst() {
+        const LONG_PERIOD: usize = 4096;
+        let cycle_words = CYCLE_FRAMES * CHANNELS as usize * 2;
+        // A payload of two and a half cycles: zeros, but for the eight bytes
+        // of a short burst's preamble on frame 512 of the carrier.
+        let mut payload = vec![0u8; cycle_words * 5 / 2];
+        let mut inner = Vec::new();
+        write_iamf_burst(&mut inner, &[9; 100], 128).unwrap();
+        let at = 512 * CHANNELS as usize * 2 - 8;
+        payload[at..at + 8].copy_from_slice(&inner[..8]);
+        let mut sent = Vec::new();
+        write_iamf_burst(&mut sent, &payload, LONG_PERIOD * CHANNELS as usize * 2).unwrap();
+        let mut gate = CarrierGate::new(true);
+        let takes = feed(&mut gate, &samples(&sent, 1.0));
+        assert_eq!(takes.len(), 4);
+        assert!(takes[..3].iter().all(|take| matches!(take, Take::Words(_))));
+        assert_eq!(takes[3], Take::Idle);
+        assert_eq!(payloads(&takes), [payload]);
     }
 
     /// On the sink that takes a carrier only, nothing but a carrier is a

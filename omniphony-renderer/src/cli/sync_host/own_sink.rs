@@ -518,6 +518,7 @@ fn run_sink(
     );
 
     let mut last_report = std::time::Instant::now();
+    let mut level_restores = 0u64;
     loop {
         mainloop.loop_().iterate(Duration::from_millis(50));
         if last_report.elapsed() >= Duration::from_secs(5) {
@@ -535,19 +536,16 @@ fn run_sink(
             set_force_rate(&stream, rate);
         }
         if level_moved.take() {
-            log::warn!(
-                "own sink: the carrier sink's volume or mute was moved: put back to 100 %, \
-                 unmuted (a carrier at another level is not one)"
-            );
-            let channels = config.carrier_channels.unwrap_or(1) as usize;
-            for (id, values) in [
-                (spa::sys::SPA_PROP_mute, vec![0.0]),
-                (spa::sys::SPA_PROP_channelVolumes, vec![1.0; channels]),
-            ] {
-                if let Err(e) = stream.set_control(id, &values) {
-                    log::warn!("own sink: restoring the carrier sink's level: {e:?}");
-                }
+            level_restores += 1;
+            // (Said the first time and then ever less often: something that
+            // keeps moving the level must not fill the log.)
+            if level_restores.is_power_of_two() {
+                log::warn!(
+                    "own sink: the carrier sink's volume or mute was moved: put back to 100 %, \
+                     unmuted (a carrier at another level is not one; {level_restores} time(s))"
+                );
             }
+            restore_level(&stream, config.carrier_channels.unwrap_or(1) as usize);
         }
         // The host moved the setpoint: a new target, or one the servo had to
         // raise. The player's A/V sync follows what the sink says.
@@ -568,6 +566,40 @@ fn run_sink(
         }
     }
     Ok(())
+}
+
+/// Put a carrier sink's level back: unmuted, and at 100 % on the overall
+/// volume and on each channel's (two controls: either scales the samples).
+///
+/// One call for the three, through the C function: it takes `(id, count,
+/// values)` triplets up to a 0, and the crate's `set_control` passes one
+/// triplet without the 0, so the function reads on into whatever follows on
+/// the stack (seen: the overall volume set to garbage, over and over).
+fn restore_level(stream: &pw::stream::Stream, channels: usize) {
+    let mut mute = [0.0f32];
+    let mut volume = [1.0f32];
+    let mut channel_volumes = vec![1.0f32; channels];
+    // SAFETY: a valid stream; each triplet's pointer is valid for its count
+    // for the duration of the call, and the list ends with the 0 the
+    // function reads up to.
+    let r = unsafe {
+        pw::sys::pw_stream_set_control(
+            stream.as_raw_ptr(),
+            spa::sys::SPA_PROP_mute,
+            mute.len() as u32,
+            mute.as_mut_ptr(),
+            spa::sys::SPA_PROP_volume,
+            volume.len() as u32,
+            volume.as_mut_ptr(),
+            spa::sys::SPA_PROP_channelVolumes,
+            channel_volumes.len() as u32,
+            channel_volumes.as_mut_ptr(),
+            0u32,
+        )
+    };
+    if r < 0 {
+        log::warn!("own sink: restoring the carrier sink's level: error {r}");
+    }
 }
 
 /// `node.force-rate` on the stream (0 clears it). The crate has no wrapper
