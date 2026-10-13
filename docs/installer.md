@@ -445,6 +445,16 @@ with its own `RUSTFLAGS`, which replaces the config file
 (mgth/mpv-omniphony#83 adds the flag there), and the bridge gets the same
 change in harletty/harletty-bridge#134.
 
+Step 4 is the pull request that adds this paragraph. `orender --version`
+prints two more lines, `liborender ABI: <major>.<minor>` and
+`bridge_api: <major>.<minor>.x` (`-V` keeps the one line), and
+`orender check-bridges` resolves and loads the bridges the way `render` does
+(`--bridge-path`, else `render.bridge_path(s)`, else auto-discovery), prints
+one `loaded:` or `refused:` line per library and exits non-zero, with the
+reason, when none loads. It tells nothing about the player: mpv-omniphony
+resolves its bridges from `mpv.conf` first, and its engine is the liborender
+it loads, not this binary.
+
 Step 3 is the pull request that adds this paragraph: `installer.yml`, and
 `packaging/installer/linux/` with `build.sh` (composition), `install.sh`,
 `uninstall.sh`, a test of the three on stand-in files (`test.sh`, run by the
