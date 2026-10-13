@@ -537,25 +537,14 @@ pub struct RuntimeLatencyState {
     pub latency_ms: Option<i64>,
     #[serde(rename = "latencyInstantMs")]
     pub latency_instant_ms: Option<i64>,
-    #[serde(rename = "latencyControlMs")]
-    pub latency_control_ms: Option<i64>,
-    #[serde(rename = "latencySmoothedMs")]
-    pub latency_smoothed_ms: Option<f64>,
-    #[serde(rename = "latencyDownstreamMs")]
-    pub latency_downstream_ms: Option<i64>,
     #[serde(rename = "latencyTargetMs")]
     pub latency_target_ms: Option<i64>,
     #[serde(rename = "latencyRequestedMs")]
     pub latency_requested_ms: Option<i64>,
-    /// Ring-buffer occupancy converted to ms — first component of control_available.
-    #[serde(rename = "latencyAvailInputMs")]
-    pub latency_avail_input_ms: Option<f64>,
-    /// Output-FIFO content (input-domain) as ms — second component of control_available.
-    #[serde(rename = "latencyOutputFifoMs")]
-    pub latency_output_fifo_ms: Option<f64>,
-    /// Resampler pending input as ms — third component of control_available.
-    #[serde(rename = "latencyResamplerPendingMs")]
-    pub latency_resampler_pending_ms: Option<f64>,
+    /// The latency the renderer holds in place of the requested target,
+    /// when the stream needs more than it (`None`: the target holds).
+    #[serde(rename = "latencyHeldMs")]
+    pub latency_held_ms: Option<i64>,
     /// Diagnostic-metric schema (list of registered metrics with labels/groups
     /// /units). Sent once on registry change; lets the Studio plot offer a
     /// dynamic multi-select of what to trace.
@@ -598,18 +587,8 @@ pub struct RuntimeAudioState {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct LiveInputState {
-    pub backend: Option<String>,
     pub node: Option<String>,
     pub description: Option<String>,
-    pub layout: Option<String>,
-    #[serde(rename = "clockMode")]
-    pub clock_mode: Option<String>,
-    pub channels: Option<u32>,
-    #[serde(rename = "sampleRate")]
-    pub sample_rate: Option<u32>,
-    pub map: Option<String>,
-    #[serde(rename = "lfeMode")]
-    pub lfe_mode: Option<String>,
 }
 
 /// The fixed-channel-source companions that are NOT scalar registry options, mirrored
@@ -748,56 +727,6 @@ pub struct AppState {
     /// The grid the active bridge hints, once the renderer knows it.
     #[serde(rename = "evaluationGridBridge")]
     pub evaluation_grid_bridge: Option<BridgeGrid>,
-    #[serde(rename = "adaptiveResampling")]
-    pub adaptive_resampling: Option<u8>,
-    #[serde(rename = "adaptiveResamplingEnableFarMode")]
-    pub adaptive_resampling_enable_far_mode: Option<u8>,
-    #[serde(rename = "adaptiveResamplingForceSilenceInFarMode")]
-    pub adaptive_resampling_force_silence_in_far_mode: Option<u8>,
-    #[serde(rename = "adaptiveResamplingHardRecoverHighInFarMode")]
-    pub adaptive_resampling_hard_recover_high_in_far_mode: Option<u8>,
-    #[serde(rename = "adaptiveResamplingHardRecoverLowInFarMode")]
-    pub adaptive_resampling_hard_recover_low_in_far_mode: Option<u8>,
-    #[serde(rename = "adaptiveResamplingFarModeReturnFadeInMs")]
-    pub adaptive_resampling_far_mode_return_fade_in_ms: Option<i64>,
-    #[serde(rename = "adaptiveResamplingKpNear")]
-    pub adaptive_resampling_kp_near: Option<f64>,
-    #[serde(rename = "adaptiveResamplingKi")]
-    pub adaptive_resampling_ki: Option<f64>,
-    #[serde(rename = "adaptiveResamplingIntegralDischargeRatio")]
-    pub adaptive_resampling_integral_discharge_ratio: Option<f64>,
-    #[serde(rename = "adaptiveResamplingMaxAdjust")]
-    pub adaptive_resampling_max_adjust: Option<f64>,
-    #[serde(rename = "adaptiveResamplingUpdateIntervalCallbacks")]
-    pub adaptive_resampling_update_interval_callbacks: Option<i64>,
-    #[serde(rename = "adaptiveResamplingHighRecoverEntryMarginMs")]
-    pub adaptive_resampling_high_recover_entry_margin_ms: Option<i64>,
-    #[serde(rename = "adaptiveResamplingLowRecoverSettleStableMs")]
-    pub adaptive_resampling_low_recover_settle_stable_ms: Option<f64>,
-    #[serde(rename = "adaptiveResamplingLowRecoverEntryMarginMs")]
-    pub adaptive_resampling_low_recover_entry_margin_ms: Option<f64>,
-    #[serde(rename = "adaptiveResamplingLowRecoverExitMarginMs")]
-    pub adaptive_resampling_low_recover_exit_margin_ms: Option<f64>,
-    #[serde(rename = "adaptiveResamplingLowRecoverSettleMarginMs")]
-    pub adaptive_resampling_low_recover_settle_margin_ms: Option<f64>,
-    #[serde(rename = "adaptiveResamplingLowRecoverRefillDeltaAlpha")]
-    pub adaptive_resampling_low_recover_refill_delta_alpha: Option<f64>,
-    #[serde(rename = "adaptiveResamplingControlSmoothingCutoffHz")]
-    pub adaptive_resampling_control_smoothing_cutoff_hz: Option<f64>,
-    #[serde(rename = "adaptiveResamplingControlSmoothingOrder")]
-    pub adaptive_resampling_control_smoothing_order: Option<u32>,
-    #[serde(rename = "adaptiveResamplingBand")]
-    pub adaptive_resampling_band: Option<String>,
-    #[serde(rename = "adaptiveResamplingState")]
-    pub adaptive_resampling_state: Option<String>,
-    #[serde(rename = "adaptiveResamplingPaused")]
-    pub adaptive_resampling_paused: Option<u8>,
-    #[serde(rename = "adaptiveResamplingUsePreBridgeClock")]
-    pub adaptive_resampling_use_pre_bridge_clock: Option<u8>,
-    #[serde(rename = "adaptiveResamplingUseOutputPacing")]
-    pub adaptive_resampling_use_output_pacing: Option<u8>,
-    #[serde(rename = "adaptiveResamplingDisableBackpressure")]
-    pub adaptive_resampling_disable_backpressure: Option<u8>,
     #[serde(rename = "vbapRecomputing")]
     pub vbap_recomputing: Option<bool>,
     #[serde(rename = "recomputeError", skip_serializing_if = "Option::is_none")]
@@ -1208,6 +1137,17 @@ impl AppState {
             .find(|tag| tag.kind == ChannelTag::DIALOGUE)
     }
 
+    /// The tag the stream puts on the channel a source carries, if any. A
+    /// stream's own channels are its first sources, numbered as the stream
+    /// numbers them, so a tag's channel indices are source ids; a generated
+    /// or injected source comes after them and carries none.
+    pub fn channel_tag_of(&self, source_id: &str) -> Option<&ChannelTag> {
+        let channel = source_id.parse::<u32>().ok()?;
+        self.channel_tags
+            .iter()
+            .find(|tag| tag.channels.contains(&channel))
+    }
+
     pub fn new(layouts: Vec<Layout>) -> Self {
         Self {
             layouts,
@@ -1250,23 +1190,6 @@ impl AppState {
         rounded
     }
 
-    pub fn set_latency_control_value(&mut self, value: f64) -> i64 {
-        let rounded = value.round() as i64;
-        self.latency.latency_control_ms = Some(rounded);
-        rounded
-    }
-
-    pub fn set_latency_smoothed_value(&mut self, value: f64) -> f64 {
-        self.latency.latency_smoothed_ms = Some(value);
-        value
-    }
-
-    pub fn set_latency_downstream_value(&mut self, value: f64) -> i64 {
-        let rounded = value.round() as i64;
-        self.latency.latency_downstream_ms = Some(rounded);
-        rounded
-    }
-
     pub fn set_latency_target_value(&mut self, value: f64) -> i64 {
         let rounded = value.round() as i64;
         self.latency.latency_target_ms = Some(rounded);
@@ -1277,21 +1200,6 @@ impl AppState {
         let rounded = value.round() as i64;
         self.latency.latency_requested_ms = Some(rounded);
         rounded
-    }
-
-    pub fn set_latency_avail_input_value(&mut self, value: f64) -> f64 {
-        self.latency.latency_avail_input_ms = Some(value);
-        value
-    }
-
-    pub fn set_latency_output_fifo_value(&mut self, value: f64) -> f64 {
-        self.latency.latency_output_fifo_ms = Some(value);
-        value
-    }
-
-    pub fn set_latency_resampler_pending_value(&mut self, value: f64) -> f64 {
-        self.latency.latency_resampler_pending_ms = Some(value);
-        value
     }
 
     pub fn set_audio_sample_rate_value(&mut self, value: u32) -> Option<u32> {
@@ -1387,31 +1295,6 @@ impl Default for AppState {
             vbap_allow_negative_z: None,
             evaluation_grid: None,
             evaluation_grid_bridge: None,
-            adaptive_resampling: Some(0),
-            adaptive_resampling_enable_far_mode: Some(1),
-            adaptive_resampling_force_silence_in_far_mode: Some(1),
-            adaptive_resampling_hard_recover_high_in_far_mode: Some(1),
-            adaptive_resampling_hard_recover_low_in_far_mode: Some(0),
-            adaptive_resampling_far_mode_return_fade_in_ms: Some(500),
-            adaptive_resampling_kp_near: Some(1.0),
-            adaptive_resampling_ki: Some(1.0),
-            adaptive_resampling_integral_discharge_ratio: Some(0.25),
-            adaptive_resampling_max_adjust: Some(0.01),
-            adaptive_resampling_update_interval_callbacks: Some(1),
-            adaptive_resampling_high_recover_entry_margin_ms: Some(1000),
-            adaptive_resampling_low_recover_settle_stable_ms: Some(200.0),
-            adaptive_resampling_low_recover_entry_margin_ms: Some(18.0),
-            adaptive_resampling_low_recover_exit_margin_ms: Some(6.0),
-            adaptive_resampling_low_recover_settle_margin_ms: Some(6.0),
-            adaptive_resampling_low_recover_refill_delta_alpha: Some(0.5),
-            adaptive_resampling_control_smoothing_cutoff_hz: Some(0.5),
-            adaptive_resampling_control_smoothing_order: Some(1),
-            adaptive_resampling_band: None,
-            adaptive_resampling_state: None,
-            adaptive_resampling_paused: Some(0),
-            adaptive_resampling_use_pre_bridge_clock: Some(0),
-            adaptive_resampling_use_output_pacing: Some(0),
-            adaptive_resampling_disable_backpressure: Some(0),
             vbap_recomputing: None,
             recompute_error: None,
             save_error: None,
@@ -1773,6 +1656,28 @@ mod bridge_problem_tests {
             problem.report,
             format!("{BRIDGE_ERROR_NONE_FOUND}: none requested")
         );
+    }
+}
+
+#[cfg(test)]
+mod channel_tag_tests {
+    use super::*;
+
+    /// A tag's channel indices are the ids of the stream's own sources; a
+    /// source that is not one of the stream's channels has no tag.
+    #[test]
+    fn a_source_carries_the_tag_of_its_channel() {
+        let mut state = AppState::new(Vec::new());
+        state.channel_tags = vec![ChannelTag {
+            kind: ChannelTag::DIALOGUE.to_owned(),
+            channels: vec![12, 13, 14],
+            ..ChannelTag::default()
+        }];
+        assert!(state.channel_tag_of("12").is_some());
+        assert!(state.channel_tag_of("14").is_some());
+        assert!(state.channel_tag_of("0").is_none());
+        assert!(state.channel_tag_of("15").is_none());
+        assert!(state.channel_tag_of("object-test").is_none());
     }
 }
 

@@ -434,7 +434,8 @@ mod tests {
     fn settings_survive_the_round_trip() {
         let mut settings = ViewSettings::default();
         let mut volume = VolumeSettings::default();
-        settings.speaker_face_listener_enabled = true;
+        settings.speaker_face_listener_enabled = false;
+        settings.object_colors_enabled = false;
         settings.speaker_size = 0.12;
         settings.show_object_details = false;
         settings.object_display_mode = ObjectDisplayMode::DiffuseSphere;
@@ -450,7 +451,8 @@ mod tests {
         let mut v2 = VolumeSettings::default();
         back.apply(&mut s2, &mut v2);
         assert!(back.matches(&s2, &v2));
-        assert!(s2.speaker_face_listener_enabled);
+        assert!(!s2.speaker_face_listener_enabled);
+        assert!(!s2.object_colors_enabled);
         assert_eq!(s2.speaker_size, 0.12);
         assert!(!s2.show_object_details);
         assert_eq!(s2.object_display_mode, ObjectDisplayMode::DiffuseSphere);
@@ -467,12 +469,12 @@ mod tests {
     fn the_file_uses_the_web_keys_and_values() {
         let mut settings = ViewSettings::default();
         settings.object_display_mode = ObjectDisplayMode::TransparentSphere;
-        settings.speaker_face_listener_enabled = true;
+        settings.speaker_face_listener_enabled = false;
         let mut volume = VolumeSettings::default();
         volume.object_colormap = Colormap::BlueWhite;
         let json = serde_json::to_string(&DisplayPrefs::capture(&settings, &volume)).unwrap();
         for needle in [
-            "\"speakerFaceListener\":true",
+            "\"speakerFaceListener\":false",
             "\"objectDisplayMode\":\"transparent-sphere\"",
             "\"objectEnergyColormap\":\"blueWhite\"",
             "\"duration_ms\"",
@@ -486,12 +488,12 @@ mod tests {
     #[test]
     fn a_partial_file_leaves_the_rest_alone() {
         let prefs: DisplayPrefs =
-            serde_json::from_str(r#"{"speakerFaceListener":true,"speakerSize":9.0}"#).unwrap();
+            serde_json::from_str(r#"{"speakerFaceListener":false,"speakerSize":9.0}"#).unwrap();
         let mut settings = ViewSettings::default();
         let mut volume = VolumeSettings::default();
         let before = settings.object_sphere_size;
         prefs.apply(&mut settings, &mut volume);
-        assert!(settings.speaker_face_listener_enabled);
+        assert!(!settings.speaker_face_listener_enabled);
         assert_eq!(settings.speaker_size, 0.2);
         assert_eq!(settings.object_sphere_size, before);
     }

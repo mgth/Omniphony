@@ -6,7 +6,6 @@ pub mod about;
 pub mod audio;
 pub mod audio_input;
 pub mod audio_output;
-pub mod auto_tune;
 pub mod binaural;
 pub mod channel_editor;
 pub mod config_banner;

@@ -736,6 +736,90 @@ fn heard_us_publishes_the_listener_and_marks_each_block() {
     assert!(first.is_some_and(|pos| pos < 4 * 1536), "{first:?}");
 }
 
+fn float_arg(m: &rosc::OscMessage, i: usize) -> Option<f32> {
+    match m.args.get(i) {
+        Some(rosc::OscType::Float(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+/// A host that plays the rendered audio itself reports its output stage, and
+/// the meter bundle carries it: the latency it holds, the latency it
+/// measures, its resampling ratio. A host that reports nothing publishes
+/// none of them, as before.
+#[test]
+fn a_host_output_stage_rides_the_meter_bundle() {
+    use orender_engine::osc::MeterTimings;
+    use runtime_control::osc_contract::{
+        METER_MASTER, STATE_LATENCY_INSTANT, STATE_LATENCY_TARGET, STATE_RESAMPLE_RATIO,
+    };
+
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (mut engine, _, _) = engine_with_control();
+    engine
+        .enable_osc(orender_engine::OscOptions {
+            host: "127.0.0.1".into(),
+            port_out: socket.local_addr().unwrap().port(),
+            port_in: 0,
+            metering: true,
+        })
+        .unwrap();
+    let output_stage = [
+        STATE_LATENCY_TARGET,
+        STATE_LATENCY_INSTANT,
+        STATE_RESAMPLE_RATIO,
+    ];
+
+    let before = feed_and_listen(&mut engine, &socket, 8);
+    assert!(
+        before.iter().any(|m| m.addr == METER_MASTER),
+        "the meters must flow for this test to mean anything"
+    );
+    assert!(
+        !before
+            .iter()
+            .any(|m| output_stage.contains(&m.addr.as_str())),
+        "no output stage before a host reports one"
+    );
+
+    engine.set_output_timings(MeterTimings {
+        latency_target_ms: Some(150.0),
+        latency_instant_ms: Some(150.25),
+        resample_ratio: Some(1.0001),
+        ..MeterTimings::default()
+    });
+    let after = feed_and_listen(&mut engine, &socket, 8);
+    let last = |addr: &str| {
+        after
+            .iter()
+            .rev()
+            .find(|m| m.addr == addr)
+            .and_then(|m| float_arg(m, 0))
+    };
+    assert_eq!(last(STATE_LATENCY_TARGET), Some(150.0));
+    assert_eq!(last(STATE_LATENCY_INSTANT), Some(150.25));
+    assert_eq!(last(STATE_RESAMPLE_RATIO), Some(1.0001));
+}
+
+/// The host's diag channels are only serialised for a client that asked for
+/// them: with none, the bundle is never built.
+#[test]
+fn diag_channels_are_not_built_without_a_client() {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (mut engine, _, _) = engine_with_control();
+    // Without an OSC server there is nobody to publish to.
+    engine.publish_diag(|| panic!("no OSC server, no bundle"));
+    engine
+        .enable_osc(orender_engine::OscOptions {
+            host: "127.0.0.1".into(),
+            port_out: socket.local_addr().unwrap().port(),
+            port_in: 0,
+            metering: true,
+        })
+        .unwrap();
+    engine.publish_diag(|| panic!("no diag client, no bundle"));
+}
+
 /// The object path, end to end on the engine: a stream whose frames carry
 /// objects is declared and counted as one, its bed is reported as the bed,
 /// its objects render and their positions go out over OSC; the same stream
@@ -813,4 +897,88 @@ extern "C" fn probe(
 
 extern "C" fn input_codecs() -> abi_stable::std_types::RVec<abi_stable::std_types::RString> {
     abi_stable::std_types::RVec::new()
+}
+
+/// Silence rendered for a host that plays the audio itself is silent, of the
+/// length asked for, and is what a speaker test is injected into: with the
+/// test on, the same call makes sound on the speaker under test and nowhere
+/// else.
+#[test]
+fn rendered_silence_carries_a_speaker_test() {
+    use renderer::live_params::{SpeakerTest, TestIsolation};
+
+    let (mut engine, _, control) = engine_with_control();
+    // The stereo preset's layout: L, R and what follows them.
+    let width = engine.channel_count() as usize;
+    assert!(width >= 2);
+    let quiet = engine.render_silence(4800).unwrap().expect("a block");
+    assert_eq!(quiet.n_frames, 4800);
+    assert_eq!(quiet.n_channels as usize, width);
+    assert!(quiet.samples.iter().all(|s| *s == 0.0));
+    engine.recycle(vec![quiet]);
+
+    control.live.write().speaker_test = Some(SpeakerTest {
+        speaker_idx: 1,
+        level: 0.25,
+        isolation: TestIsolation::TestOnly,
+    });
+    let tested = engine.render_silence(4800).unwrap().expect("a block");
+    let peak = |channel: usize| {
+        tested
+            .samples
+            .chunks_exact(width)
+            .map(|frame| frame[channel].abs())
+            .fold(0.0f32, f32::max)
+    };
+    for other in (0..width).filter(|c| *c != 1) {
+        assert_eq!(peak(other), 0.0, "speaker {other} stays silent");
+    }
+    assert!(peak(1) > 0.01, "the speaker under test plays: {}", peak(1));
+    assert!(peak(1) <= 0.25 + 1e-4, "within its level: {}", peak(1));
+}
+
+/// Linear PCM the host captured itself is rendered by its labels, with no
+/// bridge involved, and the stream is declared as PCM until the next reset.
+#[test]
+fn host_pcm_is_rendered_by_its_labels() {
+    use bridge_api::{I32_PCM_FULL_SCALE, RChannelLabel, RDecodedFrame};
+
+    let (mut engine, declaration_reads, _) = engine_with_control();
+    let frames = 4800usize;
+    // Half scale on the left channel only.
+    let mut pcm = vec![0i32; frames * 2];
+    for left in pcm.iter_mut().step_by(2) {
+        *left = I32_PCM_FULL_SCALE / 2;
+    }
+    let frame = RDecodedFrame {
+        sampling_frequency: 48_000,
+        sample_count: frames as u32,
+        channel_count: 2,
+        pcm: pcm.into(),
+        channel_labels: vec![RChannelLabel::L, RChannelLabel::R].into(),
+        metadata: Vec::new().into(),
+        drc_gain: 1.0,
+        drc_ramp_duration: 0,
+        dialogue_level: abi_stable::std_types::ROption::RNone,
+        is_new_segment: false,
+    };
+    let width = engine.channel_count() as usize;
+    let block = engine.render_host_pcm(&frame).unwrap().expect("a block");
+    assert_eq!((block.n_frames, block.n_channels as usize), (frames, width));
+    // Past the renderer's start ramp: the left speaker plays, the right not.
+    let tail = &block.samples[(frames - 480) * width..];
+    let left = tail
+        .chunks_exact(width)
+        .map(|f| f[0].abs())
+        .fold(0.0, f32::max);
+    let right = tail
+        .chunks_exact(width)
+        .map(|f| f[1].abs())
+        .fold(0.0, f32::max);
+    assert!(left > 0.1, "left {left}");
+    assert!(right < left / 10.0, "right {right} against left {left}");
+    assert!(
+        declaration_reads.lock().unwrap().is_empty(),
+        "the bridge is not asked about a stream it never saw"
+    );
 }

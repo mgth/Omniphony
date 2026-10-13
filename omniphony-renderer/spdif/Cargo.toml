@@ -1,10 +1,10 @@
 [package]
 name = "spdif"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "IEC 61937 S/PDIF parser for immersive audio bitstreams"
+description = "IEC 61937 S/PDIF parser for immersive audio bitstreams, and the private IAMF burst type"
 
 [lib]
 name = "spdif"

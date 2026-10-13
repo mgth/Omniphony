@@ -106,18 +106,14 @@ fn is_explicit_value_source(source: ValueSource) -> bool {
 #[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
     /// Render the specified input stream to a realtime output backend.
-    Render(RenderArgs),
-
-    /// Run realtime live-input rendering without a bridge-fed decode path.
-    InputLive(InputLiveArgs),
+    Render(Box<RenderArgs>),
 
     /// Generate VBAP gain table from speaker layout configuration
     GenerateVbap(GenerateVbapArgs),
 
-    /// Play a pipe through the new sync output (resampling rework, experimental).
-    #[cfg(target_os = "linux")]
-    #[command(hide = true)]
-    SyncPlay(crate::cli::sync_host::SyncPlayArgs),
+    /// Write an IAMF file as a private IEC 61937 burst stream (test tool).
+    #[command(name = "wrap-iec61937", hide = true)]
+    WrapIec61937(WrapIec61937Args),
 
     /// List the realtime output devices (Windows only): the ASIO ones, or the
     /// WASAPI ones when no ASIO driver is installed
@@ -307,11 +303,6 @@ pub struct RenderArgs {
     #[arg(skip)]
     pub output_sample_rate: Option<u32>,
 
-    /// Adaptive resampling (PI on the buffer fill): option
-    /// `enable_adaptive_resampling`.
-    #[arg(skip)]
-    pub enable_adaptive_resampling: bool,
-
     // ── Backend parameters: not registry options (the per-backend param
     // bag). Override-only: when omitted the value is kept from the config
     // file / engine default. Consumed via `apply_render_cfg_overrides`.
@@ -370,102 +361,32 @@ pub struct RenderArgs {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct InputLiveArgs {
-    /// Realtime input backend.
-    #[arg(long = "input-backend", value_enum)]
-    pub input_backend: Option<InputBackend>,
+pub struct WrapIec61937Args {
+    /// A standalone IAMF stream (.iamf / .obu): one IA sequence
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
 
-    /// Input endpoint node name exposed to the host audio graph.
-    #[arg(long = "input-node", value_name = "NAME")]
-    pub input_node: Option<String>,
+    /// Where the carrier's bytes go (16-bit little-endian words)
+    #[arg(long, short = 'o', value_name = "FILE")]
+    pub output: PathBuf,
 
-    /// Human-readable input endpoint description.
-    #[arg(long = "input-description", value_name = "LABEL")]
-    pub input_description: Option<String>,
+    /// Carrier channels: its byte rate is channels x rate x 2
+    #[arg(long, value_name = "N", default_value_t = 2)]
+    pub channels: u32,
 
-    /// Layout used to derive fixed source positions for incoming channels.
-    #[arg(long = "input-layout", value_name = "LAYOUT")]
-    pub input_layout: Option<PathBuf>,
+    /// Carrier frame rate
+    #[arg(long, value_name = "HZ", default_value_t = 48_000)]
+    pub carrier_rate: u32,
 
-    /// Number of incoming channels expected from the live input backend.
-    #[arg(long = "input-channels", value_name = "COUNT")]
-    pub input_channels: Option<u16>,
+    /// The stream's sample rate, for a codec config that does not state it
+    /// (AAC)
+    #[arg(long, value_name = "HZ")]
+    pub sample_rate: Option<u32>,
 
-    /// Requested input sample rate for the live backend.
-    #[arg(long = "input-sample-rate", value_name = "HZ")]
-    pub input_sample_rate: Option<u32>,
-
-    /// Channel-to-fixed-object mapping preset.
-    #[arg(long = "input-map", value_enum)]
-    pub input_map: Option<InputMapModeArg>,
-
-    /// How to treat the LFE input channel when present.
-    #[arg(long = "input-lfe-mode", value_enum)]
-    pub input_lfe_mode: Option<InputLfeModeArg>,
-
-    /// Realtime audio output backend.
-    #[arg(long = "output-backend", value_enum)]
-    pub output_backend: Option<OutputBackend>,
-
-    /// Output device or target name.
-    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    #[arg(
-        long,
-        value_name = "NAME",
-        visible_alias = "sink",
-        alias = "asio-device-name"
-    )]
-    pub output_device: Option<String>,
-
-    /// Target buffer latency in milliseconds.
-    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    #[arg(long, value_name = "MS")]
-    pub latency_target_ms: Option<u32>,
-
-    /// [LINUX ONLY] PipeWire processing quantum in frames.
-    #[cfg(target_os = "linux")]
-    #[arg(long, value_name = "FRAMES")]
-    pub pw_quantum: Option<u32>,
-
-    /// Enable VBAP spatial rendering for the fixed input objects.
-    #[arg(long, conflicts_with = "disable_vbap")]
-    pub enable_vbap: bool,
-
-    /// Override config file 'enable_vbap' setting to false.
-    #[arg(long, conflicts_with = "enable_vbap")]
-    pub disable_vbap: bool,
-
-    /// Speaker layout configuration file (YAML)
-    #[arg(long, value_name = "LAYOUT")]
-    pub speaker_layout: Option<PathBuf>,
-
-    /// Enable OSC output for metadata (requires --osc-host and --osc-port)
-    #[arg(long, conflicts_with = "no_osc")]
-    pub osc: bool,
-
-    /// Override config file 'osc' setting to false.
-    #[arg(long, conflicts_with = "osc")]
-    pub no_osc: bool,
-
-    /// Enable OSC audio level metering.
-    #[arg(long, conflicts_with = "no_osc_metering")]
-    pub osc_metering: bool,
-
-    /// Override config file 'osc_metering' setting to false.
-    #[arg(long, conflicts_with = "osc_metering")]
-    pub no_osc_metering: bool,
-
-    /// OSC target host
-    #[arg(long, value_name = "HOST", default_value = renderer::config_fields::osc_host::DEFAULT)]
-    pub osc_host: String,
-
-    /// OSC target port
-    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_port())]
-    pub osc_port: u16,
-
-    /// OSC registration listener port.
-    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_rx_port())]
-    pub osc_rx_port: u16,
+    /// How often a redundant copy of the descriptors is carried, for a
+    /// receiver that joins late; 0 carries none
+    #[arg(long, value_name = "MS", default_value_t = 1000)]
+    pub copy_interval_ms: u32,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -580,7 +501,7 @@ pub enum OutputBackend {
     #[cfg(target_os = "macos")]
     Coreaudio,
     /// Write rendered interleaved f32 to stdout / a file / a named pipe (FIFO).
-    /// Non-realtime: no device clock, no adaptive resampling. See
+    /// Non-realtime: no device clock, no resampling. See
     /// `--output-file` and `--output-file-format`.
     File,
     /// Placeholder used when no realtime output backend is compiled in.
@@ -596,27 +517,6 @@ pub enum OutputFileFormatArg {
     RawF32,
     /// Streaming Core Audio Format (LPCM 32-bit float, data size = -1).
     Caf,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum InputBackend {
-    #[cfg(target_os = "linux")]
-    Pipewire,
-    #[value(skip)]
-    Unsupported,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum InputMapModeArg {
-    #[value(name = "7.1-fixed")]
-    SevenOneFixed,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum InputLfeModeArg {
-    Object,
-    Direct,
-    Drop,
 }
 
 impl OutputBackend {
@@ -721,17 +621,6 @@ impl std::str::FromStr for OutputBackend {
                 Self::platform_default().ok_or_else(|| "No device output backend".to_string())
             }
             _ => Err(format!("Unknown output backend: {s}")),
-        }
-    }
-}
-
-impl std::str::FromStr for InputBackend {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            #[cfg(target_os = "linux")]
-            "pipewire" => Ok(Self::Pipewire),
-            _ => Err(format!("Unknown input backend: {s}")),
         }
     }
 }

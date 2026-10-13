@@ -401,8 +401,8 @@ pub fn build_renderer_state_json(
 /// actually do, so studio can label the connection and hide inapplicable panels.
 ///
 /// Capabilities are derived from the host's actual control surfaces:
-/// - `has_audio` (an [`AudioControl`] is attached) → output device + adaptive
-///   resampling + latency-target controls apply (the standalone CLI/service).
+/// - `has_audio` (an [`AudioControl`] is attached) → output device and
+///   latency-target controls apply (the standalone CLI/service).
 /// - `has_input` (an [`InputControl`] is attached) → input-source controls apply.
 ///
 /// The embedded host (`liborender` inside mpv) owns no audio output or input
@@ -491,10 +491,9 @@ fn hrir_params_json(source: &renderer::binaural::HrirSource) -> serde_json::Valu
     }
 }
 
-/// The options schema a host publishes: the core options it offers (a host
-/// with audio I/O leaves out the embedded engine's), then its own.
-fn options_schema_json(has_audio: bool, host: Option<&dyn crate::HostControlHandler>) -> String {
-    let mut entries = renderer::options::schema_entries(has_audio);
+/// The options schema a host publishes: the core options, then its own.
+fn options_schema_json(host: Option<&dyn crate::HostControlHandler>) -> String {
+    let mut entries = renderer::options::schema_entries();
     if let Some(host) = host {
         entries.extend(host.options_schema());
     }
@@ -528,10 +527,13 @@ fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String 
     let mut control_config = vec!["layout", "speakers"];
     if has_audio {
         domains.push("audio");
-        // The output device, adaptive resampler and latency-target servo all
-        // live in the audio-output stage.
+        // The output device and the latency target live in the audio-output
+        // stage, with what regulates it. `sync` is the engine that holds an
+        // end-to-end latency (`docs/resampling-rework-plan.md`); a renderer
+        // from before it said `adaptive_resampling` here, with the tuning
+        // controls a client then showed.
         control_config.push("audio");
-        control_config.push("adaptive_resampling");
+        control_config.push("sync");
     }
     if has_input {
         domains.push("input");
@@ -583,7 +585,8 @@ mod capability_tests {
         assert!(domains.iter().any(|d| d == "input"));
         let cc = v["controlConfig"].as_array().unwrap();
         assert!(cc.iter().any(|c| c == "audio"));
-        assert!(cc.iter().any(|c| c == "adaptive_resampling"));
+        assert!(cc.iter().any(|c| c == "sync"));
+        assert!(!cc.iter().any(|c| c == "adaptive_resampling"));
         assert!(cc.iter().any(|c| c == "input"));
     }
 
@@ -601,7 +604,7 @@ mod capability_tests {
         assert!(domains.iter().any(|d| d == "speakers"));
         let cc = v["controlConfig"].as_array().unwrap();
         assert!(!cc.iter().any(|c| c == "audio"));
-        assert!(!cc.iter().any(|c| c == "adaptive_resampling"));
+        assert!(!cc.iter().any(|c| c == "sync"));
         assert!(!cc.iter().any(|c| c == "input"));
         assert!(cc.iter().any(|c| c == "speakers"));
     }
@@ -725,7 +728,7 @@ pub fn build_live_state_bundle_with_host(
             // default, flags, i18n keys) — same pattern as the generator /
             // phantom param schemas, so clients can build controls from it.
             addr: crate::osc_contract::STATE_OPTIONS_SCHEMA.to_string(),
-            args: vec![OscType::String(options_schema_json(has_audio, host))],
+            args: vec![OscType::String(options_schema_json(host))],
         }),
         OscPacket::Message(OscMessage {
             // Named config profiles (docs/config-profiles.md): active + list,

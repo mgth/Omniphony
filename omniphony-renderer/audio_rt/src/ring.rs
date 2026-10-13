@@ -166,7 +166,7 @@ impl<T: Copy> Consumer<T> {
     }
 
     /// Frames consumed (read or discarded) so far, ever.
-    pub fn read(&self) -> u64 {
+    pub fn consumed(&self) -> u64 {
         self.shared.read.load(Ordering::Relaxed)
     }
 
@@ -177,7 +177,7 @@ impl<T: Copy> Consumer<T> {
 
     /// Frames readable right now.
     pub fn available(&self) -> usize {
-        (self.written() - self.read()) as usize
+        (self.written() - self.consumed()) as usize
     }
 
     /// Fill `dst` with exactly `dst.len() / channels` frames, or read nothing
@@ -190,7 +190,7 @@ impl<T: Copy> Consumer<T> {
         if frames == 0 {
             return true;
         }
-        let at = self.read();
+        let at = self.consumed();
         // SAFETY: `[at, at + frames)` is readable (`frames <= available()`),
         // and `dst` holds at least `frames * channels` samples.
         unsafe {
@@ -209,7 +209,7 @@ impl<T: Copy> Consumer<T> {
         if frames == 0 {
             return 0;
         }
-        let at = self.read();
+        let at = self.consumed();
         // SAFETY: as in `read_exact`, for `frames <= available()`.
         unsafe {
             self.shared.copy(at, dst.as_mut_ptr(), frames, false);
@@ -223,7 +223,7 @@ impl<T: Copy> Consumer<T> {
     /// Drop up to `frames` frames unread; returns how many were dropped.
     pub fn discard(&mut self, frames: usize) -> usize {
         let frames = frames.min(self.available());
-        let at = self.read();
+        let at = self.consumed();
         self.shared
             .read
             .store(at + frames as u64, Ordering::Release);
@@ -262,7 +262,7 @@ mod tests {
         let mut out = [0.0; 8];
         assert!(rx.read_exact(&mut out));
         assert_eq!(out, [5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
-        assert_eq!((rx.read(), rx.written()), (6, 6));
+        assert_eq!((rx.consumed(), rx.written()), (6, 6));
     }
 
     #[test]
@@ -281,7 +281,7 @@ mod tests {
         let mut out = [9.0; 6];
         assert!(!rx.read_exact(&mut out));
         assert_eq!(out, [9.0; 6]);
-        assert_eq!(rx.read(), 0);
+        assert_eq!(rx.consumed(), 0);
     }
 
     #[test]

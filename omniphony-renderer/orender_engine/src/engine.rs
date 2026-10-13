@@ -27,6 +27,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
+/// What the host's own PCM is called, having no bridge to name it
+/// (`StreamDeclaration::label`).
+const HOST_PCM_LABEL: &str = "PCM";
+
 /// Monitoring cadences this host falls back to when the config declares none.
 ///
 /// Lower than the CLI's: embedded in a player, the only consumer is the
@@ -57,6 +61,9 @@ pub struct RenderedAudio {
     pub n_channels: u32,
     /// Number of sample frames in this block.
     pub n_frames: usize,
+    /// Rate of these samples (Hz): the stream's, which the render follows.
+    /// Not the rate the engine was built at when the two differ.
+    pub sample_rate: u32,
     /// Absolute decoded sample position at the start of this block, in input
     /// samples (monotonic across the stream; reset by [`Engine::reset`]).
     pub sample_pos: u64,
@@ -172,6 +179,16 @@ pub struct Engine {
     osc: Option<OscSender>,
     /// VU meter, created with the OSC server; feeds outgoing meter bundles.
     audio_meter: Option<AudioMeter>,
+    /// The stream in hand is the host's own PCM
+    /// ([`render_host_pcm`](Self::render_host_pcm)), declared as such.
+    host_pcm_declared: bool,
+    /// The output stage's figures, from a host that plays the rendered audio
+    /// itself ([`set_output_timings`](Self::set_output_timings)); empty for a
+    /// host that hands the audio to a player.
+    output_timings: crate::osc::MeterTimings,
+    /// When the host's diag channels last went out
+    /// ([`publish_diag`](Self::publish_diag)); set with the OSC server.
+    diag_cadence: Option<crate::DiagPublishCadence>,
     /// Opt-in per-frame perf accumulator (env `ORENDER_PERF_LOG`). `None` = off
     /// (zero overhead). Diagnostic only; safe to remove once perf work lands.
     perf: Option<PerfLog>,
@@ -286,6 +303,23 @@ impl Drop for Engine {
     }
 }
 
+/// What a host that loaded the config itself hands the engine
+/// ([`Engine::from_host`]): [`Engine::from_config`]'s inputs, and the two
+/// renderer settings that are a command line's alone.
+pub struct HostSetup<'a> {
+    pub config_yaml_path: Option<&'a Path>,
+    pub config: Option<Config>,
+    pub live_restored: bool,
+    pub speaker_layout_path: Option<&'a Path>,
+    pub bridge_paths: &'a [PathBuf],
+    pub input_codec: Option<&'a str>,
+    pub sample_rate: u32,
+    /// A precomputed VBAP table to load (`--vbap-table`).
+    pub vbap_table: Option<PathBuf>,
+    /// Log the objects' positions as they are rendered.
+    pub log_object_positions: bool,
+}
+
 impl Engine {
     /// Build a session around an already-loaded bridge and a constructed
     /// renderer. The bridge must already be configured (presentation, DRC mode)
@@ -318,6 +352,9 @@ impl Engine {
             last_output_input_pts: None,
             osc: None,
             audio_meter: None,
+            host_pcm_declared: false,
+            output_timings: crate::osc::MeterTimings::default(),
+            diag_cadence: None,
             perf: std::env::var_os("ORENDER_PERF_LOG")
                 .is_some()
                 .then(PerfLog::new),
@@ -364,6 +401,19 @@ impl Engine {
     /// inactive (studio hides the matching panels via the capabilities
     /// handshake). The server is owned by the engine and shut down on drop.
     pub fn enable_osc(&mut self, opts: OscOptions) -> Result<()> {
+        self.enable_osc_with_host(opts, None)
+    }
+
+    /// [`enable_osc`](Self::enable_osc) for a host that owns an audio output:
+    /// `host` handles its control domains (the output device, the latency
+    /// target), its state joins the snapshot and its options the saved
+    /// config, and the capabilities say so (Studio shows the matching
+    /// panels).
+    pub fn enable_osc_with_host(
+        &mut self,
+        opts: OscOptions,
+        host: Option<Arc<dyn runtime_control::HostControlHandler>>,
+    ) -> Result<()> {
         use std::net::SocketAddrV4;
         use std::str::FromStr;
 
@@ -382,6 +432,9 @@ impl Engine {
             sender.set_default_metering(true);
         }
         sender.attach_renderer_control(self.renderer.renderer_control());
+        if let Some(host) = host {
+            sender.attach_host_handler(host);
+        }
         sender.start_listener(opts.port_in, true)?;
         // Meter cadence reads the RendererControl atomic each poll (source of
         // truth, OSC-adjustable, persisted).
@@ -389,8 +442,124 @@ impl Engine {
             self.renderer.num_speakers(),
             self.renderer.renderer_control().meter_rate_atomic(),
         ));
+        self.diag_cadence = Some(crate::DiagPublishCadence::new(
+            self.renderer.renderer_control().diag_rate_atomic(),
+        ));
         self.osc = Some(sender);
         Ok(())
+    }
+
+    /// The rate the renderer runs at now (Hz): the last stream's, or the one
+    /// the engine was built at before any.
+    pub fn render_rate(&self) -> u32 {
+        self.renderer.sample_rate()
+    }
+
+    /// The names of the output's channels, in order: the layout's speakers,
+    /// or the binaural pair. What a host that plays the audio tags its
+    /// channels with when they are routed by position.
+    pub fn output_channel_names(&self) -> Vec<String> {
+        self.renderer.output_channel_names()
+    }
+
+    /// How the output's channels are to be routed on the device: by their
+    /// position, or one to one in order (the live option).
+    pub fn output_channel_mapping(&self) -> renderer::live_params::OutputChannelMapping {
+        self.renderer
+            .renderer_control()
+            .live
+            .read()
+            .options
+            .output_channel_mapping
+    }
+
+    /// Have the binaural stages build their filters on the render path
+    /// instead of in the background: for an offline render, where nothing
+    /// waits on the output and a filter that lands whenever its worker is
+    /// done would make two renders of the same file differ.
+    pub fn set_synchronous_stage_builds(&mut self, on: bool) {
+        self.renderer.set_synchronous_stage_builds(on);
+    }
+
+    /// Where the output's channels are, as `(azimuth, elevation, distance)`
+    /// per speaker, when the output is the speaker array itself: `None` for
+    /// a binaural pair or any output that is not one channel per speaker.
+    /// What a capture of the output needs to describe itself.
+    pub fn output_speaker_positions(&self) -> Option<Vec<[f32; 3]>> {
+        (self.renderer.output_is_speaker_array()
+            && self.renderer.output_channel_count() == self.channel_count() as usize)
+            .then(|| {
+                self.renderer
+                    .speaker_layout()
+                    .speakers
+                    .iter()
+                    .map(|s| [s.azimuth, s.elevation, s.distance])
+                    .collect()
+            })
+    }
+
+    /// The renderer's live control state, for a host that builds its own
+    /// control handler around it.
+    pub fn renderer_control(&self) -> Arc<renderer::live_params::RendererControl> {
+        self.renderer.renderer_control()
+    }
+
+    /// The decoder bridges in force: as asked for at construction, or as a
+    /// live change of the bridge path left them.
+    pub fn bridge_paths(&self) -> Vec<PathBuf> {
+        self.renderer.renderer_control().bridge_paths()
+    }
+
+    /// Release the OSC port and stop listening: the standby of a host that
+    /// yields the port to a player's embedded engine (`--osc-yield`). A no-op
+    /// without an OSC server.
+    pub fn osc_enter_standby(&mut self) {
+        if let Some(osc) = self.osc.as_mut() {
+            osc.enter_standby();
+        }
+    }
+
+    /// Take the OSC port back after a standby. Whether the server listens
+    /// again: `false` when the port is still held, and the host should stand
+    /// by again rather than run without a listener. `true` without an OSC
+    /// server, which has nothing to take back.
+    pub fn osc_resume(&mut self) -> bool {
+        match self.osc.as_mut() {
+            Some(osc) => {
+                if let Err(e) = osc.resume() {
+                    log::error!("standby resume: failed to re-bind the OSC port: {e}");
+                }
+                osc.is_listening()
+            }
+            None => true,
+        }
+    }
+
+    /// The output stage's latency and resampling figures, carried by every
+    /// meter bundle from now on. For a host that plays the rendered audio
+    /// itself and so has an output stage to report; a host that hands the
+    /// audio to a player leaves them empty. The frame's own timings (decode,
+    /// render) are filled in by the pipeline and need not be set here.
+    pub fn set_output_timings(&mut self, timings: crate::osc::MeterTimings) {
+        self.output_timings = timings;
+    }
+
+    /// Publish the host's diag channels to the clients that asked for them,
+    /// at the diag cadence (`render.diag_rate`, adjustable over OSC).
+    /// `bundle` returns the schema and the values as JSON
+    /// (`DiagRegistry::schema_json` / `values_json`); it only runs when a
+    /// bundle is due, so a host can call this on every turn of its loop.
+    pub fn publish_diag(&mut self, bundle: impl FnOnce() -> (Option<String>, Option<String>)) {
+        let (Some(osc), Some(cadence)) = (self.osc.as_mut(), self.diag_cadence.as_mut()) else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if !osc.has_diag_clients() || !cadence.should_send(now) {
+            return;
+        }
+        let (schema, values) = bundle();
+        osc.send_diag_bundle(schema, values);
+        cadence.mark_sent(now);
     }
 
     /// Build a session from file paths: load the omniphony YAML config (if any),
@@ -415,7 +584,6 @@ impl Engine {
         input_codec: Option<&str>,
         sample_rate: u32,
     ) -> Result<Self> {
-        let t_total = std::time::Instant::now();
         let (loaded_cfg, live_restored) = match config_yaml_path {
             Some(path) => {
                 let (cfg, restored) = Config::load_or_default_with_live(path);
@@ -423,6 +591,61 @@ impl Engine {
             }
             None => (None, false),
         };
+        Self::from_config(
+            config_yaml_path,
+            loaded_cfg,
+            live_restored,
+            speaker_layout_path,
+            bridge_paths,
+            input_codec,
+            sample_rate,
+        )
+    }
+
+    /// [`from_paths`](Self::from_paths) for a host that has loaded the config
+    /// itself and resolved its own overrides into it (the standalone
+    /// renderer's command-line flags): `config` is used as given instead of
+    /// being read from `config_yaml_path`, which stays the file Save writes
+    /// to. `live_restored`: the config came with a live-handoff sidecar, so
+    /// what runs is unsaved.
+    pub fn from_config(
+        config_yaml_path: Option<&Path>,
+        config: Option<Config>,
+        live_restored: bool,
+        speaker_layout_path: Option<&Path>,
+        bridge_paths: &[PathBuf],
+        input_codec: Option<&str>,
+        sample_rate: u32,
+    ) -> Result<Self> {
+        Self::from_host(HostSetup {
+            config_yaml_path,
+            config,
+            live_restored,
+            speaker_layout_path,
+            bridge_paths,
+            input_codec,
+            sample_rate,
+            vbap_table: None,
+            log_object_positions: false,
+        })
+    }
+
+    /// [`from_config`](Self::from_config), with what only a host with flags
+    /// of its own can ask of the renderer ([`HostSetup`]).
+    pub fn from_host(setup: HostSetup<'_>) -> Result<Self> {
+        let HostSetup {
+            config_yaml_path,
+            config,
+            live_restored,
+            speaker_layout_path,
+            bridge_paths,
+            input_codec,
+            sample_rate,
+            vbap_table,
+            log_object_positions,
+        } = setup;
+        let t_total = std::time::Instant::now();
+        let loaded_cfg = config;
         // Client-visible profiles view (active name + list), applied to the
         // control below once it exists; see docs/config-profiles.md.
         let profiles_info = loaded_cfg.as_ref().map(Config::profiles_info);
@@ -492,7 +715,9 @@ impl Engine {
             .migrated
         });
 
-        let params = SpatialRendererParams::from_render_config(render_cfg.as_ref());
+        let mut params = SpatialRendererParams::from_render_config(render_cfg.as_ref());
+        params.vbap_table = vbap_table;
+        params.log_object_positions = log_object_positions;
         let mut renderer = build_spatial_renderer(
             &params,
             layout,
@@ -757,6 +982,16 @@ impl Engine {
         }
     }
 
+    /// [`set_heard_us`](Self::set_heard_us) for a host that counts in the
+    /// blocks' own positions ([`RenderedAudio::sample_pos`]): the listener is
+    /// hearing sample `pos` of a timeline that plays at `rate` samples a
+    /// second (the stream's rate, which is the blocks').
+    pub fn set_heard_at(&mut self, pos: u64, rate: u32) {
+        if let Some(osc) = self.osc.as_mut() {
+            osc.send_heard(pos, rate.max(1));
+        }
+    }
+
     /// Reset the session after a seek or stream discontinuity. Flushes the
     /// bridge pipeline and the renderer's per-object/ramp state, and clears the
     /// per-stream spatial state. Live parameters (gains, layout, OSC-applied
@@ -788,6 +1023,7 @@ impl Engine {
         }
         self.carried_declaration = None;
         self.pipeline.stream.declaration = Default::default();
+        self.host_pcm_declared = false;
         self.renderer.reset_runtime_state();
         self.reset_segment_state();
         // Object frames are delta-encoded; after a seek the (static) virtual-bed
@@ -908,6 +1144,49 @@ impl Engine {
     /// `None` when it handed back nothing, or the host gave no timestamp.
     pub fn last_output_input_pts(&self) -> Option<i64> {
         self.last_output_input_pts
+    }
+
+    /// Render a frame of linear PCM the host captured itself: no bridge
+    /// decoded it (the standalone renderer's sink carrying plain PCM, desktop
+    /// audio). The frame carries its own channel labels; the stream is
+    /// declared as PCM, which no bridge would do for it, having never seen
+    /// it. One stream is either the host's PCM or the bridge's frames:
+    /// [`reset`](Self::reset) between the two.
+    pub fn render_host_pcm(&mut self, frame: &RDecodedFrame) -> Result<Option<RenderedAudio>> {
+        if !self.host_pcm_declared {
+            self.host_pcm_declared = true;
+            self.pipeline
+                .stream
+                .set_declaration(crate::stream_state::StreamDeclaration {
+                    family: renderer::placement::SourceFamily::PCM,
+                    label: HOST_PCM_LABEL.to_owned(),
+                    ..Default::default()
+                });
+        }
+        self.render_frame(frame, 0.0, None)
+    }
+
+    /// Render `sample_count` frames of silence, as a stereo frame: what a
+    /// host that plays the audio itself feeds while nothing plays, so that a
+    /// speaker or object test is heard. The render injects the test, and with
+    /// nothing rendered there is nothing to inject it into.
+    pub fn render_silence(&mut self, sample_count: u32) -> Result<Option<RenderedAudio>> {
+        const CHANNELS: u32 = 2;
+        let frame = RDecodedFrame {
+            // The rate the renderer runs at now: silence must not make it
+            // rebuild its DSP for another one between two streams.
+            sampling_frequency: self.renderer.sample_rate(),
+            sample_count,
+            channel_count: CHANNELS,
+            pcm: vec![0i32; (sample_count * CHANNELS) as usize].into(),
+            channel_labels: vec![RChannelLabel::L, RChannelLabel::R].into(),
+            metadata: abi_stable::std_types::RVec::new(),
+            drc_gain: 1.0,
+            drc_ramp_duration: 0,
+            dialogue_level: abi_stable::std_types::ROption::RNone,
+            is_new_segment: false,
+        };
+        self.render_frame(&frame, 0.0, None)
     }
 
     /// Render one packet's worth of decoded frames: the second half of
@@ -1309,7 +1588,7 @@ impl Engine {
             &mut self.audio_meter,
             donated,
             decode_time_ms,
-            crate::osc::MeterTimings::default(),
+            self.output_timings,
         )?;
         let (samples, n_channels) = match render.output {
             FrameOutput::Rendered { samples, channels } => (samples, channels as u32),
@@ -1362,6 +1641,7 @@ impl Engine {
             samples,
             n_channels,
             n_frames: sample_count,
+            sample_rate: self.renderer.sample_rate(),
             sample_pos: sample_pos_at_start,
             input_pts_us: None,
         }))
@@ -1381,6 +1661,7 @@ impl Engine {
             samples,
             n_channels: channels as u32,
             n_frames: sample_count,
+            sample_rate: self.renderer.sample_rate(),
             sample_pos: self.decoded_samples - sample_count as u64,
             input_pts_us: None,
         }

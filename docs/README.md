@@ -34,7 +34,7 @@ Contracts held by tests; change the page and the test together.
 | [volumetric-backend.md](volumetric-backend.md) | The volumetric backend: VBAP with the object's depth |
 | [live-options-registry.md](live-options-registry.md) | The declared registry of live options |
 | [from-file-evaluator-architecture.md](from-file-evaluator-architecture.md) | Serialized evaluation artifacts |
-| [latency-regulation.md](latency-regulation.md) | The output latency controller |
+| [latency-regulation.md](latency-regulation.md) | How the output is held at a latency target |
 | [iamf-matroska-mapping.md](iamf-matroska-mapping.md) | Draft IAMF-in-Matroska codec mapping |
 | [iamf-transport-plan.md](iamf-transport-plan.md) | Proposal: raw OBU stream over the Raw transport and a private IEC 61937 encapsulation for IAMF |
 | [dsp-validation-report.md](dsp-validation-report.md), [superpowers/](superpowers/) | DSP validation harness: design and measurements |

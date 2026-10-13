@@ -19,24 +19,25 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use audio_input::pipewire_pods::{
-    IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_DTS_CHANNELS, IEC958_DTS_RATE_HZ,
-    IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ, build_pipewire_bridge_codec_format_pod,
-    build_pipewire_bridge_format_pod, build_pipewire_bridge_iec958_quantum_buffers_pod,
-    build_pipewire_bridge_latency_pod, build_pipewire_bridge_stream_properties,
+    IEC958_AC3_CHANNELS, IEC958_CONTENT_RATES_HZ, IEC958_DTS_CHANNELS, IEC958_DTSHD_CHANNELS,
+    IEC958_DTSHD_RATE_HZ, build_pipewire_bridge_codec_format_pod,
+    build_pipewire_bridge_codec_format_pod_at_rates, build_pipewire_bridge_format_pod,
+    build_pipewire_bridge_iec958_quantum_buffers_pod, build_pipewire_bridge_latency_pod,
+    build_pipewire_bridge_raw_format_pod_at, build_pipewire_bridge_stream_properties,
 };
 use audio_rt::{Consumer, Producer, frame_ring};
 use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::Pod;
 
-use super::reader::{END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
+use super::reader::{Capture, CarrierFormat, END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
 
 /// `SPA_IO_CLOCK_FLAG_XRUN_RECOVER | SPA_IO_CLOCK_FLAG_DISCONT`
 /// (`spa/node/io.h`): the driver's clock restarted. Spelled out because the
@@ -45,19 +46,64 @@ use super::reader::{END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
 /// predate both flags. The bits are ABI; an older server never sets them.
 const CLOCK_RESTARTED: u32 = (1 << 1) | (1 << 4);
 
+/// How long the carrier goes on being counted while the player gives it
+/// nothing: as long as a silence does not end the stream.
+const IDLE_COUNT_NS: u64 = (END_OF_STREAM_S * 1e9) as u64;
+
+/// The carrier's time between the cycles that bring data.
+///
+/// A player that misses a cycle (it was late, it was starved of the CPU)
+/// leaves a hole on the carrier: the graph skips the cycle, or runs it with
+/// nothing from the player, and what the player sends next comes that much
+/// later. The hole is carrier time like any other. Left out of the count,
+/// it read as the source having lost that time: a latency error of a whole
+/// cycle, steered out over tens of seconds or realigned on.
+#[derive(Debug, Default)]
+struct CarrierGaps {
+    /// Where the last cycle that brought data ended (graph time, ns).
+    data_until_ns: Option<u64>,
+}
+
+impl CarrierGaps {
+    /// A cycle starting at `t_ns` and `cycle_ns` long brought data: the
+    /// carrier time since the last one that did (ns). Nothing before the
+    /// first, and nothing for a silence of [`IDLE_COUNT_NS`] or more (a
+    /// pause: the stream ends, and the next one starts its own count).
+    fn data(&mut self, t_ns: u64, cycle_ns: u64) -> u64 {
+        let gap = self
+            .data_until_ns
+            .map_or(0, |until| t_ns.saturating_sub(until));
+        self.data_until_ns = Some(t_ns + cycle_ns);
+        // (Cycles sit on the driver's grid: anything under half of one is
+        // the grid's own rounding.)
+        if gap * 2 < cycle_ns || gap >= IDLE_COUNT_NS {
+            0
+        } else {
+            gap
+        }
+    }
+}
+
 /// One graph cycle as the sink saw it.
 #[derive(Debug, Clone, Copy, Default)]
 struct CycleStamp {
     /// Graph time of the cycle's first frame (`spa_io_clock.nsec`).
     t_ns: u64,
-    /// Bytes captured in this epoch up to the end of this cycle.
+    /// The carrier's position in this epoch at the end of this cycle
+    /// (bytes): what was captured, and what the time without data stood
+    /// for ([`CarrierGaps`]).
     bytes_end: u64,
-    /// Negotiated carrier: frames per second and channels (2-byte samples).
+    /// Bytes captured in this epoch up to the end of this cycle.
+    data_end: u64,
+    /// Negotiated carrier: frames per second, channels and sample format.
     rate: u32,
     channels: u32,
+    format: CarrierFormat,
     /// Bumped on every format change and discontinuity.
     epoch: u32,
 }
+
+use super::pcm::{PCM_CHANNELS, PCM_RATE_HZ};
 
 /// Byte ring capacity: 4 s of the widest carrier (8 ch × 2 B × 192 kHz).
 const BYTE_RING: usize = 4 * 8 * 2 * 192_000;
@@ -68,6 +114,8 @@ const STAMP_RING: usize = 4096;
 struct Shared {
     rate: AtomicU32,
     channels: AtomicU32,
+    /// The negotiated format is linear PCM, not IEC 958.
+    pcm: AtomicBool,
     epoch: AtomicU32,
     position: AtomicPtr<spa::sys::spa_io_position>,
     overflows: AtomicU64,
@@ -93,35 +141,45 @@ pub struct OwnSinkConfig {
 
 /// Start the driver, the sink and the pump; returns the message stream the
 /// engine thread consumes, as for the pipe.
-pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<(Receiver<ReaderMsg>, Arc<ReaderStats>)> {
+pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<Capture> {
     let (bytes_tx, bytes_rx) = frame_ring::<u8>(1, BYTE_RING);
     let (stamps_tx, stamps_rx) = frame_ring::<CycleStamp>(1, STAMP_RING);
     let shared = Arc::new(Shared::default());
     let (ready_tx, ready_rx) = sync_channel::<Result<()>>(1);
+    let (tx, rx) = sync_channel(1024);
+    let stats = Arc::new(ReaderStats::default());
+    let stop = Arc::new(AtomicBool::new(false));
+    // From here the capture owns its threads: an early return stops and
+    // joins the ones already started.
+    let mut capture = Capture::new(rx, Arc::clone(&stats), Arc::clone(&stop));
+    capture.advertise_latency_ms(config.latency_ns as f64 / 1e6);
+    let latency = capture.advertised_latency();
     {
         let shared = Arc::clone(&shared);
-        thread::Builder::new()
-            .name("own-sink".into())
-            .spawn(move || {
-                if let Err(e) = run_sink(config, shared, bytes_tx, stamps_tx, &ready_tx) {
-                    let _ = ready_tx.send(Err(e));
-                }
-            })?;
+        let stop = Arc::clone(&stop);
+        capture.own(
+            thread::Builder::new()
+                .name("own-sink".into())
+                .spawn(move || {
+                    if let Err(e) = run_sink(
+                        config, shared, bytes_tx, stamps_tx, &ready_tx, &stop, &latency,
+                    ) {
+                        let _ = ready_tx.send(Err(e));
+                    }
+                })?,
+        );
     }
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(anyhow!("own sink did not start within 5 s")),
     }
-    let (tx, rx) = sync_channel(1024);
-    let stats = Arc::new(ReaderStats::default());
-    {
-        let stats = Arc::clone(&stats);
+    capture.own(
         thread::Builder::new()
             .name("own-sink-pump".into())
-            .spawn(move || pump(bytes_rx, stamps_rx, tx, &stats))?;
-    }
-    Ok((rx, stats))
+            .spawn(move || pump(bytes_rx, stamps_rx, tx, &stats, &stop))?,
+    );
+    Ok(capture)
 }
 
 /// Main loop of the sink thread: driver node, follower stream, then wait.
@@ -131,6 +189,8 @@ fn run_sink(
     mut bytes_tx: Producer<u8>,
     mut stamps_tx: Producer<CycleStamp>,
     ready: &SyncSender<Result<()>>,
+    stop: &AtomicBool,
+    latency_ns: &AtomicI64,
 ) -> Result<()> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -178,6 +238,8 @@ fn run_sink(
     let pending_for_param = std::rc::Rc::clone(&pending);
     let forced_for_param: Cell<Option<u32>> = Cell::new(None);
     let mut bytes_total: u64 = 0;
+    let mut data_total: u64 = 0;
+    let mut gaps = CarrierGaps::default();
     let mut last_epoch = 0u32;
 
     let _listener = stream
@@ -198,6 +260,7 @@ fn run_sink(
                 return;
             }
             let iec958 = subtype == spa::param::format::MediaSubtype::Iec958;
+            let format_changed = param_shared.pcm.swap(!iec958, Ordering::Relaxed) == iec958;
             // Setting `node.force-rate` renegotiates, which lands here again
             // with the same format: only a real change is a new epoch, and
             // the property is only written when its value changes.
@@ -207,7 +270,7 @@ fn run_sink(
                 .channels
                 .swap(info.channels(), Ordering::Relaxed)
                 != info.channels();
-            if !rate_changed && !channels_changed {
+            if !rate_changed && !channels_changed && !format_changed {
                 return;
             }
             log::info!(
@@ -217,11 +280,10 @@ fn run_sink(
                 info.channels()
             );
             param_shared.epoch.fetch_add(1, Ordering::Release);
-            let force = if iec958 && info.rate() != 48_000 {
-                info.rate()
-            } else {
-                0
-            };
+            // Every carrier, the 48 kHz ones included: the sink asks for
+            // 192 kHz by default, and a group left at that rate runs a 48 kHz
+            // carrier (AC-3, DTS core, linear PCM) four times too fast.
+            let force = info.rate();
             if forced_for_param.get() != Some(force) {
                 forced_for_param.set(Some(force));
                 pending_for_param.set(Some(force));
@@ -246,13 +308,19 @@ fn run_sink(
             let io = process_shared.position.load(Ordering::Acquire);
             // SAFETY: the area stays valid until io_changed withdraws it,
             // which PipeWire never does while a cycle is running.
-            let (t_ns, discont) = if io.is_null() {
+            // (The cycle's length: frames of the graph's rate, and that rate
+            // as a fraction of a second per frame.)
+            let (t_ns, discont, cycle) = if io.is_null() {
                 process_shared.no_clock.fetch_add(1, Ordering::Relaxed);
-                (0, false)
+                (0, false, (0, 0, 1))
             } else {
                 let clock = unsafe { &(*io).clock };
                 let discont = clock.flags & CLOCK_RESTARTED != 0;
-                (clock.nsec, discont)
+                (
+                    clock.nsec,
+                    discont,
+                    (clock.duration, clock.rate.num, clock.rate.denom.max(1)),
+                )
             };
             if discont {
                 process_shared.epoch.fetch_add(1, Ordering::Release);
@@ -261,6 +329,8 @@ fn run_sink(
             if epoch != last_epoch {
                 last_epoch = epoch;
                 bytes_total = 0;
+                data_total = 0;
+                gaps = CarrierGaps::default();
             }
             // A player may queue several buffers per cycle: take them all, or
             // the rest backs up and the player is held to a fraction of real
@@ -281,24 +351,51 @@ fn run_sink(
                     process_shared.overflows.fetch_add(1, Ordering::Relaxed);
                 }
                 bytes_total += pushed as u64;
+                data_total += pushed as u64;
                 got_any = true;
             }
             if !got_any {
                 process_shared.empty.fetch_add(1, Ordering::Relaxed);
                 return;
             }
+            // The carrier's time since the last cycle with data: cycles the
+            // player missed, or the graph skipped for it.
+            let (frames, num, denom) = cycle;
+            let cycle_ns = (frames as f64 * f64::from(num) / f64::from(denom) * 1e9) as u64;
+            let rate = process_shared.rate.load(Ordering::Relaxed);
+            let sample_bytes = if process_shared.pcm.load(Ordering::Relaxed) {
+                CarrierFormat::PcmF32
+            } else {
+                CarrierFormat::Iec958
+            }
+            .sample_bytes();
+            let frame_bytes =
+                u64::from(sample_bytes * process_shared.channels.load(Ordering::Relaxed));
+            let idle_frames =
+                (gaps.data(t_ns, cycle_ns) as f64 * 1e-9 * f64::from(rate)).round() as u64;
+            bytes_total += idle_frames * frame_bytes;
             let _ = stamps_tx.push(&[CycleStamp {
                 t_ns,
                 bytes_end: bytes_total,
+                data_end: data_total,
                 rate: process_shared.rate.load(Ordering::Relaxed),
                 channels: process_shared.channels.load(Ordering::Relaxed),
+                format: if process_shared.pcm.load(Ordering::Relaxed) {
+                    CarrierFormat::PcmF32
+                } else {
+                    CarrierFormat::Iec958
+                },
                 epoch,
             }]);
         })
         .register()
         .map_err(|e| anyhow!("own sink listener: {e:?}"))?;
 
-    // 3. Formats (IEC 958 only for now), full-quantum buffers, connect.
+    // 3. Formats, full-quantum buffers, connect. Linear PCM comes last: a
+    // player that can pass its stream through finds an encoded format first.
+    // It is offered at the renderer's own rate only (the sink does not
+    // resample; a player at another rate converts on its side), on the fixed
+    // 7.1 map.
     let enum_fmt = spa::param::ParamType::EnumFormat;
     let pods: Vec<Vec<u8>> = vec![
         build_pipewire_bridge_iec958_quantum_buffers_pod()?,
@@ -310,18 +407,21 @@ fn run_sink(
             IEC958_DTSHD_CHANNELS,
             enum_fmt,
         )?,
-        build_pipewire_bridge_codec_format_pod(
+        // AC-3 and the DTS core ride a carrier at the content's own rate:
+        // 44.1 kHz and 32 kHz streams are taken as they are.
+        build_pipewire_bridge_codec_format_pod_at_rates(
             spa::sys::SPA_AUDIO_IEC958_CODEC_AC3,
-            IEC958_AC3_RATE_HZ,
+            &IEC958_CONTENT_RATES_HZ,
             IEC958_AC3_CHANNELS,
             enum_fmt,
         )?,
-        build_pipewire_bridge_codec_format_pod(
+        build_pipewire_bridge_codec_format_pod_at_rates(
             spa::sys::SPA_AUDIO_IEC958_CODEC_DTS,
-            IEC958_DTS_RATE_HZ,
+            &IEC958_CONTENT_RATES_HZ,
             IEC958_DTS_CHANNELS,
             enum_fmt,
         )?,
+        build_pipewire_bridge_raw_format_pod_at(PCM_RATE_HZ, PCM_CHANNELS as u16, enum_fmt)?,
     ];
     let mut params: Vec<&Pod> = pods
         .iter()
@@ -336,8 +436,10 @@ fn run_sink(
         )
         .map_err(|e| anyhow!("connecting the own sink: {e:?}"))?;
 
-    // The latency players see: the configured target, once.
-    let latency_pod = build_pipewire_bridge_latency_pod(config.latency_ns)?;
+    // The latency players see: the target, a setpoint. It is advertised
+    // again only when the setpoint moves (see the loop below).
+    let mut advertised_ns = config.latency_ns;
+    let latency_pod = build_pipewire_bridge_latency_pod(advertised_ns)?;
     if let Some(pod) = Pod::from_bytes(&latency_pod) {
         stream
             .update_params(&mut [pod])
@@ -368,7 +470,21 @@ fn run_sink(
         if let Some(rate) = pending.take() {
             set_force_rate(&stream, rate);
         }
-        if sys::ShutdownHandle::is_requested() {
+        // The host moved the setpoint: a new target, or one the servo had to
+        // raise. The player's A/V sync follows what the sink says.
+        let wanted_ns = latency_ns.load(Ordering::Relaxed);
+        if wanted_ns != advertised_ns {
+            advertised_ns = wanted_ns;
+            let pod = build_pipewire_bridge_latency_pod(wanted_ns)?;
+            match Pod::from_bytes(&pod).map(|pod| stream.update_params(&mut [pod])) {
+                Some(Ok(())) => {
+                    log::info!("own sink: now advertising {:.1} ms", wanted_ns as f64 / 1e6)
+                }
+                Some(Err(e)) => log::warn!("own sink: advertising the latency: {e:?}"),
+                None => log::warn!("own sink: invalid latency pod"),
+            }
+        }
+        if stop.load(Ordering::Relaxed) || sys::ShutdownHandle::is_requested() {
             break;
         }
     }
@@ -393,6 +509,7 @@ fn pump(
     mut stamps: Consumer<CycleStamp>,
     tx: SyncSender<ReaderMsg>,
     stats: &ReaderStats,
+    stop: &AtomicBool,
 ) {
     let mut stamp = [CycleStamp::default()];
     // The capture's epoch, whose byte count `bytes_end` runs in, and whether
@@ -401,11 +518,12 @@ fn pump(
     let mut epoch: Option<u32> = None;
     let mut in_stream = false;
     let mut last_bytes_end = 0u64;
+    let mut last_data_end = 0u64;
     // The capture's count where the open stream started: what the stream's
     // own count (`Transport::bytes_end`) starts from.
     let mut stream_base = 0u64;
     let mut last_data_at = std::time::Instant::now();
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         if !stamps.read_exact(&mut stamp) {
             if in_stream && last_data_at.elapsed().as_secs_f64() >= END_OF_STREAM_S {
                 in_stream = false;
@@ -425,22 +543,33 @@ fn pump(
             in_stream = false;
             epoch = Some(s.epoch);
             last_bytes_end = 0;
+            last_data_end = 0;
         }
+        let n = s.data_end.saturating_sub(last_data_end) as usize;
         if !in_stream {
             in_stream = true;
+            // (What the carrier idled before a stream is not the stream's.)
+            last_bytes_end = s.bytes_end.saturating_sub(n as u64);
             stream_base = last_bytes_end;
             if tx.send(ReaderMsg::Start).is_err() {
                 return;
             }
         }
-        let n = s.bytes_end.saturating_sub(last_bytes_end) as usize;
+        // Carrier that passed with nothing in it since the last chunk: the
+        // player missed those cycles.
+        let idled = s
+            .bytes_end
+            .saturating_sub(last_bytes_end)
+            .saturating_sub(n as u64);
+        last_data_end = s.data_end;
         let mut chunk = vec![0u8; n];
         let got = bytes.read_up_to(&mut chunk);
         chunk.truncate(got);
         last_bytes_end = s.bytes_end;
         last_data_at = std::time::Instant::now();
         stats.bytes_read.fetch_add(got as u64, Ordering::Relaxed);
-        let frames = n as f64 / (2.0 * s.channels.max(1) as f64);
+        let frame_bytes = s.format.sample_bytes() * s.channels.max(1);
+        let frames = n as f64 / frame_bytes as f64;
         let t_end = s.t_ns as f64 * 1e-9 + frames / s.rate.max(1) as f64;
         let msg = ReaderMsg::Chunk {
             t: t_end,
@@ -448,8 +577,10 @@ fn pump(
             transport: Some(Transport {
                 rate: s.rate,
                 channels: s.channels,
+                format: s.format,
                 bytes_end: s.bytes_end - stream_base,
             }),
+            skipped: idled,
         };
         if tx.send(msg).is_err() {
             return;
@@ -460,6 +591,7 @@ fn pump(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::Receiver;
 
     const RATE: u32 = 48_000;
 
@@ -467,8 +599,10 @@ mod tests {
         CycleStamp {
             t_ns,
             bytes_end,
+            data_end: bytes_end,
             rate: RATE,
             channels: 2,
+            format: CarrierFormat::Iec958,
             epoch,
         }
     }
@@ -484,6 +618,7 @@ mod tests {
                 t,
                 bytes,
                 transport: Some(transport),
+                ..
             } => (t, bytes.len(), transport.bytes_end),
             _ => panic!("expected a chunk with its transport"),
         }
@@ -500,7 +635,8 @@ mod tests {
         let (tx, rx) = sync_channel(64);
         let stats = Arc::new(ReaderStats::default());
         let pump_stats = Arc::clone(&stats);
-        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats));
+        let stop = AtomicBool::new(false);
+        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats, &stop));
 
         bytes_tx.push(&[1; 4096]);
         stamps_tx.push(&[stamp(1_000_000_000, 4096, 7)]);
@@ -526,6 +662,66 @@ mod tests {
         let (_, len, bytes_end) = chunk(next(&rx));
         assert_eq!((len, bytes_end), (4096, 4096));
 
+        drop(rx);
+        stamps_tx.push(&[stamp(4_000_000_000, 4096, 9)]);
+        pump.join().unwrap();
+    }
+
+    /// A cycle the player gave nothing for is carrier time: the position
+    /// moves by its length, and the chunk that follows says how much of the
+    /// carrier before it was idle. A silence longer than the one that ends a
+    /// stream is not counted on, and nothing is before a stream has started.
+    #[test]
+    fn a_cycle_without_data_is_counted_on_the_carrier() {
+        let cycle_ns = 21_333_333u64;
+        let mut gaps = CarrierGaps::default();
+        assert_eq!(gaps.data(0, cycle_ns), 0, "nothing before the first");
+        assert_eq!(gaps.data(cycle_ns, cycle_ns), 0, "the next cycle follows");
+        // One cycle skipped: the next data comes a cycle late.
+        assert_eq!(gaps.data(3 * cycle_ns, cycle_ns), cycle_ns);
+        // The grid's rounding is not a gap.
+        assert_eq!(gaps.data(4 * cycle_ns + 3, cycle_ns), 0);
+        // A silence that ends the stream is not counted on.
+        assert_eq!(gaps.data(5 * cycle_ns + 1_000_000_000, cycle_ns), 0);
+        assert_eq!(gaps.data(6 * cycle_ns + 1_000_000_000, cycle_ns), 0);
+
+        let (mut bytes_tx, bytes_rx) = frame_ring::<u8>(1, BYTE_RING);
+        let (mut stamps_tx, stamps_rx) = frame_ring::<CycleStamp>(1, STAMP_RING);
+        let (tx, rx) = sync_channel(64);
+        let stats = Arc::new(ReaderStats::default());
+        let pump_stats = Arc::clone(&stats);
+        let stop = AtomicBool::new(false);
+        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats, &stop));
+        let skipped = |msg: ReaderMsg| match msg {
+            ReaderMsg::Chunk {
+                bytes,
+                transport: Some(transport),
+                skipped,
+                ..
+            } => (bytes.len(), transport.bytes_end, skipped),
+            _ => panic!("expected a chunk with its transport"),
+        };
+        // A cycle of data, a cycle missed, a cycle of data.
+        bytes_tx.push(&[1; 4096]);
+        stamps_tx.push(&[stamp(1_000_000_000, 4096, 7)]);
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        assert_eq!(skipped(next(&rx)), (4096, 4096, 0));
+        bytes_tx.push(&[2; 4096]);
+        stamps_tx.push(&[CycleStamp {
+            data_end: 8192,
+            ..stamp(1_042_666_666, 12_288, 7)
+        }]);
+        assert_eq!(skipped(next(&rx)), (4096, 12_288, 4096));
+        // The carrier idled, the stream ended, another starts: what idled
+        // before it is not in its count.
+        assert!(matches!(next(&rx), ReaderMsg::End));
+        bytes_tx.push(&[3; 4096]);
+        stamps_tx.push(&[CycleStamp {
+            data_end: 12_288,
+            ..stamp(3_000_000_000, 40_000, 7)
+        }]);
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        assert_eq!(skipped(next(&rx)), (4096, 4096, 0));
         drop(rx);
         stamps_tx.push(&[stamp(4_000_000_000, 4096, 9)]);
         pump.join().unwrap();

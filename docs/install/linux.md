@@ -30,7 +30,6 @@ that release loads all of them. Step 2 says what changes when you upgrade.
 | `mpv-omniphony-…-linux-x86_64.zip` | Ubuntu 24.04 | **Ubuntu 24.04 and its derivatives only.** It links the system's FFmpeg 6.1 (`libavcodec.so.60`) and libplacebo (`libplacebo.so.338`). |
 | `harletty-bridge-…-linux-x86_64.zip` | Ubuntu 24.04 | Any x86_64 distribution with glibc 2.39 or newer. It needs nothing else, except that the IAMF library of the next release (`libharletty_iamf_bridge.so`) also needs the system's Opus library, `libopus.so.0` (`libopus0` on Ubuntu, usually already installed). |
 | `omniphony-studio-egui-…-linux-x86_64.tar.gz` | Ubuntu 22.04 | Any x86_64 distribution with glibc 2.35 or newer and PipeWire. |
-| `Omniphony.Studio_…_amd64.AppImage` (Tauri Studio) | Ubuntu 22.04 | Any x86_64 distribution with glibc 2.35 or newer. |
 
 **On Arch and its derivatives**, skip the downloads: the whole stack is on the
 AUR, built on your machine. `paru -S mpv-omniphony harletty-bridge` installs the
@@ -256,8 +255,8 @@ Its messages: `journalctl --user -u omniphony-renderer`.
   show it as installed and running, *Restart service* and *Uninstall service*
   act on it (uninstalling disables it; the packaged file stays), and Studio
   starts no renderer of its own while it runs.
-- **It uses Studio's default settings**: OSC on `127.0.0.1:9000`, no metering,
-  log level `info`. For other ones, press *Install service* in Studio: it
+- **It uses Studio's default settings**: OSC on `127.0.0.1:9000`, log level
+  `info`. For other ones, press *Install service* in Studio: it
   writes the same unit with your settings to `~/.config/systemd/user/`, which
   takes precedence over the packaged one. Studio started from the portable
   archive does the same with its own `orender`.

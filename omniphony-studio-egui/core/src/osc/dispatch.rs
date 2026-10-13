@@ -170,8 +170,6 @@ pub struct Live {
     /// The renderer's fixed-channel catalogue, digested. Rebuilt by the
     /// virtual-bed service when the published array changes.
     pub channels: crate::host::channels::ChannelCatalog,
-    /// The auto-tune run, from the wizard opening to it closing.
-    pub auto_tune: Option<crate::host::services::auto_tune::Run>,
     /// What the view has asked the renderer to keep sending.
     pub interests: crate::host::services::interests::Interests,
     /// The per-speaker test signal this side started, with the safety window
@@ -420,8 +418,59 @@ impl Live {
     }
 
     #[allow(dead_code)] // used by the bool options of panels not ported yet
+    /// Whether the connected renderer declares `key` in its options schema,
+    /// so a write to it is taken. `false` before the schema arrives and for
+    /// an option the renderer does not know.
+    pub fn declares_option(&self, key: &str) -> bool {
+        self.options_schema
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .is_some_and(|specs| {
+                specs
+                    .iter()
+                    .any(|spec| spec.get("key").and_then(|k| k.as_str()) == Some(key))
+            })
+    }
+
     pub fn option_bool(&self, key: &str) -> Option<bool> {
         self.option(key).and_then(|v| v.as_bool())
+    }
+
+    /// One of the host's declared options (`/state/host_options`), as a
+    /// number: the output's and the input's, which the renderer's own
+    /// options ([`option`](Self::option)) do not hold.
+    pub fn host_option_f64(&self, key: &str) -> Option<f64> {
+        self.host_options
+            .as_ref()
+            .and_then(|h| h.get("options"))
+            .and_then(|o| o.get(key))
+            .and_then(|v| v.as_f64())
+    }
+
+    /// A host option that is a name (one of an enum's values).
+    pub fn host_option_str(&self, key: &str) -> Option<String> {
+        self.host_options
+            .as_ref()
+            .and_then(|h| h.get("options"))
+            .and_then(|o| o.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    }
+
+    /// Optimistic write of a host option, as [`set_option`](Self::set_option)
+    /// is for the renderer's.
+    pub fn set_host_option(&mut self, key: &str, value: serde_json::Value) {
+        let host = self
+            .host_options
+            .get_or_insert_with(|| serde_json::json!({}));
+        if let Some(map) = host.as_object_mut() {
+            let options = map
+                .entry("options")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(options) = options.as_object_mut() {
+                options.insert(key.to_owned(), value);
+            }
+        }
     }
 
     /// Optimistic write into the option store, so a control does not lag the
@@ -532,7 +581,6 @@ impl Live {
             overlay_prefs: None,
             object_test_marker: Default::default(),
             channels: Default::default(),
-            auto_tune: None,
             interests: Default::default(),
             diagnostics: Default::default(),
             resampling: Default::default(),
@@ -1033,14 +1081,8 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         OscEvent::StateLatencyInstant { value } => {
             live.app.set_latency_instant_value(value);
             live.record_latency(value);
-            Change::None
-        }
-        OscEvent::StateLatencyControl { value } => {
-            live.app.set_latency_control_value(value);
-            Change::None
-        }
-        OscEvent::StateLatencySmoothed { value } => {
-            live.app.set_latency_smoothed_value(value);
+            // The plot's latency trace: the measurement itself, beside the
+            // rate that holds it.
             live.resampling
                 .record_value("latency", value, Instant::now());
             if live.resample_wanted {
@@ -1048,10 +1090,6 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             } else {
                 Change::None
             }
-        }
-        OscEvent::StateLatencyDownstream { value } => {
-            live.app.set_latency_downstream_value(value);
-            Change::None
         }
         OscEvent::StateLatencyTarget { value } => {
             live.app.set_latency_target_value(value);
@@ -1063,18 +1101,6 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateLatencyTargetRequested { value } => {
             live.app.set_latency_requested_value(value);
-            Change::None
-        }
-        OscEvent::StateLatencyAvailInput { value } => {
-            live.app.set_latency_avail_input_value(value);
-            Change::None
-        }
-        OscEvent::StateLatencyOutputFifo { value } => {
-            live.app.set_latency_output_fifo_value(value);
-            Change::None
-        }
-        OscEvent::StateLatencyResamplerPending { value } => {
-            live.app.set_latency_resampler_pending_value(value);
             Change::None
         }
         OscEvent::StateDiagSchema { value } => {
@@ -1291,68 +1317,6 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             Change::Snapshot
         }
 
-        // ── panels: adaptive resampling ──────────────────────────────────
-        OscEvent::StateAdaptiveResampling { enabled } => {
-            live.app.adaptive_resampling = Some(u8::from(enabled));
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingEnableFarMode { enabled } => {
-            live.app.adaptive_resampling_enable_far_mode = Some(u8::from(enabled));
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingForceSilenceInFarMode { enabled } => {
-            live.app.adaptive_resampling_force_silence_in_far_mode = Some(u8::from(enabled));
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingHardRecoverHighInFarMode { enabled } => {
-            live.app.adaptive_resampling_hard_recover_high_in_far_mode = Some(u8::from(enabled));
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingHardRecoverLowInFarMode { enabled } => {
-            live.app.adaptive_resampling_hard_recover_low_in_far_mode = Some(u8::from(enabled));
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingFarModeReturnFadeInMs { value } => {
-            live.app.adaptive_resampling_far_mode_return_fade_in_ms = Some(value.round() as i64);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingKpNear { value } => {
-            live.app.adaptive_resampling_kp_near = Some(value);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingKi { value } => {
-            live.app.adaptive_resampling_ki = Some(value);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingIntegralDischargeRatio { value } => {
-            live.app.adaptive_resampling_integral_discharge_ratio = Some(value);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingMaxAdjust { value } => {
-            live.app.adaptive_resampling_max_adjust = Some(value);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks { value } => {
-            live.app.adaptive_resampling_update_interval_callbacks = Some(value.round() as i64);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingHighRecoverEntryMarginMs { value } => {
-            live.app.adaptive_resampling_high_recover_entry_margin_ms = Some(value.round() as i64);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingBand { value } => {
-            live.app.adaptive_resampling_band = non_empty(value);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingState { value } => {
-            live.app.adaptive_resampling_state = non_empty(value);
-            Change::Snapshot
-        }
-        OscEvent::StateAdaptiveResamplingPaused { enabled } => {
-            live.app.adaptive_resampling_paused = Some(u8::from(enabled));
-            Change::Snapshot
-        }
-
         // ── panels: backend script files (editor phase) ──────────────────
         OscEvent::StateBackendFileList { backend, json } => {
             let names: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
@@ -1430,6 +1394,24 @@ mod panel_event_tests {
 
     fn live() -> Live {
         Live::new(AppState::new(Vec::new()))
+    }
+
+    /// A renderer that does not declare an option refuses a write to it, so
+    /// the schema decides whether its control is offered: a value in the
+    /// snapshot is not enough (an older standalone renderer publishes
+    /// `decode_thread` there and still refuses it).
+    #[test]
+    fn an_option_is_declared_by_the_schema_not_by_the_snapshot() {
+        let mut live = live();
+        live.app.options = Some(serde_json::json!({"decode_thread": false}));
+        assert!(!live.declares_option("decode_thread"));
+        live.options_schema = Some(serde_json::json!([{"key": "auto_gain"}]));
+        assert!(!live.declares_option("decode_thread"));
+        live.options_schema = Some(serde_json::json!([
+            {"key": "auto_gain"},
+            {"key": "decode_thread", "flags": ["embedded_only"]}
+        ]));
+        assert!(live.declares_option("decode_thread"));
     }
 
     /// The renderer refuses to write a file it could not parse or a newer
@@ -1631,18 +1613,5 @@ mod panel_event_tests {
         l.push_log("nonsense", "render", "[osc] already tagged");
         assert_eq!(l.log[0].level, LogLevel::Info);
         assert_eq!(l.log[0].rendered(), "[osc] already tagged");
-    }
-
-    #[test]
-    fn adaptive_resampling_values_round_to_the_stored_integer_type() {
-        let mut l = live();
-        apply_event(
-            &mut l,
-            OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks { value: 12.6 },
-        );
-        assert_eq!(
-            l.app.adaptive_resampling_update_interval_callbacks,
-            Some(13)
-        );
     }
 }

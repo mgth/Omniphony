@@ -120,16 +120,8 @@ pub struct MeterTimings {
     pub write_time_ms: Option<f32>,
     pub frame_duration_ms: Option<f32>,
     pub latency_instant_ms: Option<f32>,
-    pub latency_control_ms: Option<f32>,
-    pub latency_smoothed_ms: Option<f32>,
     pub latency_target_ms: Option<f32>,
-    pub latency_downstream_ms: Option<f32>,
-    pub latency_avail_input_ms: Option<f32>,
-    pub latency_output_fifo_ms: Option<f32>,
-    pub latency_resampler_pending_ms: Option<f32>,
     pub resample_ratio: Option<f32>,
-    pub adaptive_band: Option<&'static str>,
-    pub adaptive_state: Option<&'static str>,
     pub drc_gain: Option<f32>,
 }
 
@@ -628,8 +620,17 @@ impl Worker {
             }
             Event::Heard { pos, rate } => self.out.heard(pos, rate),
             Event::Meter(report) => {
-                match super::state_emit::encode_meter_bundle(&report) {
-                    Ok(bytes) => self.out.send_metering(report.block, &bytes),
+                // Split to what a datagram carries: a stream client reads
+                // the same bundles one after the other.
+                match super::state_emit::encode_meter_bundles(
+                    &report,
+                    super::export::MAX_STATE_DATAGRAM,
+                ) {
+                    Ok(bundles) => {
+                        for bytes in &bundles {
+                            self.out.send_metering(report.block, bytes);
+                        }
+                    }
                     Err(e) => log::warn!("Failed to send meter OSC bundle: {e}"),
                 }
                 self.recycle_meter(report);

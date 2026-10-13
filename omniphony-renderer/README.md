@@ -145,9 +145,9 @@ orender assets/demo/spatial-demo.wav \
 The render backend (`--render-backend vbap|barycenter|experimental_distance|hybrid`),
 its per-backend parameters (`--barycenter-localize`, `--hybrid-*`,
 `--experimental-distance-*`), the distance metrics (`--distance-model-metric`,
-`--distance-diffuse-metric`), `--size-to-spread-mode` and the adaptive-resampling
-PI tuning (`--adaptive-resampling-*`) are all exposable on the CLI as well as via
-OSC/Studio. See `docs/option-surface-parity.md` for the full per-surface
+`--distance-diffuse-metric`), `--size-to-spread-mode` and the latency loop
+(`--latency-target`, `--loop-bandwidth-hz`, `--realign-threshold-ms`,
+`--source-clock`) are all exposable on the CLI as well as via OSC/Studio. See `docs/option-surface-parity.md` for the full per-surface
 parity matrix. Run `orender render --help` for the complete flag list.
 
 ## Binaural Headphone Output

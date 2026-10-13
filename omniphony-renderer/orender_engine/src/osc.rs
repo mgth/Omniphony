@@ -600,6 +600,22 @@ impl OscSender {
             let _ = handle.join();
             self.listener_stop.store(false, Ordering::Relaxed);
         }
+        // This sender holds no port now, whatever the same-process registry
+        // still says of it (its entry outlives a standby). Left there, a bind
+        // that finds the port held by another process for a moment (a resume
+        // sent before the departing host has let go) would "release" this
+        // sender's own listener: raise the very stop flag the listener about
+        // to start reads, which then ends at once and leaves the host deaf
+        // while it reports that it listens.
+        {
+            let mut local = LOCAL_RX_RELEASE.lock().unwrap();
+            if local
+                .as_ref()
+                .is_some_and(|flag| Arc::ptr_eq(flag, &self.listener_stop))
+            {
+                *local = None;
+            }
+        }
 
         let rx_socket = match bind_rx_socket(rx_port, request_yield, YIELD_REBIND_BUDGET) {
             Ok(socket) => socket,
@@ -1429,6 +1445,41 @@ mod yield_tests {
             let _ = handle.join();
         }
         *LOCAL_RX_RELEASE.lock().unwrap() = None;
+    }
+
+    /// The host that took the port tells the standby to resume before it has
+    /// let go of it, so the standby's re-bind finds the port held and waits.
+    /// Its own listener's stop flag, left in the same-process registry from
+    /// before the standby, must not be taken for a holder to stop: the
+    /// listener that starts on it would end at once, and the host would run
+    /// deaf while saying it listens.
+    #[test]
+    fn a_resume_before_the_port_is_free_keeps_its_listener() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let control = renderer::test_support::fixture_control();
+        let (mut sender, port) = super::test_support::listening_sender(&control);
+        sender.enter_standby();
+
+        // The taker: still on the port for a moment after its "resume".
+        let taker = UdpSocket::bind(("0.0.0.0", port)).expect("the standby released the port");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(taker);
+        });
+        sender.resume().expect("resume");
+        release.join().unwrap();
+
+        assert!(sender.is_listening());
+        // A listener started on a raised stop flag would be gone by now.
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(
+            !sender.listener_stop.load(Ordering::Relaxed),
+            "the resumed listener was told to stop"
+        );
+        assert!(
+            UdpSocket::bind(("0.0.0.0", port)).is_err(),
+            "the resumed listener let go of the port"
+        );
     }
 
     /// A resume that cannot re-acquire the port re-arms standby and tries again

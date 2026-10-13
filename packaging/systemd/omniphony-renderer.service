@@ -3,8 +3,8 @@
 #   systemctl --user enable --now omniphony-renderer
 # It is the unit Studio's "Install service" writes to ~/.config/systemd/user/
 # (which then takes precedence over this file), with Studio's default settings:
-# OSC on 127.0.0.1:9000, no metering, log level info, input pipe
-# /tmp/orender.pipe. For other settings, install the service from Studio, or
+# OSC on 127.0.0.1:9000, log level info, input pipe /tmp/orender.pipe. For
+# other settings, install the service from Studio, or
 #   systemctl --user edit --full omniphony-renderer
 # Kept equal to linux_service_unit() by a test in
 # omniphony-studio-egui/core/src/host/commands/orender.rs.

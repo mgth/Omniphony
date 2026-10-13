@@ -20,7 +20,7 @@ pub mod snapshot;
 #[cfg(test)]
 mod test_support;
 
-pub use host_control::HostControlHandler;
+pub use host_control::{HostCapabilities, HostControlHandler};
 
 /// Build fingerprint of this workspace build (`<git-describe> (built <ts>)`),
 /// stamped by this crate's build.rs. Both renderer hosts (the `orender` CLI

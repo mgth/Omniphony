@@ -12,7 +12,29 @@ use rosc::{OscMessage, OscPacket};
 
 use crate::osc::ControlEffects;
 
+/// What of a host the capabilities handshake advertises, beside its audio
+/// output (every host that registers a handler has one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostCapabilities {
+    /// The input source can be chosen and configured over OSC.
+    pub input: bool,
+}
+
+impl Default for HostCapabilities {
+    /// The standalone renderer's host: everything.
+    fn default() -> Self {
+        Self { input: true }
+    }
+}
+
 pub trait HostControlHandler: Send + Sync {
+    /// What the capabilities handshake says of this host
+    /// (`/omniphony/state/capabilities`): clients show the controls that
+    /// apply and hide the others.
+    fn capabilities(&self) -> HostCapabilities {
+        HostCapabilities::default()
+    }
+
     /// Handle a control message the core did not recognise (e.g.
     /// `/omniphony/control/audio/*`, `/omniphony/control/input/*`). Returns the
     /// resulting effects, or `None` if this handler does not own `addr`.
@@ -24,7 +46,7 @@ pub trait HostControlHandler: Send + Sync {
     fn extend_snapshot(&self) -> Vec<OscPacket>;
 
     /// Amend the config being saved with host-owned fields (output device,
-    /// live input, adaptive resampling, latency target) before it is written.
+    /// live input, latency target and its loop) before it is written.
     fn amend_saved_config(&self, render: &mut renderer::config::RenderConfig);
 
     /// Monotonic generation counter the engine's OSC listener polls to decide

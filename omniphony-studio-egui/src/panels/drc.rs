@@ -164,18 +164,10 @@ impl StudioSpike {
 /// What the note under the dialogue level says about the stream's dialogue:
 /// its name, its language and how many channels carry it.
 fn dialogue_note(tag: &crate::model::app_state::ChannelTag) -> String {
-    let name = if tag.label.is_empty() {
-        "Dialogue"
-    } else {
-        tag.label.as_str()
-    };
+    let name = crate::view::objects::tag_name(tag);
     let channels = tag.channels.len();
     let plural = if channels == 1 { "" } else { "s" };
-    if tag.language.is_empty() {
-        format!("{name}: {channels} channel{plural}")
-    } else {
-        format!("{name} ({}): {channels} channel{plural}", tag.language)
-    }
+    format!("{name}: {channels} channel{plural}")
 }
 
 /// A level in dB, signed: `+3.0 dB`, `0.0 dB`, `-4.5 dB`.

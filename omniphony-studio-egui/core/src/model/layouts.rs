@@ -578,6 +578,21 @@ pub fn crossover_cutoffs(speakers: &[Speaker]) -> Vec<f64> {
     cutoffs
 }
 
+/// The crossover bands a layout renders, lowest first, as `(low, high)` in
+/// hertz: from `0` to the first cutoff, …, from the last cutoff to infinity.
+/// One full-range band without a crossover.
+pub fn crossover_bands(speakers: &[Speaker]) -> Vec<(f64, f64)> {
+    let cutoffs = crossover_cutoffs(speakers);
+    let mut bands = Vec::with_capacity(cutoffs.len() + 1);
+    let mut low = 0.0;
+    for cutoff in cutoffs {
+        bands.push((low, cutoff));
+        low = cutoff;
+    }
+    bands.push((low, f64::INFINITY));
+    bands
+}
+
 /// Default export file name for a speaker set, as `spatialized.non.height`.
 ///
 /// The Studio's naming convention: how many spatialized speakers sit at or
@@ -752,9 +767,9 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Layout, RawSpeaker, Speaker, crossover_cutoffs, default_export_name, load_layout_file,
-        normalize_for_export, normalize_speaker, parse_yaml_layout, sanitize_export_name,
-        save_layout_file,
+        Layout, RawSpeaker, Speaker, crossover_bands, crossover_cutoffs, default_export_name,
+        load_layout_file, normalize_for_export, normalize_speaker, parse_yaml_layout,
+        sanitize_export_name, save_layout_file,
     };
 
     /// A cartesian speaker must derive its angles in the ADM frame the layout
@@ -807,6 +822,16 @@ mod tests {
             banded("hi", Some(4000.0), None, 1),
         ];
         assert_eq!(crossover_cutoffs(&speakers), vec![120.0, 4000.0]);
+        assert_eq!(
+            crossover_bands(&speakers),
+            vec![(0.0, 120.0), (120.0, 4000.0), (4000.0, f64::INFINITY)]
+        );
+    }
+
+    #[test]
+    fn a_layout_with_no_crossover_is_one_full_range_band() {
+        let speakers = vec![spk("L", -1.0, 1.0, 0.0, 1)];
+        assert_eq!(crossover_bands(&speakers), vec![(0.0, f64::INFINITY)]);
     }
 
     /// Two speakers meeting at "the same" cutoff rarely agree to the last

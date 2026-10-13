@@ -19,8 +19,6 @@ const NOT_GENERATED: &[&str] = &[
     // The flag takes decibels, as the config stores them; the option's wire
     // value is linear (`--master-gain -6` would mean silence).
     "master_gain",
-    // Not a tuning lever of the controller as it stands.
-    "adaptive_resampling_integral_discharge_ratio",
 ];
 
 /// One registered option, as the command line sees it.
@@ -32,8 +30,8 @@ struct FlagSpec {
 }
 
 fn flag_specs() -> impl Iterator<Item = FlagSpec> {
-    // The standalone renderer has audio I/O of its own: an option only the
-    // embedded engine offers is no flag of it.
+    // The standalone renderer has audio I/O of its own: an option that takes
+    // effect in the embedded engine only is no flag of it.
     let core = LIVE_OPTIONS
         .iter()
         .filter(|spec| !spec.flags.contains(OptionFlags::EMBEDDED_ONLY))
@@ -237,7 +235,7 @@ pub fn store_given_values(
         .map(|(key, value)| (*key, value.raw()))
         .partition(|(key, _)| host_keys.contains(key));
     settle_grid_flags(render, values)?;
-    let env = OptionEnv::detached().with_host_io(true);
+    let env = OptionEnv::detached();
     let mut refused = renderer::options::store_client_values(render, &core, &env);
     refused.extend(host_audio::store_host_values(render, &host));
     if refused.is_empty() {
@@ -335,10 +333,6 @@ mod tests {
             "output_file_format" => "caf",
             "live_input_node" => "omniphony-in",
             "live_input_description" => "Omniphony input",
-            "live_input_backend" => "pipewire",
-            "live_input_layout" => "7.1.4",
-            // Its only value so far.
-            "live_input_map" => "7.1-fixed",
             other => panic!("no command-line sample for string option `{other}`"),
         }
     }
@@ -420,7 +414,7 @@ mod tests {
     /// the config; a core option's value reads back from it unchanged.
     #[test]
     fn every_generated_flag_reaches_the_config_through_its_row() {
-        let env = OptionEnv::detached().with_host_io(true);
+        let env = OptionEnv::detached();
         for spec in flag_specs() {
             let words = sample_words(&spec);
             let argv = ["orender", "render"]

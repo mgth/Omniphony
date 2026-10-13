@@ -1,224 +1,18 @@
-//! The Latency section (`#latencySection`, `ui/audio-panel.js`,
-//! `controls/latency.js`, `controls/adaptive.js`): the latency meter with its
-//! markers, the resampling deviation meter, the target latency, and the
-//! adaptive resampling controller's parameters.
+//! The Latency section: the latency meter with its markers, the trace of the
+//! latency and of the rate that holds it, the target latency, and the
+//! settings of the loop (`docs/resampling-rework-plan.md`).
 //!
-//! The numeric parameters share one dirty/apply cycle: they are edited into a
-//! buffer and sent together, because half a controller's settings applied on
-//! their own is a worse state than the one before the edit.
+//! Each number is typed and applied on its own: a new target or loop setting
+//! reopens the output, which is not something a drag should do on the way.
 
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, Ui};
 
 use crate::app::StudioSpike;
-use crate::host::commands::adaptive::{self, Param, Switch};
-use crate::host::commands::resampling;
+use crate::host::commands::resampling::{self, SyncSetting};
 use crate::i18n::{t, tf};
 use crate::model::app_state::AppState;
-use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
-
-/// When each numeric field can be edited.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Gate {
-    /// Whenever the producer has an audio domain.
-    Always,
-    /// Only while the far-mode actions can fire.
-    FarMode,
-    /// Only while adaptive resampling is on.
-    Adaptive,
-    /// Only while the far mode silences the output.
-    Silence,
-}
-
-/// How one numeric parameter is drawn. What it *is* — the model field, the
-/// default, the range — is `Param`, in the core; this is the form around it.
-pub struct Row {
-    pub param: Param,
-    pub label: &'static str,
-    pub help: &'static str,
-    pub unit: &'static str,
-    pub step: f64,
-    pub decimals: usize,
-    pub gate: Gate,
-}
-
-/// The three subpanels of the web form, in its order.
-pub const SUBPANELS: &[(&str, &[Row])] = &[
-    ("adaptive.globalActions", GLOBAL_ROWS),
-    ("adaptive.resamplingController", CONTROLLER_ROWS),
-    ("adaptive.stabilizationPhases", STABILISATION_ROWS),
-];
-
-const GLOBAL_ROWS: &[Row] = &[
-    Row {
-        param: Param::HighRecoverEntryMarginMs,
-        label: "adaptive.threshold",
-        help: "help.adaptive.threshold",
-        unit: "ms",
-        step: 1.0,
-        decimals: 0,
-        gate: Gate::FarMode,
-    },
-    Row {
-        param: Param::LowRecoverEntryMarginMs,
-        label: "adaptive.lowRecoverEntryMargin",
-        help: "help.adaptive.lowRecoverEntryMargin",
-        unit: "ms",
-        step: 0.1,
-        decimals: 1,
-        gate: Gate::Always,
-    },
-    Row {
-        param: Param::LowRecoverExitMarginMs,
-        label: "adaptive.lowRecoverExitMargin",
-        help: "help.adaptive.lowRecoverExitMargin",
-        unit: "ms",
-        step: 0.1,
-        decimals: 1,
-        gate: Gate::Always,
-    },
-    Row {
-        param: Param::FarModeReturnFadeInMs,
-        label: "adaptive.fadeNearReturn",
-        help: "help.adaptive.fadeNearReturn",
-        unit: "ms",
-        step: 1.0,
-        decimals: 0,
-        gate: Gate::Silence,
-    },
-];
-
-const CONTROLLER_ROWS: &[Row] = &[
-    Row {
-        param: Param::UpdateIntervalCallbacks,
-        label: "adaptive.updateInterval",
-        help: "help.adaptive.updateInterval",
-        unit: "",
-        step: 1.0,
-        decimals: 0,
-        gate: Gate::Adaptive,
-    },
-    Row {
-        param: Param::MaxAdjustPpm,
-        label: "adaptive.max",
-        help: "help.adaptive.max",
-        unit: "ppm",
-        step: 1.0,
-        decimals: 0,
-        gate: Gate::Adaptive,
-    },
-    Row {
-        param: Param::KpNear,
-        label: "adaptive.kpNear",
-        help: "help.adaptive.kpNear",
-        unit: "",
-        step: 0.001,
-        decimals: 3,
-        gate: Gate::Adaptive,
-    },
-    Row {
-        param: Param::Ki,
-        label: "adaptive.ki",
-        help: "help.adaptive.ki",
-        unit: "",
-        step: 0.001,
-        decimals: 3,
-        gate: Gate::Adaptive,
-    },
-    Row {
-        param: Param::IntegralDischargeRatio,
-        label: "adaptive.integralDischarge",
-        help: "help.adaptive.integralDischarge",
-        unit: "",
-        step: 0.001,
-        decimals: 3,
-        gate: Gate::Adaptive,
-    },
-];
-
-const STABILISATION_ROWS: &[Row] = &[
-    Row {
-        param: Param::LowRecoverSettleStableMs,
-        label: "adaptive.lowRecoverSettleStable",
-        help: "help.adaptive.lowRecoverSettleStable",
-        unit: "ms",
-        step: 1.0,
-        decimals: 0,
-        gate: Gate::Always,
-    },
-    Row {
-        param: Param::LowRecoverSettleMarginMs,
-        label: "adaptive.lowRecoverSettleMargin",
-        help: "help.adaptive.lowRecoverSettleMargin",
-        unit: "ms",
-        step: 0.1,
-        decimals: 1,
-        gate: Gate::Always,
-    },
-    Row {
-        param: Param::LowRecoverRefillDeltaAlpha,
-        label: "adaptive.lowRecoverRefillDeltaAlpha",
-        help: "help.adaptive.lowRecoverRefillDeltaAlpha",
-        unit: "",
-        step: 0.01,
-        decimals: 2,
-        gate: Gate::Always,
-    },
-    Row {
-        param: Param::ControlSmoothingCutoffHz,
-        label: "adaptive.controlSmoothingCutoffHz",
-        help: "help.adaptive.controlSmoothingCutoffHz",
-        unit: "Hz",
-        step: 0.05,
-        decimals: 3,
-        gate: Gate::Always,
-    },
-    Row {
-        param: Param::ControlSmoothingOrder,
-        label: "adaptive.controlSmoothingOrder",
-        help: "help.adaptive.controlSmoothingOrder",
-        unit: "",
-        step: 1.0,
-        decimals: 0,
-        gate: Gate::Always,
-    },
-];
-
-/// The switches, in the web's order: the three far-mode actions first, the
-/// three diagnostics last.
-const SWITCHES: &[(Switch, &str, &str)] = &[
-    (
-        Switch::HardRecoverHigh,
-        "adaptive.hardRecoverHigh",
-        "help.adaptive.hardRecoverHigh",
-    ),
-    (
-        Switch::HardRecoverLow,
-        "adaptive.hardRecoverLow",
-        "help.adaptive.hardRecoverLow",
-    ),
-    (
-        Switch::SilenceFar,
-        "adaptive.silenceFar",
-        "help.adaptive.silenceFar",
-    ),
-    (
-        Switch::UsePreBridgeClock,
-        "adaptive.usePreBridgeClock",
-        "help.adaptive.usePreBridgeClock",
-    ),
-    (
-        Switch::UseOutputPacing,
-        "adaptive.useOutputPacing",
-        "help.adaptive.useOutputPacing",
-    ),
-    (
-        Switch::DisableBackpressure,
-        "adaptive.disableBackpressure",
-        "help.adaptive.disableBackpressure",
-    ),
-];
 
 impl StudioSpike {
     pub(crate) fn latency_section(&mut self, ui: &mut Ui) {
@@ -226,18 +20,14 @@ impl StudioSpike {
         if !policy.audio_output {
             return;
         }
-        let (state, stats, adaptive_on, paused, band, runtime_state) = {
+        let (state, stats) = {
             let live = self.host.read();
-            (
-                LatencyView::of(&live.app),
-                live.latency_stats(),
-                live.app.adaptive_resampling.unwrap_or(0) != 0,
-                live.app.adaptive_resampling_paused.unwrap_or(0) != 0,
-                live.app.adaptive_resampling_band.clone(),
-                live.app.adaptive_resampling_state.clone(),
-            )
+            (LatencyView::of(&live.app), live.latency_stats())
         };
         let target = state.requested.or(state.target).or(state.latency);
+        // What the meter is read against: the latency the renderer holds,
+        // which is the target unless the stream needed more.
+        let meter_target = state.held.or(target);
         // The meter sits in the header, beside the title, as the web's grid
         // puts it (`#latencySection`, column 2 of row 1): in view whether the
         // section is open or folded, with the numbers it summarises below it.
@@ -247,95 +37,28 @@ impl StudioSpike {
         let reading = reading(state.instant);
         Section::new("latencySection", "section.latency")
             .icon(&crate::ui::icons::SECTION_LATENCY)
-            .info("adaptive")
             .header_widget(|ui| {
                 crate::ui::meter::row_with_readout(ui, READOUT_ADVANCES, &reading, |ui, width| {
-                    latency_meter(ui, width, &state, stats.as_ref(), target);
+                    latency_meter(ui, width, &state, stats.as_ref(), meter_target);
                 })
             })
             .show(ui, |ui| {
                 readouts(ui, &state, stats.as_ref());
-                if adaptive_on {
-                    self.resample_meter(ui);
-                }
-                // The sparkline sits between the gauge and the target, as in
-                // the web: the gauge says where the rate is now, the plot says
-                // how it got there.
+                // The trace sits between the gauge and the target: the gauge
+                // says where the latency is now, the plot how it got there.
                 self.resample_plot(ui);
                 ui.add_enabled_ui(policy.renderer_ready, |ui| {
                     self.target_latency_row(ui, target)
                 });
-                band_indicator(ui, runtime_state.as_deref(), band.as_deref());
-                if policy.adaptive_resampling {
-                    ui.add_enabled_ui(policy.renderer_ready, |ui| {
-                        self.adaptive_form(ui, adaptive_on, paused)
-                    });
+                raised_target_banner(ui, &state);
+                if self.advanced {
+                    ui.add_enabled_ui(policy.renderer_ready, |ui| self.sync_rows(ui));
                 }
             });
     }
 
-    /// The deviation meter: the resampler's correction against the range it
-    /// is allowed, centred on no correction at all.
-    fn resample_meter(&mut self, ui: &mut Ui) {
-        let (ratio, max_adjust) = {
-            let live = self.host.read();
-            (
-                live.app.resample_ratio,
-                live.app.adaptive_resampling_max_adjust.unwrap_or(0.01),
-            )
-        };
-        ui.horizontal(|ui| {
-            crate::ui::help::label(
-                ui,
-                RichText::new(t("telemetry.resample"))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-                "help.telemetry.resample",
-            );
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width().min(140.0), 6.0),
-                egui::Sense::hover(),
-            );
-            let painter = ui.painter();
-            painter.rect_filled(rect, 3.0, theme::FILL);
-            let centre = rect.center().x;
-            painter.vline(
-                centre,
-                rect.y_range(),
-                egui::Stroke::new(2.0, Color32::from_rgba_unmultiplied(217, 236, 255, 153)),
-            );
-            let text = match ratio {
-                Some(ratio) => {
-                    let bound = max_adjust.max(1e-6);
-                    let magnitude =
-                        ((ratio - 1.0).abs() / bound).min(1.0) as f32 * rect.width() * 0.5;
-                    if magnitude > 0.0 {
-                        let mut fill = rect;
-                        if ratio >= 1.0 {
-                            fill.set_left(centre);
-                            fill.set_right(centre + magnitude);
-                            painter.rect_filled(fill, 3.0, Color32::from_rgb(0x7b, 0xff, 0xb8));
-                        } else {
-                            fill.set_left(centre - magnitude);
-                            fill.set_right(centre);
-                            painter.rect_filled(fill, 3.0, Color32::from_rgb(0xff, 0x8a, 0x5c));
-                        }
-                    }
-                    let ppm = ((ratio - 1.0) * 1e6).round() as i64;
-                    format!("{}{ppm} ppm", if ppm >= 0 { "+" } else { "" })
-                }
-                None => "—".to_owned(),
-            };
-            ui.label(
-                RichText::new(text)
-                    .monospace()
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-            );
-        });
-        crate::ui::help::card(ui, "help.telemetry.resample");
-    }
-
+    /// The latency to hold, from the source's samples to the device's
+    /// output: typed, then applied.
     fn target_latency_row(&mut self, ui: &mut Ui, target: Option<i64>) {
         let mut value = self
             .latency_target_edit
@@ -347,7 +70,7 @@ impl StudioSpike {
             |ui| {
                 let dirty = self.latency_target_edit.is_some();
                 if ui
-                    .add_enabled(dirty, egui::Button::new(t("adaptive.apply")))
+                    .add_enabled(dirty, egui::Button::new(t("common.apply")))
                     .clicked()
                 {
                     resampling::set_latency_target(&self.host, value.round() as i64);
@@ -369,147 +92,79 @@ impl StudioSpike {
         );
     }
 
-    /// The adaptive controller: its three groups of numbers, the controller's
-    /// own switch in its group's bar, and the pause control under it.
-    fn adaptive_form(&mut self, ui: &mut Ui, adaptive_on: bool, paused: bool) {
-        let mut on = adaptive_on;
-        // The far mode fires when any of its three actions is armed.
-        let far_mode = {
-            let live = self.host.read();
-            live.app
-                .adaptive_resampling_hard_recover_high_in_far_mode
-                .unwrap_or(1)
-                != 0
-                || live
-                    .app
-                    .adaptive_resampling_hard_recover_low_in_far_mode
-                    .unwrap_or(0)
-                    != 0
-                || live
-                    .app
-                    .adaptive_resampling_force_silence_in_far_mode
-                    .unwrap_or(1)
-                    != 0
-        };
-        let silence = Switch::SilenceFar.get(&self.host.read().app);
-
-        // One group per subpanel of the web form (`.adaptive-subpanel`).
-        for (index, (caption, rows)) in SUBPANELS.iter().enumerate() {
-            // The switches of the first and last subpanels, in the web's
-            // places: far actions first, diagnostics last.
-            let switches: &[usize] = match index {
-                0 => &[0, 1, 2],
-                2 => &[3, 4, 5],
-                _ => &[],
-            };
-            // The controller's group carries the switch that runs it
-            // (`#adaptiveResamplingToggle`), with the pause and the wizard
-            // as its first row.
-            let mut group = Group::new(t(caption));
-            if index == 1 {
-                group = group.help("help.adaptive.title").actions(|ui| {
-                    widgets::switch(ui, &mut on, t(caption));
+    /// The loop's two settings, each typed and applied like the target
+    /// above: a new value reopens the output.
+    fn sync_rows(&mut self, ui: &mut Ui) {
+        const ROWS: [(SyncSetting, &str, &str, f64, usize, &str); 2] = [
+            (
+                SyncSetting::LoopBandwidthHz,
+                "sync.loopBandwidth",
+                "help.sync.loopBandwidth",
+                0.001,
+                3,
+                " Hz",
+            ),
+            (
+                SyncSetting::RealignThresholdMs,
+                "sync.realignThreshold",
+                "help.sync.realignThreshold",
+                1.0,
+                0,
+                " ms",
+            ),
+        ];
+        // The clock the source runs on: taken at once, like a choice. Where
+        // the input has only one, that one is shown and nothing is offered.
+        let clock = resampling::source_clock(&self.host);
+        let fixed = resampling::fixed_source_clock(&self.host);
+        let mut chosen = clock.clone();
+        let label_of = |name: &str| t(&format!("sync.sourceClock.{name}"));
+        widgets::label_row_help(ui, t("sync.sourceClock"), "help.sync.sourceClock", |ui| {
+            ui.add_enabled_ui(fixed.is_none(), |ui| {
+                widgets::bounded_combo(ui, 200.0, |ui, width| {
+                    egui::ComboBox::from_id_salt("sync-source-clock")
+                        .selected_text(label_of(fixed.unwrap_or(&clock)))
+                        .width(width)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for name in resampling::SOURCE_CLOCKS {
+                                ui.selectable_value(&mut chosen, name.to_owned(), label_of(name));
+                            }
+                        })
                 });
-            }
-            group.show(ui, |ui| {
-                if index == 1 {
-                    self.adaptive_run_row(ui, adaptive_on, paused);
+            });
+        });
+        if chosen != clock {
+            resampling::set_source_clock(&self.host, &chosen);
+        }
+        for (index, (setting, label, help, speed, decimals, suffix)) in ROWS.into_iter().enumerate()
+        {
+            let (min, max) = setting.range();
+            let mut value = self.sync_edits[index].unwrap_or_else(|| setting.get(&self.host));
+            widgets::label_row_help(ui, t(label), help, |ui| {
+                let dirty = self.sync_edits[index].is_some();
+                if ui
+                    .add_enabled(dirty, egui::Button::new(t("common.apply")))
+                    .clicked()
+                {
+                    resampling::set_sync_setting(&self.host, setting, value);
+                    self.sync_edits[index] = None;
                 }
-                for i in switches {
-                    let (switch, label, help) = &SWITCHES[*i];
-                    let mut value = switch.get(&self.host.read().app);
-                    // Label, help mark and switch on one line, the switch placed
-                    // first: it used to fall to a line of its own below its label.
-                    if widgets::label_row_help(ui, t(label), *help, |ui| {
-                        widgets::switch(ui, &mut value, t(label)).changed()
-                    }) {
-                        adaptive::set_switch(&self.host, *switch, value);
-                    }
-                }
-                for row in *rows {
-                    let enabled = match row.gate {
-                        Gate::Always => true,
-                        Gate::FarMode => far_mode,
-                        Gate::Adaptive => adaptive_on,
-                        Gate::Silence => silence,
-                    };
-                    let stored = row.param.get(&self.host.read().app);
-                    let mut value = *self.adaptive_edits.get(&row.param).unwrap_or(&stored);
-                    let (min, max) = row.param.range();
-                    ui.add_enabled_ui(enabled, |ui| {
-                        widgets::label_row_help(ui, t(row.label), row.help, |ui| {
-                            let mut drag = egui::DragValue::new(&mut value)
-                                .speed(row.step)
-                                .range(min..=max)
-                                .fixed_decimals(row.decimals);
-                            if !row.unit.is_empty() {
-                                drag = drag.suffix(format!(" {}", row.unit));
-                            }
-                            if ui
-                                .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
-                                .changed()
-                            {
-                                self.adaptive_edits.insert(row.param, value);
-                            }
-                        });
-                    });
+                if ui
+                    .add_sized(
+                        egui::vec2(72.0, ui.spacing().interact_size.y),
+                        egui::DragValue::new(&mut value)
+                            .speed(speed)
+                            .range(min..=max)
+                            .fixed_decimals(decimals)
+                            .suffix(suffix),
+                    )
+                    .changed()
+                {
+                    self.sync_edits[index] = Some(value);
                 }
             });
         }
-
-        if on != adaptive_on {
-            resampling::set_adaptive_resampling_enabled(&self.host, on);
-        }
-
-        let dirty = !self.adaptive_edits.is_empty();
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(dirty, egui::Button::new(t("adaptive.apply")))
-                .clicked()
-            {
-                self.apply_adaptive_edits();
-            }
-            if ui
-                .add_enabled(dirty, egui::Button::new(t("common.cancel")))
-                .clicked()
-            {
-                self.adaptive_edits.clear();
-            }
-        });
-    }
-
-    /// Pause or resume the controller, reset its ratio while paused, and the
-    /// auto-tune wizard while it runs.
-    fn adaptive_run_row(&mut self, ui: &mut Ui, adaptive_on: bool, paused: bool) {
-        ui.horizontal_wrapped(|ui| {
-            let label = if paused {
-                format!("▶ {}", t("adaptive.resume"))
-            } else {
-                format!("⏸ {}", t("adaptive.pause"))
-            };
-            if ui
-                .add_enabled(adaptive_on, egui::Button::new(label))
-                .clicked()
-            {
-                resampling::set_adaptive_resampling_paused(&self.host, !paused);
-            }
-            // Only reachable while paused: it is a diagnostic, not a control.
-            if adaptive_on && paused && ui.button(t("adaptive.resetRatio")).clicked() {
-                resampling::control_adaptive_resampling_reset_ratio(&self.host);
-            }
-            // The wizard patches this controller live, so it only makes sense
-            // while there is one running to patch.
-            if adaptive_on && !paused {
-                self.auto_tune_button(ui);
-            }
-        });
-    }
-
-    /// Send the edits as one batch: the core clamps them, keeps the hysteresis
-    /// well formed and pushes the whole controller.
-    fn apply_adaptive_edits(&mut self) {
-        let edits = std::mem::take(&mut self.adaptive_edits);
-        adaptive::apply_params(&self.host, &edits);
     }
 }
 
@@ -583,20 +238,6 @@ fn latency_meter(
             );
         }
     }
-    if let Some(control) = state.control {
-        painter.vline(
-            at(control as f64),
-            rect.y_range(),
-            egui::Stroke::new(1.5, Color32::from_rgb(0x58, 0xa0, 0xff)),
-        );
-    }
-    if let Some(smoothed) = state.smoothed {
-        painter.vline(
-            at(smoothed),
-            rect.y_range(),
-            egui::Stroke::new(1.5, Color32::from_rgb(0xc8, 0x79, 0xff)),
-        );
-    }
     if let Some(target) = target {
         painter.circle_filled(
             egui::pos2(at(target as f64), rect.top() - 3.0),
@@ -606,7 +247,8 @@ fn latency_meter(
     }
 }
 
-/// The two lines of numbers under the meter.
+/// The numbers under the meter: the latency now, between the least and the
+/// most of the window.
 fn readouts(
     ui: &mut Ui,
     state: &LatencyView,
@@ -627,46 +269,36 @@ fn readouts(
         widgets::note(ui, &ms(state.instant));
         widgets::note(ui, &tf("status.maxValue", &[("value", &max)]));
     });
-    ui.horizontal(|ui| {
-        widgets::note(ui, &format!("ctrl {}", ms(state.control)));
-        let smoothed = state
-            .smoothed
-            .map(|v| format!("{v:.2} ms"))
-            .unwrap_or_else(|| "—".to_owned());
-        widgets::note(ui, &format!("smoothed {smoothed}"));
-        widgets::note(ui, &format!("path {}", ms(state.downstream)));
-    });
 }
 
-/// The controller's phase and the band it is working in.
-fn band_indicator(ui: &mut Ui, runtime_state: Option<&str>, band: Option<&str>) {
-    let colour = match band {
-        Some("hard") => Color32::from_rgb(0xff, 0x4d, 0x4d),
-        Some("far") => Color32::from_rgb(0xff, 0x9a, 0x5c),
-        Some("near") => theme::OK,
-        _ => Color32::from_rgba_unmultiplied(255, 255, 255, 64),
+/// The stream needs more latency than the target asks for, and the renderer
+/// holds that instead: said under the target, with the value to set.
+fn raised_target_banner(ui: &mut Ui, state: &LatencyView) {
+    let (Some(held), Some(requested)) = (state.held, state.requested) else {
+        return;
     };
-    ui.horizontal(|ui| {
-        widgets::note(ui, &runtime_state.unwrap_or("—").to_uppercase());
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().circle_filled(rect.center(), 4.0, colour);
-        ui.label(
-            RichText::new(band.unwrap_or("—"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT),
-        );
-    });
+    if held <= requested {
+        return;
+    }
+    let (held, target) = (held.to_string(), requested.to_string());
+    let values = [("held", held.as_str()), ("target", target.as_str())];
+    widgets::banner(
+        ui,
+        widgets::Severity::Warning,
+        &tf("latency.raisedTitle", &values),
+        Some(&tf("latency.raisedBody", &values)),
+    );
 }
 
 /// The latency numbers this panel reads, copied out under the lock.
 pub struct LatencyView {
     pub latency: Option<i64>,
     pub instant: Option<i64>,
-    pub control: Option<i64>,
-    pub smoothed: Option<f64>,
-    pub downstream: Option<i64>,
     pub target: Option<i64>,
     pub requested: Option<i64>,
+    /// The latency held in place of the requested target, when the stream
+    /// needs more.
+    pub held: Option<i64>,
 }
 
 impl LatencyView {
@@ -678,11 +310,9 @@ impl LatencyView {
         Self {
             latency: app.latency.latency_ms,
             instant: app.latency.latency_instant_ms,
-            control: app.latency.latency_control_ms,
-            smoothed: app.latency.latency_smoothed_ms,
-            downstream: app.latency.latency_downstream_ms,
             target: app.latency.latency_target_ms,
             requested: app.latency.latency_requested_ms,
+            held: app.latency.latency_held_ms,
         }
     }
 }

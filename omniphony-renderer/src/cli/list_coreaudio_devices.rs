@@ -10,7 +10,10 @@ pub fn cmd_list_coreaudio_devices() -> Result<()> {
     println!("Available CoreAudio devices:");
     println!();
 
-    let devices = audio_output::list_coreaudio_devices()?;
+    let devices: Vec<String> = audio_output::sync_output::list_output_devices()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
 
     if devices.is_empty() {
         println!("  No CoreAudio output devices found.");

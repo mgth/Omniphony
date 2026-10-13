@@ -65,7 +65,6 @@ pub fn resume_watchdog(state: &SharedState) {
 /// are sent to the old renderer even when the next action reconnects elsewhere.
 fn finish_session_operations(state: &SharedState) {
     crate::host::services::speaker_test::stop(state);
-    crate::host::services::auto_tune::revert(state);
 }
 
 /// Reserve an intent before scheduling DNS, so a delayed startup request
@@ -250,7 +249,6 @@ pub fn get_about_info() -> AboutInfo {
 pub fn save_osc_config(state: &SharedState, mut config: OscConfig) -> Result<(), String> {
     state.config.update(|persisted| {
         config.last_layout_import_dir = persisted.last_layout_import_dir.clone();
-        config.rust_auto_tune = persisted.rust_auto_tune;
         *persisted = config.clone();
     })?;
     // A config change re-arms the auto-start watchdog after a failure streak.
@@ -275,18 +273,6 @@ pub fn control_osc_metering(state: &SharedState, enable: i32) -> Result<(), Stri
     state.inner.lock().unwrap().osc_metering_enabled = Some(if enabled { 1 } else { 0 });
     send_control(&state.osc_tx, OscControlMsg::SetMeteringEnabled { enabled });
     Ok(())
-}
-
-pub fn auto_tune_snapshot_save(state: &SharedState, snapshot: serde_json::Value) {
-    *state.auto_tune_snapshot.lock().unwrap() = Some(snapshot);
-}
-
-pub fn auto_tune_snapshot_take(state: &SharedState) -> Option<serde_json::Value> {
-    state.auto_tune_snapshot.lock().unwrap().take()
-}
-
-pub fn auto_tune_snapshot_peek(state: &SharedState) -> Option<serde_json::Value> {
-    state.auto_tune_snapshot.lock().unwrap().clone()
 }
 
 #[cfg(test)]

@@ -493,6 +493,7 @@ mod tests {
             tx,
             dir.path().join("config"),
             0,
+            crate::host::commands::HostPaths::default(),
             stats.clone(),
             Arc::new(|| {}),
         ));

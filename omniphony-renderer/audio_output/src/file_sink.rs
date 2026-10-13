@@ -11,8 +11,8 @@
 //!     size. The header layout mirrors truehdd's CAF writer (so files stay
 //!     interchangeable) minus the seek-based size patching it does on close.
 //!
-//! This is a **non-realtime** sink: there is no device clock, no adaptive
-//! resampling and no pacer. Flow control comes from blocking writes — when the
+//! This is a **non-realtime** sink: there is no device clock and no
+//! resampling. Flow control comes from blocking writes — when the
 //! downstream consumer (e.g. a network relay) stalls, the pipe fills and the
 //! write blocks, pacing the producer. A consumer that goes away instead of
 //! stalling makes the write fail with `BrokenPipe`; that is the end of the

@@ -38,11 +38,9 @@ const LEFTOVER_ALLOW_KEYS = new Set([
   'distance.title',
   'distance.infoTitle',
   'spread.mode.objectSize',
-  'autoTune.openButton',
   'vbap.cart',
   'vbap.polar',
   'audio.rampModeFrame',
-  'adaptive.controlSmoothingOrder.opt2',
   // "Spread" is kept as a loanword in the Latin-script locales, so "Spread
   // min"/"Spread max" are legitimately identical to English there.
   'backendParam.spread_min',

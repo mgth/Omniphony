@@ -21,8 +21,7 @@ use crate::persist::PersistOp;
 /// Handle the live-state writes this module owns. `None` when `msg` is not one
 /// of them, so the dispatcher moves on. `host` is the registered host control
 /// handler, if any: the options it declares are set through the same generic
-/// setters as the core's, and its presence scopes out the core options only
-/// the embedded engine offers.
+/// setters as the core's.
 pub fn apply_live_control(
     msg: &OscMessage,
     ctx: &RuntimeControlContext,
@@ -40,14 +39,13 @@ pub fn apply_live_control(
             spec.key
         )));
     };
-    let target = core_target(spec, host);
     Some(apply_options(
         ctx,
         host,
         &[OptionPair {
             key: spec.key,
             kind: spec.kind,
-            target,
+            target: OptionTarget::Core(spec),
             args: value,
         }],
     ))
@@ -219,9 +217,6 @@ enum OptionTarget {
     Core(&'static renderer::options::OptionSpec),
     /// One the host declares.
     Host,
-    /// A core option this host does not offer (`EMBEDDED_ONLY` on a host
-    /// with audio I/O): its value is skipped and refused.
-    NotOffered,
 }
 
 /// One key of `/control/option(s)` with its value's arguments.
@@ -230,18 +225,6 @@ struct OptionPair<'a> {
     kind: renderer::options::OptionKind,
     target: OptionTarget,
     args: &'a [OscType],
-}
-
-fn core_target(
-    spec: &'static renderer::options::OptionSpec,
-    host: Option<&dyn HostControlHandler>,
-) -> OptionTarget {
-    let env = renderer::options::OptionEnv::detached().with_host_io(host.is_some());
-    if env.offers(spec) {
-        OptionTarget::Core(spec)
-    } else {
-        OptionTarget::NotOffered
-    }
 }
 
 /// Split `[key, value, key, value, …]` into (option, value arguments) pairs,
@@ -263,7 +246,7 @@ fn parse_option_pairs<'a>(
             return Err(format!("options: expected a key, got {key:?}"));
         };
         let (kind, target) = if let Some(spec) = renderer::options::find(key) {
-            (spec.kind, core_target(spec, host))
+            (spec.kind, OptionTarget::Core(spec))
         } else if let Some(kind) = host.and_then(|host| host.option_kind(key)) {
             (kind, OptionTarget::Host)
         } else {
@@ -414,9 +397,6 @@ fn apply_options(
             }
             OptionTarget::Core(spec) => core_items.push((spec, raw)),
             OptionTarget::Host => host_items.push((pair.key, raw)),
-            OptionTarget::NotOffered => {
-                refused.push(format!("{}: not offered by this host", pair.key))
-            }
         }
     }
     let refused_reason = |refused: Vec<String>| {
@@ -1286,27 +1266,19 @@ mod tests {
         assert!(!unknown.publish_only && !unknown.mark_dirty);
     }
 
-    /// `decode_thread` belongs to the embedded engine: a host with audio I/O
-    /// refuses it, by key and by its dedicated address, and the rest of a
-    /// batch still applies.
+    /// `decode_thread` takes effect in the embedded engine only, and a host
+    /// with audio I/O takes the write all the same — by key, by its dedicated
+    /// address and in a batch — so it can be set there for the player to come.
     #[test]
-    fn a_host_with_audio_refuses_the_embedded_engines_options() {
-        let ctx = ctx();
+    fn a_host_with_audio_takes_the_embedded_engines_options() {
         let host = StubHost::new();
-        let before = ctx.renderer.live.read().options.decode_thread;
         for message in [
             msg(osc_contract::CONTROL_DECODE_THREAD, vec![OscType::Int(1)]),
             msg(
                 osc_contract::CONTROL_OPTION,
                 vec![s("decode_thread"), OscType::Int(1)],
             ),
-        ] {
-            let effects = apply_live_control(&message, &ctx, Some(&host)).expect("handled");
-            assert!(!effects.mark_dirty, "{}", message.addr);
-        }
-        assert_eq!(ctx.renderer.live.read().options.decode_thread, before);
-        let effects = apply_live_control(
-            &msg(
+            msg(
                 osc_contract::CONTROL_OPTIONS,
                 vec![
                     s("decode_thread"),
@@ -1315,22 +1287,19 @@ mod tests {
                     OscType::Int(1),
                 ],
             ),
-            &ctx,
-            Some(&host),
-        )
-        .expect("handled");
-        assert!(effects.mark_dirty);
-        assert_eq!(ctx.renderer.live.read().options.decode_thread, before);
-        assert!(ctx.renderer.live.read().options.auto_gain);
-
-        // The embedded engine (no host) still takes it.
-        let effects = apply_live_control(
-            &msg(osc_contract::CONTROL_DECODE_THREAD, vec![OscType::Int(1)]),
-            &ctx,
-            None,
-        )
-        .expect("handled");
-        assert!(effects.mark_dirty);
+        ] {
+            for host in [Some(&host as &dyn HostControlHandler), None] {
+                let ctx = ctx();
+                assert!(!ctx.renderer.live.read().options.decode_thread);
+                let effects = apply_live_control(&message, &ctx, host).expect("handled");
+                assert!(effects.mark_dirty, "{}", message.addr);
+                assert!(
+                    ctx.renderer.live.read().options.decode_thread,
+                    "{}",
+                    message.addr
+                );
+            }
+        }
     }
 
     #[test]

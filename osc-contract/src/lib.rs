@@ -59,7 +59,7 @@ pub mod stream;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 6;
+pub const CONTRACT_REVISION: u32 = 7;
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -71,35 +71,6 @@ pub const STREAM_FRAME_SIZE_BYTES: usize = 4;
 
 // ── Control: client → engine ────────────────────────────────────────────────
 
-pub const CONTROL_ADAPTIVE_RESAMPLING: &str = "/omniphony/control/adaptive_resampling";
-pub const CONTROL_ADAPTIVE_RESAMPLING_ENABLE_FAR_MODE: &str =
-    "/omniphony/control/adaptive_resampling/enable_far_mode";
-pub const CONTROL_ADAPTIVE_RESAMPLING_FAR_MODE_RETURN_FADE_IN_MS: &str =
-    "/omniphony/control/adaptive_resampling/far_mode_return_fade_in_ms";
-pub const CONTROL_ADAPTIVE_RESAMPLING_FORCE_SILENCE_IN_FAR_MODE: &str =
-    "/omniphony/control/adaptive_resampling/force_silence_in_far_mode";
-pub const CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_HIGH_IN_FAR_MODE: &str =
-    "/omniphony/control/adaptive_resampling/hard_recover_high_in_far_mode";
-pub const CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_IN_FAR_MODE: &str =
-    "/omniphony/control/adaptive_resampling/hard_recover_in_far_mode";
-pub const CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_LOW_IN_FAR_MODE: &str =
-    "/omniphony/control/adaptive_resampling/hard_recover_low_in_far_mode";
-pub const CONTROL_ADAPTIVE_RESAMPLING_HIGH_RECOVER_ENTRY_MARGIN_MS: &str =
-    "/omniphony/control/adaptive_resampling/high_recover_entry_margin_ms";
-pub const CONTROL_ADAPTIVE_RESAMPLING_INTEGRAL_DISCHARGE_RATIO: &str =
-    "/omniphony/control/adaptive_resampling/integral_discharge_ratio";
-pub const CONTROL_ADAPTIVE_RESAMPLING_KI: &str = "/omniphony/control/adaptive_resampling/ki";
-pub const CONTROL_ADAPTIVE_RESAMPLING_KP_NEAR: &str =
-    "/omniphony/control/adaptive_resampling/kp_near";
-pub const CONTROL_ADAPTIVE_RESAMPLING_MAX_ADJUST: &str =
-    "/omniphony/control/adaptive_resampling/max_adjust";
-pub const CONTROL_ADAPTIVE_RESAMPLING_NEAR_FAR_THRESHOLD_MS: &str =
-    "/omniphony/control/adaptive_resampling/near_far_threshold_ms";
-pub const CONTROL_ADAPTIVE_RESAMPLING_PAUSE: &str = "/omniphony/control/adaptive_resampling/pause";
-pub const CONTROL_ADAPTIVE_RESAMPLING_RESET_RATIO: &str =
-    "/omniphony/control/adaptive_resampling/reset_ratio";
-pub const CONTROL_ADAPTIVE_RESAMPLING_UPDATE_INTERVAL_CALLBACKS: &str =
-    "/omniphony/control/adaptive_resampling/update_interval_callbacks";
 pub const CONTROL_AUDIO_OUTPUT_BACKEND: &str = "/omniphony/control/audio/output_backend";
 pub const CONTROL_AUDIO_OUTPUT_DEVICE: &str = "/omniphony/control/audio/output_device";
 pub const CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH: &str =
@@ -197,16 +168,8 @@ pub const CONTROL_HEAD_TRACKING_SMOOTHING: &str = "/omniphony/control/head/track
 pub const CONTROL_INPUT_APPLY: &str = "/omniphony/control/input/apply";
 pub const CONTROL_INPUT_DRC_MODE: &str = "/omniphony/control/input/drc_mode";
 pub const CONTROL_INPUT_DRC_WEIGHT: &str = "/omniphony/control/input/drc_weight";
-pub const CONTROL_INPUT_LIVE_BACKEND: &str = "/omniphony/control/input/live/backend";
-pub const CONTROL_INPUT_LIVE_CHANNELS: &str = "/omniphony/control/input/live/channels";
-pub const CONTROL_INPUT_LIVE_CLOCK_MODE: &str = "/omniphony/control/input/live/clock_mode";
 pub const CONTROL_INPUT_LIVE_DESCRIPTION: &str = "/omniphony/control/input/live/description";
-pub const CONTROL_INPUT_LIVE_LAYOUT: &str = "/omniphony/control/input/live/layout";
-pub const CONTROL_INPUT_LIVE_LAYOUT_IMPORT: &str = "/omniphony/control/input/live/layout_import";
-pub const CONTROL_INPUT_LIVE_LFE_MODE: &str = "/omniphony/control/input/live/lfe_mode";
-pub const CONTROL_INPUT_LIVE_MAP: &str = "/omniphony/control/input/live/map";
 pub const CONTROL_INPUT_LIVE_NODE: &str = "/omniphony/control/input/live/node";
-pub const CONTROL_INPUT_LIVE_SAMPLE_RATE: &str = "/omniphony/control/input/live/sample_rate";
 pub const CONTROL_INPUT_MODE: &str = "/omniphony/control/input/mode";
 pub const CONTROL_INPUT_REFRESH: &str = "/omniphony/control/input/refresh";
 pub const CONTROL_LATENCY_TARGET: &str = "/omniphony/control/latency_target";
@@ -512,8 +475,6 @@ pub const CONTROL_ERROR_NOT_ALLOWED: &str = "not_allowed";
 
 // ── State: engine → clients ─────────────────────────────────────────────────
 
-pub const STATE_ADAPTIVE_RESAMPLING_BAND: &str = "/omniphony/state/adaptive_resampling/band";
-pub const STATE_ADAPTIVE_RESAMPLING_STATE: &str = "/omniphony/state/adaptive_resampling/state";
 pub const STATE_AUDIO: &str = "/omniphony/state/audio";
 pub const STATE_BACKEND_FILE_CONTENT: &str = "/omniphony/state/backend/file/content";
 pub const STATE_BACKEND_FILE_ERROR: &str = "/omniphony/state/backend/file/error";
@@ -564,13 +525,7 @@ pub const STATE_HEAD_POSE: &str = "/omniphony/state/head_pose";
 pub const STATE_INPUT: &str = "/omniphony/state/input";
 pub const STATE_INPUT_PIPE: &str = "/omniphony/state/input_pipe";
 pub const STATE_LATENCY: &str = "/omniphony/state/latency";
-pub const STATE_LATENCY_AVAIL_INPUT: &str = "/omniphony/state/latency_avail_input";
-pub const STATE_LATENCY_CONTROL: &str = "/omniphony/state/latency_control";
-pub const STATE_LATENCY_DOWNSTREAM: &str = "/omniphony/state/latency_downstream";
 pub const STATE_LATENCY_INSTANT: &str = "/omniphony/state/latency_instant";
-pub const STATE_LATENCY_OUTPUT_FIFO: &str = "/omniphony/state/latency_output_fifo";
-pub const STATE_LATENCY_RESAMPLER_PENDING: &str = "/omniphony/state/latency_resampler_pending";
-pub const STATE_LATENCY_SMOOTHED: &str = "/omniphony/state/latency_smoothed";
 pub const STATE_LATENCY_TARGET: &str = "/omniphony/state/latency_target";
 pub const STATE_LAYOUT: &str = "/omniphony/state/layout";
 pub const STATE_LOG_LEVEL: &str = "/omniphony/state/log_level";
@@ -729,23 +684,7 @@ pub fn is_known_control(address: &str) -> bool {
 }
 
 pub const ALL_CONTROL: &[&str] = &[
-    CONTROL_ADAPTIVE_RESAMPLING,
     CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
-    CONTROL_ADAPTIVE_RESAMPLING_ENABLE_FAR_MODE,
-    CONTROL_ADAPTIVE_RESAMPLING_FAR_MODE_RETURN_FADE_IN_MS,
-    CONTROL_ADAPTIVE_RESAMPLING_FORCE_SILENCE_IN_FAR_MODE,
-    CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_HIGH_IN_FAR_MODE,
-    CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_IN_FAR_MODE,
-    CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_LOW_IN_FAR_MODE,
-    CONTROL_ADAPTIVE_RESAMPLING_HIGH_RECOVER_ENTRY_MARGIN_MS,
-    CONTROL_ADAPTIVE_RESAMPLING_INTEGRAL_DISCHARGE_RATIO,
-    CONTROL_ADAPTIVE_RESAMPLING_KI,
-    CONTROL_ADAPTIVE_RESAMPLING_KP_NEAR,
-    CONTROL_ADAPTIVE_RESAMPLING_MAX_ADJUST,
-    CONTROL_ADAPTIVE_RESAMPLING_NEAR_FAR_THRESHOLD_MS,
-    CONTROL_ADAPTIVE_RESAMPLING_PAUSE,
-    CONTROL_ADAPTIVE_RESAMPLING_RESET_RATIO,
-    CONTROL_ADAPTIVE_RESAMPLING_UPDATE_INTERVAL_CALLBACKS,
     CONTROL_AUDIO_OUTPUT_BACKEND,
     CONTROL_AUDIO_OUTPUT_DEVICE,
     CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH,
@@ -796,16 +735,8 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_INPUT_APPLY,
     CONTROL_INPUT_DRC_MODE,
     CONTROL_INPUT_DRC_WEIGHT,
-    CONTROL_INPUT_LIVE_BACKEND,
-    CONTROL_INPUT_LIVE_CHANNELS,
-    CONTROL_INPUT_LIVE_CLOCK_MODE,
     CONTROL_INPUT_LIVE_DESCRIPTION,
-    CONTROL_INPUT_LIVE_LAYOUT,
-    CONTROL_INPUT_LIVE_LAYOUT_IMPORT,
-    CONTROL_INPUT_LIVE_LFE_MODE,
-    CONTROL_INPUT_LIVE_MAP,
     CONTROL_INPUT_LIVE_NODE,
-    CONTROL_INPUT_LIVE_SAMPLE_RATE,
     CONTROL_INPUT_MODE,
     CONTROL_INPUT_REFRESH,
     CONTROL_LAYOUT_EXPORT,
@@ -899,8 +830,6 @@ pub const ALL_CONTROL: &[&str] = &[
 ];
 
 pub const ALL_STATE: &[&str] = &[
-    STATE_ADAPTIVE_RESAMPLING_BAND,
-    STATE_ADAPTIVE_RESAMPLING_STATE,
     STATE_AUDIO,
     STATE_BACKEND_FILE_CONTENT,
     STATE_BACKEND_FILE_ERROR,
@@ -925,13 +854,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_INPUT,
     STATE_INPUT_PIPE,
     STATE_LATENCY,
-    STATE_LATENCY_AVAIL_INPUT,
-    STATE_LATENCY_CONTROL,
-    STATE_LATENCY_DOWNSTREAM,
     STATE_LATENCY_INSTANT,
-    STATE_LATENCY_OUTPUT_FIFO,
-    STATE_LATENCY_RESAMPLER_PENDING,
-    STATE_LATENCY_SMOOTHED,
     STATE_LAYOUT,
     STATE_LOG_LEVEL,
     STATE_LOUDNESS,
@@ -1187,7 +1110,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (6, 0xeacf_2e42_91fa_6c74);
+    const PINNED_ADDRESS_SET: (u32, u64) = (7, 0x05dc_e6a1_b721_9d45);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

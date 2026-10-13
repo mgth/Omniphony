@@ -220,15 +220,8 @@ name = "audio_input"
 version = "0.7.0"
 dependencies = [
  "anyhow",
- "audio_output",
- "diag",
- "libc",
- "log",
  "pipewire",
- "renderer",
  "serde",
- "spdif",
- "sys",
 ]
 
 [[package]]
@@ -239,13 +232,10 @@ dependencies = [
  "audio_rt",
  "audio_sync",
  "cpal",
- "diag",
  "libc",
  "log",
  "parking_lot",
  "pipewire",
- "rtrb",
- "rubato 0.14.1",
  "serde",
 ]
 
@@ -1971,18 +1961,6 @@ checksum = "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de"
 
 [[package]]
 name = "rubato"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6dd52e80cfc21894deadf554a5673002938ae4625f7a283e536f9cf7c17b0d5"
-dependencies = [
- "num-complex",
- "num-integer",
- "num-traits",
- "realfft",
-]
-
-[[package]]
-name = "rubato"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90173154a8a14e6adb109ea641743bc95ec81c093d94e70c6763565f7108ebeb"
@@ -2231,14 +2209,14 @@ dependencies = [
  "log",
  "miniz_oxide 0.8.9",
  "realfft",
- "rubato 1.0.1",
+ "rubato",
  "thiserror 2.0.20",
  "winnow 0.7.15",
 ]
 
 [[package]]
 name = "spdif"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
 ]

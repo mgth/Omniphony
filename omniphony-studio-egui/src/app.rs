@@ -125,9 +125,9 @@ pub struct StudioSpike {
     pub(crate) hrir_params_seen: Option<serde_json::Value>,
     /// Target latency being typed, until Apply.
     pub(crate) latency_target_edit: Option<f64>,
-    /// Adaptive-controller fields edited but not yet applied.
-    pub(crate) adaptive_edits:
-        std::collections::BTreeMap<crate::host::commands::adaptive::Param, f64>,
+    /// The sync engine's loop settings being typed, until Apply: bandwidth,
+    /// then realign threshold.
+    pub(crate) sync_edits: [Option<f64>; 2],
     pub(crate) file_picker: Option<crate::ui::file_dialogs::PendingPicker>,
     pub(crate) layout_transfer: crate::ui::layout_transfer::LayoutTransfer,
     pub(crate) profiles: crate::panels::profiles::ProfilePanel,
@@ -223,10 +223,6 @@ pub struct StudioSpike {
     pub(crate) sofa_browser: Option<crate::panels::sofa_browser::SofaBrowser>,
     /// The backend file editor, while it is open.
     pub(crate) script_editor: Option<crate::panels::script_editor::ScriptEditor>,
-    /// The auto-tune wizard, while it is open.
-    /// A close was asked for while a run was going; the run itself is the
-    /// core's.
-    pub(crate) auto_tune_quit_asked: bool,
     /// The prompt held up by a close while the renderer has unsaved edits.
     pub(crate) unsaved_quit: crate::panels::unsaved_quit::UnsavedQuit,
     /// Why the last "save and quit" did not save, shown in the prompt.
@@ -394,6 +390,7 @@ impl StudioSpike {
             control_for_host,
             config_dir.clone(),
             port,
+            crate::host::commands::HostPaths::bundled().with_layouts_dir(args.layouts_dir.clone()),
             osc_stats.clone(),
             waker.clone(),
         ));
@@ -483,7 +480,7 @@ impl StudioSpike {
             prtf_freq_scale: 100.0,
             hrir_params_seen: None,
             latency_target_edit: None,
-            adaptive_edits: Default::default(),
+            sync_edits: [None; 2],
             file_picker: None,
             layout_transfer: Default::default(),
             profiles: Default::default(),
@@ -533,7 +530,6 @@ impl StudioSpike {
             ctx: cc.egui_ctx.clone(),
             sofa_browser: None,
             script_editor: None,
-            auto_tune_quit_asked: false,
             unsaved_quit: Default::default(),
             unsaved_quit_error: None,
             reload_confirm_open: false,
@@ -926,8 +922,6 @@ impl StudioSpike {
         crate::ui::help::end_frame(ctx);
         self.sofa_browser_modal(ctx);
         self.script_editor_modal(ctx);
-        self.auto_tune_modal(ctx);
-        self.auto_tune_quit_guard(ctx);
         self.unsaved_quit_modal(ctx);
         self.reload_confirm_modal(ctx);
         if !layout_eq(&layout, &self.layout) {

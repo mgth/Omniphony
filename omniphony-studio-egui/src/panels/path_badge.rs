@@ -74,14 +74,19 @@ impl StudioSpike {
             .inner;
         if clicked {
             // The listening settings: the Essentials section, and the
-            // Renderer section on its Binaural tab for the Advanced board —
+            // Renderer section on its Binaural tab (on headphones) for the
+            // Advanced board —
             // in the right overlay, opened first when it is collapsed.
             if layout.right.collapsed {
                 layout.toggle_collapsed(Side::Right, ctx.content_rect().width());
             }
             section::request_open(ctx, "listeningSection");
             section::request_open(ctx, "rendererSection");
-            self.renderer_tab = RendererTab::Binaural;
+            // On the speakers the section has no Binaural tab to turn to,
+            // and the tab kept for the next room is left as it was chosen.
+            if badge.path.is_binaural() {
+                self.renderer_tab = RendererTab::Binaural;
+            }
         }
     }
 }

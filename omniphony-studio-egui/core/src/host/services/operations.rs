@@ -139,7 +139,6 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
                     config.host,
                     config.osc_rx_port,
                     config.osc_port,
-                    config.osc_metering_enabled,
                 ),
                 Action::Launch => orender::launch_orender(
                     paths,
@@ -147,7 +146,6 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
                     config.host,
                     config.osc_rx_port,
                     config.osc_port,
-                    config.osc_metering_enabled,
                     None,
                     None,
                 ),
@@ -157,7 +155,6 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
                     config.host,
                     config.osc_rx_port,
                     config.osc_port,
-                    config.osc_metering_enabled,
                     None,
                     None,
                 ),

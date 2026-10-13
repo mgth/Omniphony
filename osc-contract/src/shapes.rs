@@ -34,8 +34,6 @@ use Arg::*;
 
 /// The arguments of every address in [`ALL_STATE`], in no particular order.
 pub const STATE: &[(&str, &[Arg])] = &[
-    (STATE_ADAPTIVE_RESAMPLING_BAND, &[String]),
-    (STATE_ADAPTIVE_RESAMPLING_STATE, &[String]),
     (STATE_AUDIO, &[Json]),
     // backend, key, name, content; then the request id when one was sent.
     (
@@ -66,13 +64,7 @@ pub const STATE: &[(&str, &[Arg])] = &[
     (STATE_INPUT, &[Json]),
     (STATE_INPUT_PIPE, &[String]),
     (STATE_LATENCY, &[Float]),
-    (STATE_LATENCY_AVAIL_INPUT, &[Float]),
-    (STATE_LATENCY_CONTROL, &[Float]),
-    (STATE_LATENCY_DOWNSTREAM, &[Float]),
     (STATE_LATENCY_INSTANT, &[Float]),
-    (STATE_LATENCY_OUTPUT_FIFO, &[Float]),
-    (STATE_LATENCY_RESAMPLER_PENDING, &[Float]),
-    (STATE_LATENCY_SMOOTHED, &[Float]),
     (STATE_LATENCY_TARGET, &[Float]),
     (STATE_LAYOUT, &[Json]),
     (STATE_LOG_LEVEL, &[String]),

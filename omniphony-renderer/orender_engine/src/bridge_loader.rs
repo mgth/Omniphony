@@ -287,8 +287,8 @@ pub struct BridgeRequest {
 }
 
 /// Which bridges a host loads (`docs/multi-bridge.md`, "Loading"). Shared by
-/// the CLI, the FFI/mpv host (`Engine::from_paths`) and `sync-play`, so they
-/// behave identically.
+/// the CLI and the FFI/mpv host (`Engine::from_paths`), so they behave
+/// identically.
 ///
 /// 1. `explicit` (CLI `--bridge-path`, repeatable; the FFI's `bridge_path`,
 ///    a path list) when not empty, else `config` (`render.bridge_path(s)`):

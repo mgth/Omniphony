@@ -7,7 +7,10 @@
 //!
 //! - `now`: the cycle start on `CLOCK_MONOTONIC` (already smoothed by the
 //!   driver's own DLL);
-//! - `ticks`: the graph position at `now`, for the device-rate DLL;
+//! - `ticks`: the graph position at `now`, for the device-rate DLL. It counts
+//!   in the graph's rate, which is not the stream's when PipeWire converts
+//!   between the two (a 44.1 kHz stream in a 48 kHz graph): it is scaled to
+//!   the stream's frames, the unit of everything else here;
 //! - `delay` + `buffered`: with this cycle's `N`, a frame queued now is heard
 //!   `(buffered + N)/fs + delay·rate` after `now` (the stream runs one cycle
 //!   behind the graph). The DAC's own 1–3 ms is not reported by anyone.
@@ -24,7 +27,7 @@ use anyhow::{Result, anyhow};
 use pipewire as pw;
 
 use super::core::{DeviceTiming, OutputCore};
-use crate::pipewire::{output_target_properties, to_pipewire_position};
+use crate::pipewire::{channel_position_id, output_target_properties, to_pipewire_position};
 
 /// What the stream is opened with.
 #[derive(Debug, Clone)]
@@ -33,7 +36,9 @@ pub struct PipewireSyncOutputConfig {
     /// Pin to this sink (no move, no fallback); `None` follows the session
     /// manager's choice.
     pub target: Option<String>,
-    /// Device channel count and, optionally, their positions (`FL`, `FR`, …).
+    /// Device channel count and, optionally, their positions (`FL`, `FR`, …),
+    /// which the session manager routes by; a name PipeWire does not know
+    /// leaves its channel untagged.
     pub channels: u32,
     pub positions: Option<Vec<String>>,
     pub rate: u32,
@@ -45,6 +50,8 @@ pub struct PipewireSyncOutputConfig {
 pub struct PipewireSyncOutput {
     shutdown: Arc<AtomicBool>,
     streaming: Arc<AtomicBool>,
+    /// Why PipeWire put the stream in its error state, while it is there.
+    refusal: Arc<std::sync::Mutex<Option<String>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -53,14 +60,17 @@ impl PipewireSyncOutput {
     pub fn start(config: PipewireSyncOutputConfig, core: OutputCore) -> Result<Self> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let streaming = Arc::new(AtomicBool::new(false));
+        let refusal = Arc::new(std::sync::Mutex::new(None));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
         let thread = {
             let shutdown = Arc::clone(&shutdown);
             let streaming = Arc::clone(&streaming);
+            let refusal = Arc::clone(&refusal);
             thread::Builder::new()
                 .name("pw-sync-output".into())
                 .spawn(move || {
-                    if let Err(e) = run(config, core, &shutdown, &streaming, &ready_tx) {
+                    let state = (&streaming, &refusal);
+                    if let Err(e) = run(config, core, &shutdown, state, &ready_tx) {
                         let _ = ready_tx.send(Err(e));
                     }
                 })?
@@ -69,6 +79,7 @@ impl PipewireSyncOutput {
             Ok(Ok(())) => Ok(Self {
                 shutdown,
                 streaming,
+                refusal,
                 thread: Some(thread),
             }),
             Ok(Err(e)) => Err(e),
@@ -82,6 +93,12 @@ impl PipewireSyncOutput {
     /// Whether the stream is in the STREAMING state.
     pub fn is_streaming(&self) -> bool {
         self.streaming.load(Ordering::Relaxed)
+    }
+
+    /// What PipeWire said when it refused the stream (no such target, no
+    /// format in common with it), while the stream is in that state.
+    pub fn refusal(&self) -> Option<String> {
+        self.refusal.lock().ok().and_then(|reason| reason.clone())
     }
 }
 
@@ -104,7 +121,7 @@ fn run(
     config: PipewireSyncOutputConfig,
     core: OutputCore,
     shutdown: &AtomicBool,
-    streaming: &Arc<AtomicBool>,
+    (streaming, refusal): (&Arc<AtomicBool>, &Arc<std::sync::Mutex<Option<String>>>),
     ready: &std::sync::mpsc::Sender<Result<()>>,
 ) -> Result<()> {
     pw::init();
@@ -128,15 +145,17 @@ fn run(
     let channels = config.channels.max(1);
     let channels_str = channels.to_string();
     props.insert("audio.channels", channels_str.as_str());
+    // The positions in PipeWire's spelling, once: for the format below,
+    // which is where PipeWire reads them, and the property, which only
+    // shows them (`pw-dump`).
     let positions = config.positions.as_ref().map(|names| {
         names
             .iter()
             .map(|n| to_pipewire_position(n))
             .collect::<Vec<_>>()
-            .join(",")
     });
-    if let Some(p) = positions.as_deref() {
-        props.insert("audio.position", p);
+    if let Some(names) = positions.as_deref() {
+        props.insert("audio.position", names.join(",").as_str());
     }
     if let Some(target) = config.target.as_deref() {
         for (k, v) in output_target_properties(target) {
@@ -148,6 +167,7 @@ fn run(
         .map_err(|e| anyhow!("PipeWire stream: {e:?}"))?;
 
     let streaming_flag = Arc::clone(streaming);
+    let refusal_slot = Arc::clone(refusal);
     let rate = config.rate as f64;
     let _listener = stream
         .add_local_listener_with_user_data(CallbackData {
@@ -161,26 +181,20 @@ fn run(
                 matches!(new, pw::stream::StreamState::Streaming),
                 Ordering::Relaxed,
             );
+            // (The main loop's thread, not the data thread: a lock is fine.)
+            if let Ok(mut reason) = refusal_slot.lock() {
+                match &new {
+                    pw::stream::StreamState::Error(message) => *reason = Some(message.clone()),
+                    pw::stream::StreamState::Streaming => *reason = None,
+                    _ => {}
+                }
+            }
         })
         .process(process)
         .register()
         .map_err(|e| anyhow!("PipeWire listener: {e:?}"))?;
 
-    let mut info = pw::spa::param::audio::AudioInfoRaw::new();
-    info.set_format(pw::spa::param::audio::AudioFormat::F32LE);
-    info.set_rate(config.rate);
-    info.set_channels(channels);
-    let format = pw::spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &pw::spa::pod::Value::Object(pw::spa::pod::Object {
-            type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
-            id: pw::spa::param::ParamType::EnumFormat.as_raw(),
-            properties: info.into(),
-        }),
-    )
-    .map_err(|e| anyhow!("format pod: {e:?}"))?
-    .0
-    .into_inner();
+    let format = format_pod(config.rate, channels, positions.as_deref())?;
     let pod = pw::spa::pod::Pod::from_bytes(&format).ok_or_else(|| anyhow!("format pod"))?;
 
     {
@@ -204,6 +218,74 @@ fn run(
     }
     main_loop.stop();
     Ok(())
+}
+
+/// The format the stream is connected with: F32 at `rate`, `channels` wide,
+/// each channel tagged with its position when there are any.
+///
+/// The tags go in the format: PipeWire does not read a client stream's
+/// `audio.position` property, and a stream without them comes out as
+/// `output_1…N`, channel `UNK`. The session manager links such ports in
+/// order, to whatever port of the sink is free — a MIDI port as readily as
+/// an audio one, which the format negotiation then refuses, and the whole
+/// stream with it.
+fn format_pod(rate: u32, channels: u32, positions: Option<&[String]>) -> Result<Vec<u8>> {
+    use pw::spa::param::audio::{AudioFormat, AudioInfoRaw, AudioInfoRawFlags, MAX_CHANNELS};
+    use pw::spa::sys::SPA_AUDIO_CHANNEL_UNKNOWN;
+
+    let mut info = AudioInfoRaw::new();
+    info.set_format(AudioFormat::F32LE);
+    info.set_rate(rate);
+    info.set_channels(channels);
+    if let Some(names) = positions {
+        let mut position = [SPA_AUDIO_CHANNEL_UNKNOWN; MAX_CHANNELS];
+        let channels = (channels as usize).min(MAX_CHANNELS);
+        for (slot, name) in position.iter_mut().zip(names.iter().take(channels)) {
+            *slot = channel_position_id(name).unwrap_or(SPA_AUDIO_CHANNEL_UNKNOWN);
+        }
+        info.set_position(position);
+        // `set_position` reads the first slot only: a map whose first name
+        // is unknown but that tags any other channel is still a map.
+        let tagged = position[..channels]
+            .iter()
+            .any(|&p| p != SPA_AUDIO_CHANNEL_UNKNOWN);
+        info.set_flags(if tagged {
+            AudioInfoRawFlags::empty()
+        } else {
+            AudioInfoRawFlags::UNPOSITIONED
+        });
+    }
+    let bytes = pw::spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &pw::spa::pod::Value::Object(pw::spa::pod::Object {
+            type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+            id: pw::spa::param::ParamType::EnumFormat.as_raw(),
+            properties: info.into(),
+        }),
+    )
+    .map_err(|e| anyhow!("format pod: {e:?}"))?
+    .0
+    .into_inner();
+    Ok(bytes)
+}
+
+/// A cycle's timing in the stream's own frames, from what PipeWire reports
+/// of it; `None` before the stream has a clock.
+///
+/// `ticks` and `delay` count in `time.rate` (the graph's: 1/48000 s on a
+/// 48 kHz graph), `buffered` and `frames` in the stream's rate.
+fn device_timing(time: &pw::sys::pw_time, frames: usize, stream_rate: f64) -> Option<DeviceTiming> {
+    if time.now <= 0 || time.rate.denom == 0 {
+        return None;
+    }
+    let (num, denom) = (time.rate.num as f64, time.rate.denom as f64);
+    Some(DeviceTiming {
+        t_s: time.now as f64 * 1e-9,
+        // (One multiplication by exactly 1 when the two rates are the same.)
+        position_frames: time.ticks as f64 * (num * stream_rate / denom),
+        heard_delay_s: (time.buffered as f64 + frames as f64) / stream_rate
+            + time.delay as f64 * (num / denom),
+    })
 }
 
 /// The realtime callback: timing, then the core, then the chunk header.
@@ -241,19 +323,13 @@ fn process(stream: &pw::stream::Stream, data: &mut CallbackData) {
             let dest = unsafe {
                 std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, frames * ch)
             };
-            if time.now <= 0 || time.rate.denom == 0 {
+            match device_timing(&time, frames, data.rate) {
+                Some(timing) => data.core.process(timing, dest, ch),
                 // No timing yet (first cycles): nothing to regulate against.
-                dest.fill(0.0);
-                frames
-            } else {
-                let tick_s = time.rate.num as f64 / time.rate.denom as f64;
-                let timing = DeviceTiming {
-                    t_s: time.now as f64 * 1e-9,
-                    position_frames: time.ticks as f64,
-                    heard_delay_s: (time.buffered as f64 + frames as f64) / data.rate
-                        + time.delay as f64 * tick_s,
-                };
-                data.core.process(timing, dest, ch)
+                None => {
+                    dest.fill(0.0);
+                    frames
+                }
             }
         }
         None => 0,
@@ -262,4 +338,105 @@ fn process(stream: &pw::stream::Stream, data: &mut CallbackData) {
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = (4 * ch) as i32;
     *chunk.size_mut() = (written_frames * 4 * ch) as u32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn time(ticks: u64, graph_rate: u32, delay: i64, buffered: u64) -> pw::sys::pw_time {
+        // SAFETY: `pw_time` is plain integers; all-zero is a valid value.
+        let mut time: pw::sys::pw_time = unsafe { std::mem::zeroed() };
+        time.now = 5_000_000_000;
+        time.rate.num = 1;
+        time.rate.denom = graph_rate;
+        time.ticks = ticks;
+        time.delay = delay;
+        time.buffered = buffered;
+        time
+    }
+
+    /// A stream at the graph's rate reads the graph's position as it is.
+    #[test]
+    fn a_stream_at_the_graphs_rate_counts_its_ticks() {
+        let timing = device_timing(&time(123_456_789, 48_000, 2048, 0), 1024, 48_000.0).unwrap();
+        assert_eq!(timing.t_s, 5.0);
+        assert_eq!(timing.position_frames, 123_456_789.0);
+        assert_eq!(timing.heard_delay_s, (1024.0 + 2048.0) / 48_000.0);
+    }
+
+    /// A stream PipeWire converts for the graph advances by its own frames:
+    /// a second of a 48 kHz graph is 44100 frames of a 44.1 kHz stream, and
+    /// 96000 of a 96 kHz one. (Read as ticks, the device looked 8.8 % fast
+    /// or twice too slow, past anything the servo follows.)
+    #[test]
+    fn the_position_is_in_the_streams_frames() {
+        for stream_rate in [44_100.0, 96_000.0] {
+            let at = |ticks| {
+                device_timing(&time(ticks, 48_000, 0, 0), 0, stream_rate)
+                    .unwrap()
+                    .position_frames
+            };
+            let second = at(48_000 * 11) - at(48_000 * 10);
+            assert!((second - stream_rate).abs() < 1e-6, "{second}");
+        }
+        // The graph's delay is in its ticks, what the stream holds in its
+        // own frames.
+        let timing = device_timing(&time(0, 48_000, 4800, 441), 441, 44_100.0).unwrap();
+        assert!((timing.heard_delay_s - 0.12).abs() < 1e-12);
+    }
+
+    fn parse(bytes: &[u8]) -> pw::spa::param::audio::AudioInfoRaw {
+        let pod = pw::spa::pod::Pod::from_bytes(bytes).expect("a pod");
+        let mut info = pw::spa::param::audio::AudioInfoRaw::new();
+        info.parse(pod).expect("a raw audio format");
+        info
+    }
+
+    /// The positions are in the format, where PipeWire reads them: the
+    /// ones it knows by their id, the others unknown.
+    #[test]
+    fn the_format_carries_the_positions() {
+        use pw::spa::param::audio::AudioInfoRawFlags;
+        use pw::spa::sys as spa;
+        let names: Vec<String> = ["FL", "AUX5", "FWL"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let info = parse(&format_pod(48_000, 3, Some(&names)).unwrap());
+        assert_eq!(info.rate(), 48_000);
+        assert_eq!(info.channels(), 3);
+        assert!(!info.flags().contains(AudioInfoRawFlags::UNPOSITIONED));
+        assert_eq!(
+            &info.position()[..3],
+            &[
+                spa::SPA_AUDIO_CHANNEL_FL,
+                spa::SPA_AUDIO_CHANNEL_AUX5,
+                spa::SPA_AUDIO_CHANNEL_UNKNOWN
+            ]
+        );
+    }
+
+    /// No positions, or none PipeWire knows: an unpositioned format, as
+    /// before.
+    #[test]
+    fn no_positions_is_an_unpositioned_format() {
+        use pw::spa::param::audio::AudioInfoRawFlags;
+        use pw::spa::sys::SPA_AUDIO_CHANNEL_UNKNOWN;
+        let info = parse(&format_pod(48_000, 2, None).unwrap());
+        assert_eq!(info.channels(), 2);
+        assert_eq!(info.position()[0], SPA_AUDIO_CHANNEL_UNKNOWN);
+        let names: Vec<String> = ["1", "2"].iter().map(|s| s.to_string()).collect();
+        let info = parse(&format_pod(48_000, 2, Some(&names)).unwrap());
+        assert!(info.flags().contains(AudioInfoRawFlags::UNPOSITIONED));
+        assert_eq!(info.position()[0], SPA_AUDIO_CHANNEL_UNKNOWN);
+    }
+
+    #[test]
+    fn no_clock_is_no_timing() {
+        let mut none = time(0, 48_000, 0, 0);
+        none.now = 0;
+        assert!(device_timing(&none, 1024, 48_000.0).is_none());
+        assert!(device_timing(&time(0, 0, 0, 0), 1024, 48_000.0).is_none());
+    }
 }

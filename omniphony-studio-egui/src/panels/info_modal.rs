@@ -1,8 +1,8 @@
 //! The help overlay: the `*.infoModal` dialogs (`modals.js`) and every other
 //! panel-level help.
 //!
-//! A dozen sections carry a long-form explanation — what a backend is, what the
-//! adaptive controller does, how the heatmaps are computed — and a few a short
+//! A dozen sections carry a long-form explanation — what a backend is, what
+//! the input modes are, how the heatmaps are computed — and a few a short
 //! `help.*` string about the whole section. Either opens here, centred, from
 //! the "i" beside the section's title (see `ui::help`). The request travels
 //! from the header through egui's temporary data rather than through a return
@@ -135,8 +135,8 @@ mod tests {
 
     /// No help in the catalogue scrolls while the window can hold it. The
     /// dialog was a flat 460 pt wide with its body capped at 60 % of the
-    /// window height, and the longest one — the adaptive controller's, two
-    /// thousand characters — came to 510 pt: against the 420 pt those caps
+    /// window height, and the longest one then — the adaptive controller's,
+    /// two thousand characters, since removed — came to 510 pt: against the 420 pt those caps
     /// allowed in a 1000×700 window, a scrollbar with half the window empty
     /// around the dialog. Laid out at the measure it can now have, it is
     /// 440 pt and the window allows 601.

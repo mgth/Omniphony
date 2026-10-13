@@ -19,8 +19,8 @@
 //!
 //! The stream is opened in the device's own sample format; anything but
 //! `f32` is converted from a scratch buffer sized once here. The callback
-//! never allocates: a cycle larger than that scratch is played as silence and
-//! logged once.
+//! never allocates and never logs: a cycle larger than that scratch is played
+//! as silence and marks the stream as failed, for its owner to report.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,14 +47,32 @@ impl CpalSyncOutput {
         format: cpal::SampleFormat,
         core: OutputCore,
     ) -> Result<Self> {
+        Self::start_watched(
+            device,
+            config,
+            format,
+            core,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    /// [`start`](Self::start), with `failed` set when the stream reports an
+    /// error (a device that went away): cpal has no other word for it.
+    pub fn start_watched(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        format: cpal::SampleFormat,
+        core: OutputCore,
+        failed: Arc<AtomicBool>,
+    ) -> Result<Self> {
         let channels = config.channels as usize;
         let rate = config.sample_rate.0 as f64;
         let stream = match format {
-            cpal::SampleFormat::F32 => build::<f32>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::I32 => build::<i32>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::I16 => build::<i16>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::U16 => build::<u16>(device, config, core, channels, rate)?,
-            cpal::SampleFormat::F64 => build::<f64>(device, config, core, channels, rate)?,
+            cpal::SampleFormat::F32 => build::<f32>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::I32 => build::<i32>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::I16 => build::<i16>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::U16 => build::<u16>(device, config, core, channels, rate, failed)?,
+            cpal::SampleFormat::F64 => build::<f64>(device, config, core, channels, rate, failed)?,
             other => return Err(anyhow!("unsupported output sample format {other:?}")),
         };
         stream.play()?;
@@ -77,7 +95,9 @@ struct Callback {
     channels: usize,
     rate: f64,
     position: u64,
-    oversize_logged: Arc<AtomicBool>,
+    /// Set when the stream cannot be played (a cycle larger than the
+    /// converting path's scratch): the callback says nothing itself.
+    failed: Arc<AtomicBool>,
 }
 
 impl Callback {
@@ -99,11 +119,9 @@ impl Callback {
     }
 
     fn silence_oversize(&mut self, frames: usize) {
-        if !self.oversize_logged.swap(true, Ordering::Relaxed) {
-            log::warn!(
-                "output cycle of {frames} frames exceeds the {MAX_CYCLE_FRAMES}-frame scratch; playing silence"
-            );
-        }
+        // Not a log line: this is the device's thread. The owner reads the
+        // flag as "the output is not playing".
+        self.failed.store(true, Ordering::Relaxed);
         self.position += frames as u64;
     }
 }
@@ -114,6 +132,7 @@ fn build<T>(
     core: OutputCore,
     channels: usize,
     rate: f64,
+    failed: Arc<AtomicBool>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample + cpal::FromSample<f32> + 'static,
@@ -123,9 +142,12 @@ where
         channels,
         rate,
         position: 0,
-        oversize_logged: Arc::new(AtomicBool::new(false)),
+        failed: Arc::clone(&failed),
     };
-    let err_fn = |err| log::error!("output stream error: {err}");
+    let err_fn = move |err| {
+        log::error!("output stream error: {err}");
+        failed.store(true, Ordering::Relaxed);
+    };
     let stream = if T::FORMAT == cpal::SampleFormat::F32 {
         device.build_output_stream(
             config,
