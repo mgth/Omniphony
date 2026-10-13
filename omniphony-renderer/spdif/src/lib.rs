@@ -1,6 +1,7 @@
 pub mod burst;
 pub mod iamf;
 pub mod parser;
+pub mod pcm;
 
 pub use parser::{
     Iec61937Packet, SYNC_BYTES, SYNCWORD_PA, SYNCWORD_PB, SpdifParser, contains_sync, find_sync,

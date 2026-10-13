@@ -31,6 +31,8 @@
 //! on Windows and macOS, or a file; the input is a pipe (a FIFO, a named pipe
 //! on Windows), a file, or, on Linux, the PipeWire sink.
 
+#[cfg(target_os = "linux")]
+mod carrier;
 mod controls;
 #[cfg(target_os = "linux")]
 mod own_sink;
@@ -445,6 +447,9 @@ pub enum Source {
         description: String,
         /// `priority.session`, if set.
         session_priority: Option<u32>,
+        /// A carrier sink of this many channels: bursts on linear PCM, and
+        /// never audio (`docs/iamf-transport-plan.md`).
+        carrier_channels: Option<u16>,
     },
     /// A regular file, or standard input (`-`): one stream read to its end,
     /// with no clock (`none`).
@@ -464,6 +469,8 @@ pub struct InputRequest {
     pub mode: InputMode,
     pub node: Option<String>,
     pub description: Option<String>,
+    /// The sink as a carrier sink of this many channels.
+    pub carrier_channels: Option<u16>,
 }
 
 impl InputRequest {
@@ -486,6 +493,7 @@ impl InputRequest {
                     .clone()
                     .unwrap_or_else(|| DEFAULT_SINK_DESCRIPTION.to_string()),
                 session_priority,
+                carrier_channels: self.carrier_channels,
             }),
             InputMode::Bridge => {
                 let path = path.context(
@@ -688,6 +696,7 @@ impl HostSession {
                     node_name,
                     description,
                     session_priority,
+                    carrier_channels,
                 } => {
                     self.capture = None;
                     own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
@@ -696,6 +705,7 @@ impl HostSession {
                         latency_ns: (config.target_latency_ms * 1e6) as i64,
                         quantum: config.quantum,
                         session_priority: *session_priority,
+                        carrier_channels: carrier_channels.map(u32::from),
                     })
                     .with_context(|| format!("publishing the sink {node_name}"))?
                 }
@@ -2609,6 +2619,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "Omniphony".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         for clock in [
             SourceClock::Auto,
@@ -2648,6 +2659,7 @@ mod tests {
                 mode: InputMode::Bridge,
                 node: None,
                 description: None,
+                carrier_channels: None,
             },
             input_path: None,
             drain_pipe: true,
@@ -2684,6 +2696,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "Omniphony".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         let key = |source: Source, ms| CaptureKey::of(&source, &config(source.clone(), ms));
         assert_eq!(key(pipe("/a"), 150.0), key(pipe("/a"), 200.0));
@@ -2701,6 +2714,7 @@ mod tests {
             mode,
             node: node.map(str::to_string),
             description: None,
+            carrier_channels: None,
         };
         assert_eq!(
             request(InputMode::Pipewire, None)
@@ -2710,11 +2724,12 @@ mod tests {
                 node_name: DEFAULT_SINK_NODE.into(),
                 description: DEFAULT_SINK_DESCRIPTION.into(),
                 session_priority: Some(7),
+                carrier_channels: None,
             }
         );
         assert!(matches!(
             request(InputMode::Pipewire, Some("living-room")).source(None, true, None),
-            Ok(Source::OwnSink { node_name, .. }) if node_name == "living-room"
+            Ok(Source::OwnSink { node_name, carrier_channels: None, .. }) if node_name == "living-room"
         ));
         let pipe: PathBuf = "/nonexistent/orender.pipe".into();
         assert_eq!(
@@ -2748,6 +2763,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "Omniphony".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         let pipe = Source::Pipe {
             path: "/p".into(),
@@ -3117,6 +3133,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "x".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         let pipe = Source::Pipe {
             path: "/run/x.pipe".into(),

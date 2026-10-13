@@ -6,4 +6,7 @@ pub mod control;
 #[cfg(target_os = "linux")]
 pub mod pipewire_pods;
 
-pub use control::{AppliedAudioInputState, InputBackend, InputControl, InputMode};
+pub use control::{
+    AppliedAudioInputState, CARRIER_MAX_CHANNELS, CARRIER_MIN_CHANNELS, InputBackend, InputControl,
+    InputMode,
+};
