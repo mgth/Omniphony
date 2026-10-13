@@ -154,6 +154,11 @@ fn host_config_from(
         },
         node: live.and_then(|l| l.node.clone()),
         description: live.and_then(|l| l.description.clone()),
+        // (Bounded as a client's write of the option is.)
+        carrier_channels: live
+            .and_then(|l| l.carrier_channels)
+            .filter(|channels| *channels >= audio_input::CARRIER_MIN_CHANNELS)
+            .map(|channels| channels.min(audio_input::CARRIER_MAX_CHANNELS)),
     };
     let drain_pipe = !args.no_drain_pipe;
     let source = if offline {
@@ -399,10 +404,36 @@ mod tests {
                 node_name: "my-sink".into(),
                 description: "Omniphony Bridge Input".into(),
                 session_priority: None,
+                carrier_channels: None,
             }
         );
         assert_eq!(sink.target_latency_ms, 80.0);
         assert_eq!(sink.output_rate_hz, None);
+        // A carrier sink is the config's `live_input.carrier_channels`,
+        // bounded as the option is: too few channels to hold a burst's
+        // preamble ask for none, too many for the most there are.
+        let carrier = |channels: u32| {
+            host_config_from(
+                &args,
+                &file,
+                false,
+                &config(&format!(
+                    "input_mode: pipewire
+live_input:
+  carrier_channels: {channels}
+"
+                )),
+                None,
+            )
+            .expect("a carrier sink run")
+            .source
+        };
+        for (asked, got) in [(16, Some(16)), (2, None), (500, Some(64))] {
+            assert!(
+                matches!(carrier(asked), Source::OwnSink { carrier_channels, .. } if carrier_channels == got),
+                "{asked} channels"
+            );
+        }
         let at_96k = host_config_from(
             &args,
             &file,

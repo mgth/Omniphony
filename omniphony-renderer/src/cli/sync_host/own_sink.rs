@@ -10,6 +10,10 @@
 //! - On an IEC 958 format at a carrier rate other than 48 kHz, the group's
 //!   rate is forced to it (`node.force-rate`): otherwise a 192 kHz carrier
 //!   runs at a quarter of real time.
+//! - Beside the IEC 958 formats the sink takes linear PCM: audio on the fixed
+//!   7.1 map, in which a burst carrier is recognised and taken as its words
+//!   ([`carrier`](super::carrier)); or, when the config asks for a carrier
+//!   sink, a carrier and nothing else, on as many channels as it says.
 //!
 //! The realtime `process` callback only copies: the buffer's bytes into a
 //! byte ring, and one [`CycleStamp`] per cycle (its graph time, the byte count
@@ -27,9 +31,10 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use audio_input::pipewire_pods::{
     IEC958_AC3_CHANNELS, IEC958_CONTENT_RATES_HZ, IEC958_DTS_CHANNELS, IEC958_DTSHD_CHANNELS,
-    IEC958_DTSHD_RATE_HZ, build_pipewire_bridge_codec_format_pod,
+    IEC958_DTSHD_RATE_HZ, build_pipewire_bridge_carrier_format_pod_at,
+    build_pipewire_bridge_carrier_properties, build_pipewire_bridge_codec_format_pod,
     build_pipewire_bridge_codec_format_pod_at_rates, build_pipewire_bridge_format_pod,
-    build_pipewire_bridge_iec958_quantum_buffers_pod, build_pipewire_bridge_latency_pod,
+    build_pipewire_bridge_latency_pod, build_pipewire_bridge_quantum_buffers_pod,
     build_pipewire_bridge_raw_format_pod_at, build_pipewire_bridge_stream_properties,
 };
 use audio_rt::{Consumer, Producer, frame_ring};
@@ -37,6 +42,7 @@ use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::Pod;
 
+use super::carrier::{CarrierGate, Take};
 use super::reader::{Capture, CarrierFormat, END_OF_STREAM_S, ReaderMsg, ReaderStats, Transport};
 
 /// `SPA_IO_CLOCK_FLAG_XRUN_RECOVER | SPA_IO_CLOCK_FLAG_DISCONT`
@@ -105,9 +111,17 @@ struct CycleStamp {
 
 use super::pcm::{PCM_CHANNELS, PCM_RATE_HZ};
 
-/// Byte ring capacity: 4 s of the widest carrier (8 ch × 2 B × 192 kHz).
+/// Byte ring capacity: 4 s of the widest IEC 958 carrier (8 ch × 2 B ×
+/// 192 kHz), which is 8 s of the sink's linear PCM.
 const BYTE_RING: usize = 4 * 8 * 2 * 192_000;
 const STAMP_RING: usize = 4096;
+
+/// The byte ring of a sink: [`BYTE_RING`], or 4 s of the carrier it takes on
+/// its linear PCM when that is more.
+fn byte_ring(carrier_channels: Option<u32>) -> usize {
+    let carrier = carrier_channels.unwrap_or(0) as usize;
+    BYTE_RING.max(4 * carrier * std::mem::size_of::<f32>() * PCM_RATE_HZ as usize)
+}
 
 /// What the realtime callback shares with the main loop.
 #[derive(Default)]
@@ -137,14 +151,19 @@ pub struct OwnSinkConfig {
     pub quantum: u32,
     /// `priority.session`, if set.
     pub session_priority: Option<u32>,
+    /// A carrier sink: its linear PCM is this many unpositioned channels that
+    /// carry bursts, and never audio. `None` is the sink that takes audio on
+    /// the 7.1 map (and a carrier it recognises there).
+    pub carrier_channels: Option<u32>,
 }
 
 /// Start the driver, the sink and the pump; returns the message stream the
 /// engine thread consumes, as for the pipe.
 pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<Capture> {
-    let (bytes_tx, bytes_rx) = frame_ring::<u8>(1, BYTE_RING);
+    let (bytes_tx, bytes_rx) = frame_ring::<u8>(1, byte_ring(config.carrier_channels));
     let (stamps_tx, stamps_rx) = frame_ring::<CycleStamp>(1, STAMP_RING);
     let shared = Arc::new(Shared::default());
+    let gate = CarrierGate::new(config.carrier_channels.is_some());
     let (ready_tx, ready_rx) = sync_channel::<Result<()>>(1);
     let (tx, rx) = sync_channel(1024);
     let stats = Arc::new(ReaderStats::default());
@@ -177,7 +196,7 @@ pub fn spawn_own_sink(config: OwnSinkConfig) -> Result<Capture> {
     capture.own(
         thread::Builder::new()
             .name("own-sink-pump".into())
-            .spawn(move || pump(bytes_rx, stamps_rx, tx, &stats, &stop))?,
+            .spawn(move || pump(bytes_rx, stamps_rx, tx, &stats, &stop, gate))?,
     );
     Ok(capture)
 }
@@ -222,6 +241,9 @@ fn run_sink(
         IEC958_DTSHD_RATE_HZ,
         &latency,
     );
+    if let Some(channels) = config.carrier_channels {
+        build_pipewire_bridge_carrier_properties(&mut props, channels as u16);
+    }
     props.insert("node.group", group.as_str());
     props.insert("node.always-process", "true");
     if let Some(p) = config.session_priority {
@@ -241,6 +263,11 @@ fn run_sink(
     let mut data_total: u64 = 0;
     let mut gaps = CarrierGaps::default();
     let mut last_epoch = 0u32;
+    // A carrier sink whose volume or mute someone moved: put back from the
+    // loop below (a carrier has no level; at any other it is not one).
+    let carrier_sink = config.carrier_channels.is_some();
+    let level_moved = std::rc::Rc::new(Cell::new(false));
+    let level_moved_in_callback = std::rc::Rc::clone(&level_moved);
 
     let _listener = stream
         .add_local_listener_with_user_data(())
@@ -287,6 +314,28 @@ fn run_sink(
             if forced_for_param.get() != Some(force) {
                 forced_for_param.set(Some(force));
                 pending_for_param.set(Some(force));
+            }
+        })
+        .control_info(move |_, _, id, control| {
+            if !carrier_sink || control.is_null() {
+                return;
+            }
+            // SAFETY: PipeWire hands a valid control, with `n_values`
+            // readable values, for the duration of the call.
+            let values = unsafe {
+                let control = &*control;
+                if control.values.is_null() {
+                    return;
+                }
+                std::slice::from_raw_parts(control.values, control.n_values as usize)
+            };
+            let unity = match id {
+                spa::sys::SPA_PROP_volume | spa::sys::SPA_PROP_channelVolumes => 1.0,
+                spa::sys::SPA_PROP_mute => 0.0,
+                _ => return,
+            };
+            if values.iter().any(|value| *value != unity) {
+                level_moved_in_callback.set(true);
             }
         })
         .io_changed(move |_, _, id, area, size| {
@@ -394,11 +443,14 @@ fn run_sink(
     // 3. Formats, full-quantum buffers, connect. Linear PCM comes last: a
     // player that can pass its stream through finds an encoded format first.
     // It is offered at the renderer's own rate only (the sink does not
-    // resample; a player at another rate converts on its side), on the fixed
-    // 7.1 map.
+    // resample; a player at another rate converts on its side): on the fixed
+    // 7.1 map, or for a carrier sink on its unpositioned channels.
     let enum_fmt = spa::param::ParamType::EnumFormat;
+    let pcm_channels = config.carrier_channels.unwrap_or(PCM_CHANNELS);
     let pods: Vec<Vec<u8>> = vec![
-        build_pipewire_bridge_iec958_quantum_buffers_pod()?,
+        build_pipewire_bridge_quantum_buffers_pod(
+            pcm_channels * std::mem::size_of::<f32>() as u32,
+        )?,
         build_pipewire_bridge_format_pod(IEC958_DTSHD_RATE_HZ, 8, enum_fmt)?,
         build_pipewire_bridge_format_pod(IEC958_DTSHD_RATE_HZ, 2, enum_fmt)?,
         build_pipewire_bridge_codec_format_pod(
@@ -421,7 +473,14 @@ fn run_sink(
             IEC958_DTS_CHANNELS,
             enum_fmt,
         )?,
-        build_pipewire_bridge_raw_format_pod_at(PCM_RATE_HZ, PCM_CHANNELS as u16, enum_fmt)?,
+        match config.carrier_channels {
+            Some(channels) => {
+                build_pipewire_bridge_carrier_format_pod_at(PCM_RATE_HZ, channels as u16, enum_fmt)?
+            }
+            None => {
+                build_pipewire_bridge_raw_format_pod_at(PCM_RATE_HZ, PCM_CHANNELS as u16, enum_fmt)?
+            }
+        },
     ];
     let mut params: Vec<&Pod> = pods
         .iter()
@@ -448,12 +507,18 @@ fn run_sink(
     shared.ready.store(true, Ordering::Relaxed);
     let _ = ready.send(Ok(()));
     log::info!(
-        "own sink: {} in group {group}, advertising {:.1} ms",
+        "own sink: {} in group {group}, advertising {:.1} ms{}",
         config.node_name,
-        config.latency_ns as f64 / 1e6
+        config.latency_ns as f64 / 1e6,
+        config
+            .carrier_channels
+            .map_or_else(String::new, |channels| format!(
+                ", a carrier sink of {channels} channels"
+            ))
     );
 
     let mut last_report = std::time::Instant::now();
+    let mut level_restores = 0u64;
     loop {
         mainloop.loop_().iterate(Duration::from_millis(50));
         if last_report.elapsed() >= Duration::from_secs(5) {
@@ -469,6 +534,18 @@ fn run_sink(
         }
         if let Some(rate) = pending.take() {
             set_force_rate(&stream, rate);
+        }
+        if level_moved.take() {
+            level_restores += 1;
+            // (Said the first time and then ever less often: something that
+            // keeps moving the level must not fill the log.)
+            if level_restores.is_power_of_two() {
+                log::warn!(
+                    "own sink: the carrier sink's volume or mute was moved: put back to 100 %, \
+                     unmuted (a carrier at another level is not one; {level_restores} time(s))"
+                );
+            }
+            restore_level(&stream, config.carrier_channels.unwrap_or(1) as usize);
         }
         // The host moved the setpoint: a new target, or one the servo had to
         // raise. The player's A/V sync follows what the sink says.
@@ -491,6 +568,40 @@ fn run_sink(
     Ok(())
 }
 
+/// Put a carrier sink's level back: unmuted, and at 100 % on the overall
+/// volume and on each channel's (two controls: either scales the samples).
+///
+/// One call for the three, through the C function: it takes `(id, count,
+/// values)` triplets up to a 0, and the crate's `set_control` passes one
+/// triplet without the 0, so the function reads on into whatever follows on
+/// the stack (seen: the overall volume set to garbage, over and over).
+fn restore_level(stream: &pw::stream::Stream, channels: usize) {
+    let mut mute = [0.0f32];
+    let mut volume = [1.0f32];
+    let mut channel_volumes = vec![1.0f32; channels];
+    // SAFETY: a valid stream; each triplet's pointer is valid for its count
+    // for the duration of the call, and the list ends with the 0 the
+    // function reads up to.
+    let r = unsafe {
+        pw::sys::pw_stream_set_control(
+            stream.as_raw_ptr(),
+            spa::sys::SPA_PROP_mute,
+            mute.len() as u32,
+            mute.as_mut_ptr(),
+            spa::sys::SPA_PROP_volume,
+            volume.len() as u32,
+            volume.as_mut_ptr(),
+            spa::sys::SPA_PROP_channelVolumes,
+            channel_volumes.len() as u32,
+            channel_volumes.as_mut_ptr(),
+            0u32,
+        )
+    };
+    if r < 0 {
+        log::warn!("own sink: restoring the carrier sink's level: error {r}");
+    }
+}
+
 /// `node.force-rate` on the stream (0 clears it). The crate has no wrapper
 /// for `pw_stream_update_properties`.
 fn set_force_rate(stream: &pw::stream::Stream, rate: u32) {
@@ -503,20 +614,24 @@ fn set_force_rate(stream: &pw::stream::Stream, rate: u32) {
     log::info!("own sink: node.force-rate = {rate} ({r})");
 }
 
-/// Turn stamps and bytes into the engine thread's messages.
+/// Turn stamps and bytes into the engine thread's messages. `gate` says what
+/// the sink's linear PCM is: audio, or the words of a burst carrier.
 fn pump(
     mut bytes: Consumer<u8>,
     mut stamps: Consumer<CycleStamp>,
     tx: SyncSender<ReaderMsg>,
     stats: &ReaderStats,
     stop: &AtomicBool,
+    mut gate: CarrierGate,
 ) {
     let mut stamp = [CycleStamp::default()];
-    // The capture's epoch, whose byte count `bytes_end` runs in, and whether
-    // a stream is open. They differ: a pause ends the stream, but the capture
-    // keeps its epoch and its count, and resumes them.
+    // The capture's epoch, whose byte count `bytes_end` runs in, and the
+    // stream that is open, by what its bytes are. They differ: a pause ends
+    // the stream, but the capture keeps its epoch and its count, and resumes
+    // them; and linear PCM that turns into a carrier, or back, is another
+    // stream of the same capture.
     let mut epoch: Option<u32> = None;
-    let mut in_stream = false;
+    let mut in_stream: Option<CarrierFormat> = None;
     let mut last_bytes_end = 0u64;
     let mut last_data_end = 0u64;
     // The capture's count where the open stream started: what the stream's
@@ -525,8 +640,8 @@ fn pump(
     let mut last_data_at = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         if !stamps.read_exact(&mut stamp) {
-            if in_stream && last_data_at.elapsed().as_secs_f64() >= END_OF_STREAM_S {
-                in_stream = false;
+            if in_stream.is_some() && last_data_at.elapsed().as_secs_f64() >= END_OF_STREAM_S {
+                in_stream = None;
                 if tx.send(ReaderMsg::End).is_err() {
                     return;
                 }
@@ -537,17 +652,47 @@ fn pump(
         let s = stamp[0];
         if epoch != Some(s.epoch) {
             // A new capture epoch counts its bytes from zero again.
-            if in_stream && tx.send(ReaderMsg::End).is_err() {
+            if in_stream.take().is_some() && tx.send(ReaderMsg::End).is_err() {
                 return;
             }
-            in_stream = false;
             epoch = Some(s.epoch);
             last_bytes_end = 0;
             last_data_end = 0;
+            gate.reset();
         }
         let n = s.data_end.saturating_sub(last_data_end) as usize;
-        if !in_stream {
-            in_stream = true;
+        last_data_end = s.data_end;
+        let mut chunk = vec![0u8; n];
+        let got = bytes.read_up_to(&mut chunk);
+        chunk.truncate(got);
+        stats.bytes_read.fetch_add(got as u64, Ordering::Relaxed);
+        // What the bytes are: an IEC 958 carrier as it comes; linear PCM as
+        // the audio it is, or as the words of the carrier it holds.
+        let (format, chunk) = match s.format {
+            CarrierFormat::Iec958 => (Some(CarrierFormat::Iec958), chunk),
+            CarrierFormat::PcmF32 => match gate.take(&chunk, s.channels, s.rate) {
+                Take::Audio => (Some(CarrierFormat::PcmF32), chunk),
+                Take::Words(words) => (Some(CarrierFormat::Iec958), words),
+                // The carrier's time passes with nothing on it: the next
+                // chunk says how much (`idled`), as after a cycle a player
+                // gave nothing for.
+                Take::Idle => continue,
+                Take::Nothing => (None, Vec::new()),
+            },
+        };
+        if in_stream.is_some() && in_stream != format {
+            in_stream = None;
+            if tx.send(ReaderMsg::End).is_err() {
+                return;
+            }
+        }
+        let Some(format) = format else {
+            // Not a stream: the carrier's time passes all the same.
+            last_bytes_end = s.bytes_end;
+            continue;
+        };
+        if in_stream.is_none() {
+            in_stream = Some(format);
             // (What the carrier idled before a stream is not the stream's.)
             last_bytes_end = s.bytes_end.saturating_sub(n as u64);
             stream_base = last_bytes_end;
@@ -561,26 +706,24 @@ fn pump(
             .bytes_end
             .saturating_sub(last_bytes_end)
             .saturating_sub(n as u64);
-        last_data_end = s.data_end;
-        let mut chunk = vec![0u8; n];
-        let got = bytes.read_up_to(&mut chunk);
-        chunk.truncate(got);
         last_bytes_end = s.bytes_end;
         last_data_at = std::time::Instant::now();
-        stats.bytes_read.fetch_add(got as u64, Ordering::Relaxed);
         let frame_bytes = s.format.sample_bytes() * s.channels.max(1);
         let frames = n as f64 / frame_bytes as f64;
         let t_end = s.t_ns as f64 * 1e-9 + frames / s.rate.max(1) as f64;
+        // The stream is counted in the bytes it is handed over in: a word
+        // takes half the bytes of the float it came as.
+        let per_byte = u64::from(s.format.sample_bytes() / format.sample_bytes());
         let msg = ReaderMsg::Chunk {
             t: t_end,
             bytes: chunk,
             transport: Some(Transport {
                 rate: s.rate,
                 channels: s.channels,
-                format: s.format,
-                bytes_end: s.bytes_end - stream_base,
+                format,
+                bytes_end: (s.bytes_end - stream_base) / per_byte,
             }),
-            skipped: idled,
+            skipped: idled / per_byte,
         };
         if tx.send(msg).is_err() {
             return;
@@ -636,7 +779,16 @@ mod tests {
         let stats = Arc::new(ReaderStats::default());
         let pump_stats = Arc::clone(&stats);
         let stop = AtomicBool::new(false);
-        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats, &stop));
+        let pump = thread::spawn(move || {
+            pump(
+                bytes_rx,
+                stamps_rx,
+                tx,
+                &pump_stats,
+                &stop,
+                CarrierGate::new(false),
+            )
+        });
 
         bytes_tx.push(&[1; 4096]);
         stamps_tx.push(&[stamp(1_000_000_000, 4096, 7)]);
@@ -691,7 +843,16 @@ mod tests {
         let stats = Arc::new(ReaderStats::default());
         let pump_stats = Arc::clone(&stats);
         let stop = AtomicBool::new(false);
-        let pump = thread::spawn(move || pump(bytes_rx, stamps_rx, tx, &pump_stats, &stop));
+        let pump = thread::spawn(move || {
+            pump(
+                bytes_rx,
+                stamps_rx,
+                tx,
+                &pump_stats,
+                &stop,
+                CarrierGate::new(false),
+            )
+        });
         let skipped = |msg: ReaderMsg| match msg {
             ReaderMsg::Chunk {
                 bytes,
@@ -724,6 +885,108 @@ mod tests {
         assert_eq!(skipped(next(&rx)), (4096, 4096, 0));
         drop(rx);
         stamps_tx.push(&[stamp(4_000_000_000, 4096, 9)]);
+        pump.join().unwrap();
+    }
+
+    /// Linear PCM that holds a burst carrier is another stream, handed over
+    /// as the 16-bit words it carries and counted in them. A cycle of the
+    /// carrier with nothing on it is not handed over: the chunk after it
+    /// says how much of the carrier idled. When the bursts have stopped for
+    /// the silence that ends a stream, the sink's audio is a stream again.
+    #[test]
+    fn linear_pcm_that_carries_bursts_is_a_stream_of_its_words() {
+        const CHANNELS: u32 = 8;
+        const CYCLE_FRAMES: u64 = 1024;
+        // A cycle in the sink's floats, and in the carrier's words.
+        const FLOATS: u64 = CYCLE_FRAMES * CHANNELS as u64 * 4;
+        const WORDS: u64 = FLOATS / 2;
+        let silence = vec![0u8; FLOATS as usize];
+        let mut burst_words = Vec::new();
+        spdif::write_iamf_burst(&mut burst_words, &[7; 300], WORDS as usize).unwrap();
+        let burst: Vec<u8> = burst_words
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|w| (f32::from(i16::from_le_bytes(*w)) / 32768.0).to_le_bytes())
+            .collect();
+
+        let (mut bytes_tx, bytes_rx) = frame_ring::<u8>(1, BYTE_RING);
+        let (mut stamps_tx, stamps_rx) = frame_ring::<CycleStamp>(1, STAMP_RING);
+        let (tx, rx) = sync_channel(64);
+        let stats = Arc::new(ReaderStats::default());
+        let stop = AtomicBool::new(false);
+        let pump = thread::spawn(move || {
+            pump(
+                bytes_rx,
+                stamps_rx,
+                tx,
+                &stats,
+                &stop,
+                CarrierGate::new(false),
+            )
+        });
+        let mut cycles = 0u64;
+        let mut cycle = |samples: &[u8]| {
+            cycles += 1;
+            bytes_tx.push(samples);
+            stamps_tx.push(&[CycleStamp {
+                t_ns: 1_000_000_000 + cycles * 21_333_333,
+                bytes_end: cycles * FLOATS,
+                data_end: cycles * FLOATS,
+                rate: RATE,
+                channels: CHANNELS,
+                format: CarrierFormat::PcmF32,
+                epoch: 7,
+            }]);
+        };
+        let chunk = |msg: ReaderMsg| match msg {
+            ReaderMsg::Chunk {
+                bytes,
+                transport: Some(transport),
+                skipped,
+                ..
+            } => (
+                transport.format,
+                bytes.len() as u64,
+                transport.bytes_end,
+                skipped,
+            ),
+            _ => panic!("expected a chunk with its transport"),
+        };
+
+        // The sink idling on silence: audio.
+        cycle(&silence);
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        assert_eq!(chunk(next(&rx)), (CarrierFormat::PcmF32, FLOATS, FLOATS, 0));
+        // A burst: the audio stream ends and the carrier's starts, counted
+        // from here in words.
+        cycle(&burst);
+        assert!(matches!(next(&rx), ReaderMsg::End));
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        let msg = next(&rx);
+        match &msg {
+            ReaderMsg::Chunk { bytes, .. } => assert_eq!(*bytes, burst_words),
+            _ => panic!("expected the burst"),
+        }
+        assert_eq!(chunk(msg), (CarrierFormat::Iec958, WORDS, WORDS, 0));
+        // A cycle of nothing, then a burst: that cycle idled.
+        cycle(&silence);
+        cycle(&burst);
+        assert_eq!(
+            chunk(next(&rx)),
+            (CarrierFormat::Iec958, WORDS, 3 * WORDS, WORDS)
+        );
+        // The player stops. Nothing is handed over while the carrier may
+        // still resume; then the stream ends and the audio is back, counted
+        // from its own start in floats.
+        for _ in 0..23 {
+            cycle(&silence);
+        }
+        assert!(matches!(next(&rx), ReaderMsg::End));
+        assert!(matches!(next(&rx), ReaderMsg::Start));
+        assert_eq!(chunk(next(&rx)), (CarrierFormat::PcmF32, FLOATS, FLOATS, 0));
+        drop(rx);
+        cycle(&silence);
         pump.join().unwrap();
     }
 }

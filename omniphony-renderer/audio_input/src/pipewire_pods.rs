@@ -3,6 +3,8 @@ use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::{object, property};
 
+use crate::control::CARRIER_MAX_CHANNELS;
+
 pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\", \"AC3\", \"DTS\", \"DTSHD\" ]";
 /// Carriers the sink accepts, beyond the two that share the configured rate.
 ///
@@ -119,8 +121,8 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
     build_buffers_pod(channels, sample_rate_hz, std::mem::size_of::<u16>(), 0)
 }
 
-/// One Buffers param for every IEC 61937 format a driver-following sink
-/// offers, sized for the largest graph cycle of the widest carrier.
+/// One Buffers param for every format a driver-following sink offers, sized
+/// for the largest graph cycle of the widest one.
 ///
 /// A sink that follows a driver (the sync host's `own` mode) gets one cycle's
 /// worth per process call, so a buffer must hold a whole quantum. And it must
@@ -128,29 +130,30 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
 /// pair a format with another format's stride and size, and the player is
 /// then asked for half a quantum per cycle (measured: mpv queued 2048 of a
 /// 4096-frame cycle, i.e. half real time). Ranges as in spike S1, widened
-/// to the sink's linear-PCM alternative: eight `f32` channels are 32 bytes a
-/// frame, twice the widest IEC 958 carrier.
-pub fn build_pipewire_bridge_iec958_quantum_buffers_pod() -> Result<Vec<u8>> {
+/// to the sink's linear PCM: `max_frame_bytes` is one frame of it (eight
+/// `f32` channels are 32 bytes, twice the widest IEC 958 carrier).
+pub fn build_pipewire_bridge_quantum_buffers_pod(max_frame_bytes: u32) -> Result<Vec<u8>> {
     let range = |default: i32, min: i32, max: i32| {
         pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
             pw::spa::utils::ChoiceFlags::empty(),
             pw::spa::utils::ChoiceEnum::Range { default, min, max },
         )))
     };
-    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * 32;
+    let max_frame_bytes = max_frame_bytes.max(32) as i32;
+    let max_size = (PW_QUANTUM_LIMIT_FRAMES as i32) * max_frame_bytes;
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamBuffers,
         spa::param::ParamType::Buffers,
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_buffers), range(4, 2, 16)),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_blocks), Int, 1i32),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_size), range(max_size, 4096, max_size)),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, 32)),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), range(4, 1, max_frame_bytes)),
     };
     let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
         &spa::pod::Value::Object(obj),
     )
-    .map_err(|e| anyhow!("Failed to serialize the IEC 958 buffers pod: {e:?}"))?
+    .map_err(|e| anyhow!("Failed to serialize the quantum buffers pod: {e:?}"))?
     .0
     .into_inner();
     Ok(values)
@@ -284,7 +287,12 @@ pub fn build_pipewire_bridge_raw_format_pod(
     channels: u16,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
-    build_raw_format_pod(sample_rate_hz, &RAW_RATES_HZ, channels, param_type)
+    build_raw_format_pod(
+        sample_rate_hz,
+        &RAW_RATES_HZ,
+        raw_audio_positions(channels),
+        param_type,
+    )
 }
 
 /// [`build_pipewire_bridge_raw_format_pod`] at one rate only: for a sink
@@ -295,16 +303,65 @@ pub fn build_pipewire_bridge_raw_format_pod_at(
     channels: u16,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
-    build_raw_format_pod(sample_rate_hz, &[sample_rate_hz], channels, param_type)
+    build_raw_format_pod(
+        sample_rate_hz,
+        &[sample_rate_hz],
+        raw_audio_positions(channels),
+        param_type,
+    )
+}
+
+/// The linear PCM of a carrier sink (`docs/iamf-transport-plan.md`): 32-bit
+/// float at one rate, on `channels` unpositioned channels (`AUX0`…). They
+/// carry the 16-bit words of a burst stream, one per sample, and no audio:
+/// a position would invite a mixer to treat them as the speakers they are
+/// not.
+pub fn build_pipewire_bridge_carrier_format_pod_at(
+    sample_rate_hz: u32,
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    build_raw_format_pod(
+        sample_rate_hz,
+        &[sample_rate_hz],
+        carrier_positions(channels),
+        param_type,
+    )
+}
+
+/// The node properties of a carrier sink, over those of
+/// [`build_pipewire_bridge_stream_properties`]: its channels by their
+/// number, and nothing done to their samples.
+pub fn build_pipewire_bridge_carrier_properties(
+    props: &mut pw::properties::PropertiesBox,
+    channels: u16,
+) {
+    let positions: Vec<String> = (0..channels.min(CARRIER_MAX_CHANNELS))
+        .map(|n| format!("AUX{n}"))
+        .collect();
+    props.insert("audio.channels", positions.len().to_string());
+    props.insert("audio.position", format!("[ {} ]", positions.join(" ")));
+    props.insert("channelmix.disable", "true");
+    props.insert("dither.noise", "0");
+    props.insert("dither.method", "none");
+    // No volume saved by an earlier session is put back on it.
+    props.insert("state.restore-props", "false");
+}
+
+/// `AUX0` to `AUX<channels - 1>`.
+fn carrier_positions(channels: u16) -> Vec<pw::spa::utils::Id> {
+    (0..u32::from(channels.min(CARRIER_MAX_CHANNELS)))
+        .map(|n| pw::spa::utils::Id(spa::sys::SPA_AUDIO_CHANNEL_START_Aux + n))
+        .collect()
 }
 
 fn build_raw_format_pod(
     sample_rate_hz: u32,
     rates_hz: &[u32],
-    channels: u16,
+    positions: Vec<pw::spa::utils::Id>,
     param_type: spa::param::ParamType,
 ) -> Result<Vec<u8>> {
-    let positions = raw_audio_positions(channels);
+    let channels = positions.len();
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamFormat,
         param_type,

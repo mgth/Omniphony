@@ -31,6 +31,8 @@
 //! on Windows and macOS, or a file; the input is a pipe (a FIFO, a named pipe
 //! on Windows), a file, or, on Linux, the PipeWire sink.
 
+#[cfg(target_os = "linux")]
+mod carrier;
 mod controls;
 #[cfg(target_os = "linux")]
 mod own_sink;
@@ -385,6 +387,9 @@ struct Epoch {
     pipe_carrier_known: bool,
     /// IEC 61937 data type of the last burst: a change is a new stream.
     data_type: Option<u8>,
+    /// A burst has given audio since the count last started: what
+    /// [`counts_from`] asks.
+    burst_decoded: bool,
     parser_bytes: u64,
     /// Where on the transport the bytes the parser was last reset on start:
     /// a burst's place is this plus the parser's own count.
@@ -445,6 +450,9 @@ pub enum Source {
         description: String,
         /// `priority.session`, if set.
         session_priority: Option<u32>,
+        /// A carrier sink of this many channels: bursts on linear PCM, and
+        /// never audio (`docs/iamf-transport-plan.md`).
+        carrier_channels: Option<u16>,
     },
     /// A regular file, or standard input (`-`): one stream read to its end,
     /// with no clock (`none`).
@@ -464,6 +472,8 @@ pub struct InputRequest {
     pub mode: InputMode,
     pub node: Option<String>,
     pub description: Option<String>,
+    /// The sink as a carrier sink of this many channels.
+    pub carrier_channels: Option<u16>,
 }
 
 impl InputRequest {
@@ -486,6 +496,7 @@ impl InputRequest {
                     .clone()
                     .unwrap_or_else(|| DEFAULT_SINK_DESCRIPTION.to_string()),
                 session_priority,
+                carrier_channels: self.carrier_channels,
             }),
             InputMode::Bridge => {
                 let path = path.context(
@@ -688,6 +699,7 @@ impl HostSession {
                     node_name,
                     description,
                     session_priority,
+                    carrier_channels,
                 } => {
                     self.capture = None;
                     own_sink::spawn_own_sink(own_sink::OwnSinkConfig {
@@ -696,6 +708,7 @@ impl HostSession {
                         latency_ns: (config.target_latency_ms * 1e6) as i64,
                         quantum: config.quantum,
                         session_priority: *session_priority,
+                        carrier_channels: carrier_channels.map(u32::from),
                     })
                     .with_context(|| format!("publishing the sink {node_name}"))?
                 }
@@ -1265,6 +1278,7 @@ impl Epoch {
             pipe_carrier: None,
             pipe_carrier_known: false,
             data_type: None,
+            burst_decoded: false,
             parser_bytes: 0,
             parser_origin: 0,
             coverage: Coverage::default(),
@@ -1394,6 +1408,7 @@ impl Epoch {
     /// delay is not.
     fn restart_transport(&mut self) {
         self.transport_base = None;
+        self.burst_decoded = false;
         self.coverage = Coverage::default();
         self.fill_carry = 0.0;
         self.trim_frames = 0;
@@ -2071,12 +2086,17 @@ fn feed_chunk(
             ep.coverage.audio_burst(at, packet.payload.len());
             // The first burst is the count's origin, whether or not the
             // carrier it is counted on is known yet.
-            ep.transport_base
-                .get_or_insert((at, ep.pushed_frames as f64));
+            if counts_from(ep.transport_base, packet.data_type, ep.burst_decoded) {
+                ep.transport_base = Some((at, ep.pushed_frames as f64));
+                ep.audit.reset();
+            }
             // Everything before this burst has been through the decoder.
             audit_in_flight(ep, t, at);
             match engine.process(&packet.payload, RInputTransport::Iec61937, packet.data_type) {
-                Ok(blocks) => push_blocks(engine, ep, ctx, blocks),
+                Ok(blocks) => {
+                    ep.burst_decoded |= blocks.iter().any(|block| block.n_frames > 0);
+                    push_blocks(engine, ep, ctx, blocks)
+                }
                 Err(e) => log::debug!("sync host: decode error: {e:#}"),
             }
         }
@@ -2087,6 +2107,22 @@ fn feed_chunk(
         }
     }
     publish_clock(ep, t, bytes.len());
+}
+
+/// Whether the count of the source's frames starts at the burst at hand:
+/// at the first one, and for an IAMF stream at each one until a burst has
+/// given audio.
+///
+/// An IAMF unit comes out of its decoder as it goes in, but only once the
+/// decoder has the sequence's descriptors, which the sender repeats every
+/// second or so. A receiver that missed the burst they opened the stream
+/// with decodes nothing until the next copy. Those units were not held by
+/// the decoder, they were dropped: counted, they read as a second of
+/// latency this stream needs, and the target was raised to it for good.
+/// The codecs whose decoders do hold their first frames (AC-3, DTS) keep
+/// the first burst as their origin: that hold is latency.
+fn counts_from(base: Option<(u64, f64)>, data_type: u8, burst_decoded: bool) -> bool {
+    base.is_none() || (data_type == spdif::DATA_TYPE_IAMF_PRIVATE && !burst_decoded)
 }
 
 /// The burst preamble (Pa, Pb, Pc, Pd), before the payload.
@@ -2609,6 +2645,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "Omniphony".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         for clock in [
             SourceClock::Auto,
@@ -2648,6 +2685,7 @@ mod tests {
                 mode: InputMode::Bridge,
                 node: None,
                 description: None,
+                carrier_channels: None,
             },
             input_path: None,
             drain_pipe: true,
@@ -2684,6 +2722,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "Omniphony".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         let key = |source: Source, ms| CaptureKey::of(&source, &config(source.clone(), ms));
         assert_eq!(key(pipe("/a"), 150.0), key(pipe("/a"), 200.0));
@@ -2701,6 +2740,7 @@ mod tests {
             mode,
             node: node.map(str::to_string),
             description: None,
+            carrier_channels: None,
         };
         assert_eq!(
             request(InputMode::Pipewire, None)
@@ -2710,11 +2750,12 @@ mod tests {
                 node_name: DEFAULT_SINK_NODE.into(),
                 description: DEFAULT_SINK_DESCRIPTION.into(),
                 session_priority: Some(7),
+                carrier_channels: None,
             }
         );
         assert!(matches!(
             request(InputMode::Pipewire, Some("living-room")).source(None, true, None),
-            Ok(Source::OwnSink { node_name, .. }) if node_name == "living-room"
+            Ok(Source::OwnSink { node_name, carrier_channels: None, .. }) if node_name == "living-room"
         ));
         let pipe: PathBuf = "/nonexistent/orender.pipe".into();
         assert_eq!(
@@ -2748,6 +2789,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "Omniphony".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         let pipe = Source::Pipe {
             path: "/p".into(),
@@ -2864,6 +2906,24 @@ mod tests {
     /// Evenly spaced bursts leave no gap. Pause bursts, a burst that went
     /// missing and stuffing are gaps of exactly the time they span; a step
     /// smaller than half a burst is not one.
+    /// The count starts at the first burst. For IAMF it starts again at each
+    /// burst that follows until one has given audio: a receiver that missed
+    /// the descriptors drops the units before their next copy, which is not
+    /// the decoder holding them.
+    #[test]
+    fn the_count_starts_at_the_first_burst_that_can_give_audio() {
+        let iamf = spdif::DATA_TYPE_IAMF_PRIVATE;
+        let base = Some((4096, 0.0));
+        for data_type in [1u8, 11, 21, 22, iamf] {
+            assert!(counts_from(None, data_type, false), "{data_type}");
+            assert!(!counts_from(base, data_type, true), "{data_type}");
+        }
+        // AC-3 holds its first frames: the first burst stays the origin.
+        assert!(!counts_from(base, 1, false));
+        // IAMF without its descriptors yet: this burst is the origin now.
+        assert!(counts_from(base, iamf, false));
+    }
+
     #[test]
     fn a_stream_is_covered_by_its_bursts_and_its_gaps_are_found() {
         const S: u64 = 6144;
@@ -3117,6 +3177,7 @@ mod tests {
             node_name: "omniphony".into(),
             description: "x".into(),
             session_priority: None,
+            carrier_channels: None,
         };
         let pipe = Source::Pipe {
             path: "/run/x.pipe".into(),
