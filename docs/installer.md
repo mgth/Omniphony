@@ -476,6 +476,51 @@ it differs from the text above:
   (`~/.local/lib/omniphony/uninstall.sh`), and a command link the user has
   replaced with a file of their own is left alone on upgrade and uninstall.
 
+Steps 5 and 6 are the pull request that adds this paragraph:
+`packaging/installer/windows/` with `omniphony.nsi`, `build.sh` (composition,
+on Linux or in Git Bash), and the Windows jobs of `installer.yml`. Where it
+differs from the text above:
+
+- **A hand-written NSIS script, not cargo-packager's template.** cargo-packager
+  builds the installer of one crate from that crate's packager configuration;
+  this one is composed from two published archives into three folders, with a
+  per-machine mode and a service. The Studio's own installers are unchanged.
+- **The engine comes from the Studio archive's `engine\`**, as on Linux.
+- **The uninstaller removes the files this release installed, one by one**
+  (`build.sh` writes the list from the staged tree), not the folders: a bridge
+  put next to `mpv.exe` or `orender.exe` stays, with its folder. An upgrade
+  first runs the installed uninstaller with `/UPGRADE`, which removes the
+  program files only, so a file the new release no longer has does not
+  linger, and shortcuts, the logon start and the service stay.
+- **Logon start is a shortcut in the Startup folder**, minimized, not a `Run`
+  key: `orender.exe` is a console program, and a `Run` key would open its
+  window in the foreground at every logon. Hiding it altogether needs a
+  windowless launcher, which nothing here ships.
+- **Step 6 is written and reachable from the command line only**:
+  `/ALLUSERS` installs under `%ProgramFiles%\Omniphony` (elevating once) with
+  the engine also next to `mpv.exe`, and `/ALLUSERS /SERVICE` (or
+  `/SERVICE=auto`) creates the `omniphony-renderer` service with the command
+  line Studio's *Install service* uses, start type Manual (or Automatic). The
+  wizard offers neither. They move into the wizard once audio output from
+  session 0 has been checked by hand with WASAPI and with an ASIO driver;
+  until then the install page does not mention them.
+- **Running programs**: the installer stops the renderer service for the copy
+  and starts it again after, and refuses to continue while `mpv.exe`, Studio,
+  `orender.exe` or the per-user `orender.dll` is in use. It does not stop a
+  renderer started by the logon shortcut or by Studio: the message asks for
+  it to be closed.
+
+Tests. `test.ps1` runs on `windows-latest` (job `windows-scripts`, on every
+pull request that touches the installer) with stand-in release files: per
+user, install, a file in use, upgrade with the logon start, uninstall with a
+bridge and a `config.yaml` left in place; per machine, the service's command
+line, its start type, its reconfiguration and its removal. `verify-release.ps1`
+(job `windows`) installs the composed installer of real files silently and
+checks that the player logs the engine from `%LOCALAPPDATA%\omniphony\lib`
+with `(studio install)` and that `orender.exe` starts. Not covered: the bridge
+discovery with the reference bridge (it would have to be built from source at
+the tag), the wizard's pages, and the clean-VM check by hand.
+
 ## Decisions
 
 Answers of the maintainer (2026-10-13) to the open questions below.

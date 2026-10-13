@@ -99,10 +99,14 @@ jobs:
           if [ "$EVENT" = release ] && [ "$RELEASE_TAG" != "$tag" ] && [ "$RELEASE_TAG" != "$player" ]; then
             not_ready "Omniphony $tag pairs with $player, not with $RELEASE_TAG: no installer."
           fi
-          has_asset "$tag" '^omniphony-studio-egui-.*-linux-x86_64\.tar\.gz$' \
-            || not_ready "Omniphony $tag is not published with its Studio archive yet."
-          has_asset "$player" '^mpv-omniphony-.*-linux-x86_64\.AppImage$' \
-            || not_ready "The player release $player is not published with its AppImage yet: the installer of $tag is composed when it is."
+          for asset in 'linux-x86_64\.tar\.gz' 'windows-x86_64\.zip'; do
+            has_asset "$tag" "^omniphony-studio-egui-.*-$asset\$" \
+              || not_ready "Omniphony $tag is not published with its Studio archives yet."
+          done
+          for asset in 'linux-x86_64\.AppImage' 'windows-x86_64\.zip'; do
+            has_asset "$player" "^mpv-omniphony-.*-$asset\$" \
+              || not_ready "The player release $player is not published with its files yet: the installers of $tag are composed when it is."
+          done
 
           echo "Omniphony $tag with the player of $player (attach: $attach)"
           {
@@ -164,3 +168,76 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" "$bundle" --clobber --repo "$GITHUB_REPOSITORY"
+
+  # The NSIS script on a real Windows, with stand-in release files: per user
+  # (install, upgrade, a file in use, uninstall) and per machine with the
+  # renderer service. Needs no release, so it runs on every pull request that
+  # touches the installer.
+  windows-scripts:
+    if: github.event_name != 'release'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Two installers of stand-in files
+        shell: bash
+        run: packaging/installer/windows/make-standins.sh "$RUNNER_TEMP/standins"
+
+      - name: Install, upgrade, uninstall
+        shell: pwsh
+        run: packaging/installer/windows/test.ps1 -Out "$env:RUNNER_TEMP\standins"
+
+  windows:
+    needs: resolve
+    if: needs.resolve.outputs.ready == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      PLAYER_TAG: ${{ needs.resolve.outputs.player_tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Download the release files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern 'omniphony-studio-egui-*-windows-x86_64.zip'
+          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern 'mpv-omniphony-*-windows-x86_64.zip'
+          ls -la assets
+
+      - name: Compose the installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup="$(packaging/installer/windows/build.sh "$TAG" \
+            assets/omniphony-studio-egui-*-windows-x86_64.zip \
+            assets/mpv-omniphony-*-windows-x86_64.zip out)"
+          echo "setup=$(cygpath -w "$setup")" >> "$GITHUB_ENV"
+
+      # A silent per-user install on the runner: the engine in the per-user
+      # folder, the player loading it from there, orender starting without a
+      # Visual C++ runtime, an uninstall that keeps the config.
+      - name: Install it
+        shell: pwsh
+        run: packaging/installer/windows/verify-release.ps1 -Setup "$env:setup"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-windows
+          path: ${{ env.setup }}
+
+      - name: Attach the installer to the release
+        if: needs.resolve.outputs.attach == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$setup" --clobber --repo "$GITHUB_REPOSITORY"
