@@ -1,6 +1,7 @@
 # RFC: restoring the native Studio's UI boundary
 
-Status: accepted, 2026-09-11.
+Status: accepted, 2026-09-11. **Done**: every phase has landed, and the
+ratchet baseline is empty.
 
 Progress:
 
@@ -8,6 +9,11 @@ Progress:
   agent rules.
 - **Phase 1 landed**: `omniphony-studio-core` exists and has no UI crate in
   its graph. What changed from the plan below is recorded under the phase.
+- **Phase 2 landed**: the shared contract crate (`osc-contract/`), and the
+  panels on the action API; `model-write` is gone from the ratchet.
+- **Phase 3 landed**: every tick is a service on the core's clock.
+- **Phase 4 landed**, except the `srgb_target` flag, left out on purpose (see
+  the phase).
 - **Phase 5 decided**: the Tauri Studio was retired and deleted before 0.7.0
   (#677); the native Studio is the only one.
 
@@ -175,7 +181,7 @@ are open, and land it fast; git follows the renames on rebase.
 - The CI step also rejects `accesskit`. It was tested both ways, by adding
   `egui` to the core's manifest.
 
-### Phase 2: an action API (about 1 to 1.5 weeks)
+### Phase 2: an action API (landed)
 
 1. **Shared contract.** Extract `runtime_control::osc_contract` into
    `omniphony-osc-contract`, a crate with no dependencies that `runtime_control`
@@ -201,7 +207,11 @@ Done when `osc-address`, `raw-send` and `model-write` are at zero.
 `model-write` is then deleted, since the type system forbids it. `osc-address`
 and `raw-send` stay as tripwires.
 
-### Phase 3: a clock for the core (about 1 week)
+**Landed**: the contract crate is `omniphony-osc-contract` (`osc-contract/`),
+`osc-address` and `raw-send` stand at zero, and `model-write` is no longer a
+rule of `tests/architecture.rs`.
+
+### Phase 3: a clock for the core (landed)
 
 1. **Scheduler.** `Services` runs on the listener thread as described under
    Target, with an injected-time test per service.
@@ -240,7 +250,7 @@ anything else that can give the clock work, including an interest the view just
 declared — repaints *and* nudges, while the clock's own only repaints, since
 nudging itself would spin.
 
-### Phase 4: a neutral 3D engine (about 2 days, can wait for a real migration)
+### Phase 4: a neutral 3D engine (landed)
 
 - `view/` uses `glam::Vec2`, `[u8; 4]` (unmultiplied) and a `ScreenRect`, and
   `BandBar::paint` moves into the app.
@@ -266,62 +276,6 @@ became what releases, nightlies and the AUR `omniphony-studio` package
 deliver; `omniphony-studio/` was then deleted, with its CI jobs, lockfiles and
 PKGBUILD. Its last sources are at commit
 [49372dd6](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio).
-The rest of this section is the record of how the decision was framed.
-
-The Tauri host still receives features, and about 10.6k lines are copied
-between it and the egui crate. Decide at the cutover:
-
-- **Retire it.** Freeze it, move the i18n catalogues and the head model into
-  the core's assets, then delete it.
-- **Keep it.** Make `src-tauri` depend on `omniphony-studio-core` and delete its
-  copies.
-
-#### Where this actually stands (measured 2026-09-13)
-
-**The cutover has not happened, and nothing schedules it.** No release or
-integration workflow mentions `omniphony-studio-egui`; `release.yml` and
-`integration-build.yml` both build the Tauri bundle, and `packaging/` has
-nothing for the egui app. CI builds and tests the egui Studio, and that is the
-whole of its distribution. The Tauri Studio is the product.
-
-So "retire it" is not a decision anyone can take today — it would delete the
-only Studio that ships. Making the egui Studio shippable is packaging work that
-has not started, and it is the real precondition for this phase.
-
-Both are alive. Over the three months to 2026-09-13, 78 commits touched
-`src-tauri` and 120 touched `omniphony-studio-egui`.
-
-**The duplication, measured.** 25 files share a name between
-[`omniphony-studio/src-tauri/src/`](https://github.com/mgth/Omniphony/tree/49372dd6d10bffbcb2b182603b64f53a3e3a9897/omniphony-studio/src-tauri/src) and `omniphony-studio-egui/core/src/`; 6614 of
-their lines are identical, out of 8351 on the Tauri side and 9134 on the core's.
-Six files are the same file twice, at 99% or better:
-
-| File | Identical / Tauri lines |
-|---|---|
-| `layouts.rs` | 1111 / 1114 |
-| `audio_config.rs` | 440 / 440 |
-| `mpv_config.rs` | 378 / 381 |
-| `peak_hold.rs` | 294 / 294 |
-| `timing_stats.rs` | 274 / 274 |
-| `runtime_env.rs` | 104 / 104 |
-
-That is 2607 lines of the Tauri host which *are* the core, verbatim.
-
-**And they have started to drift**, which is the cost that grows: `render.rs`
-(388 identical of 572 / 708), `engine.rs` (129 of 185 / 304), `input.rs` (161 of
-221 / 314). Some of that gap is phase 2 and 3 work the core received and the
-Tauri host did not.
-
-**Recommendation: do the decision-independent half now.** Make `src-tauri`
-depend on `omniphony-studio-core` and delete the six verbatim files. It is the
-"keep it" bullet's mechanics, but it commits to nothing: if the egui Studio
-later ships and wins, the Tauri crate is deleted and the core stays; if it does
-not, the duplication is gone either way. It also stops the drift while the
-question is open, which is the only thing here that gets worse by waiting.
-
-It touches the shipped Studio, so it wants its own PR and a bundle build before
-it lands — `integration-build.yml` on demand is the check that matters, since
-`ci.yml` never builds a Tauri bundle.
 
 ## Definition of done
 
@@ -340,14 +294,10 @@ it lands — `integration-build.yml` on demand is the check that matters, since
 |---|---|---|
 | 0 | guardrails | this PR |
 | 1 | waker, dependencies, core crate | landed |
-| 2 | contract crate, `Studio` API, about 25 panel PRs, read-only model | 5 to 8 days |
-| 3 | scheduler, 10 ticks, side effects | 4 to 6 days |
-| 4 | neutral 3D engine | about 2 days, deferrable |
+| 2 | contract crate, `Studio` API, about 25 panel PRs, read-only model | landed (estimated 5 to 8 days) |
+| 3 | scheduler, 10 ticks, side effects | landed (estimated 4 to 6 days) |
+| 4 | neutral 3D engine | landed, except `srgb_target` (estimated about 2 days) |
 | 5 | Tauri decision | decided: retired (#677) |
-
-About three weeks of small, independent PRs. Phases 1 to 3 carry the value.
-Phase 4 is cheap insurance, and can wait until a migration is actually on the
-table.
 
 ## Risks
 

@@ -1267,7 +1267,7 @@ gets from that:
 
 | | From |
 |---|---|
-| Source | `render.input_mode`: `pipewire` is the `own` sink, under `live_input.node` / `description` (default `omniphony`); otherwise the input pipe (`render.input_pipe` in continuous mode, else INPUT), followed on its writer's clock |
+| Source | `render.input_mode`: `pipewire` is the `own` sink, under `live_input.node` / `description` (default `omniphony`), a carrier sink with `live_input.carrier_channels` (§30); otherwise the input pipe (`render.input_pipe` in continuous mode, else INPUT), followed on its writer's clock |
 | Latency target | `render.latency_target`, else 150 ms |
 | Output | `render.output_device`; `--pw-quantum` |
 | OSC | As resolved for `render`: `--osc`, host and ports, `--osc-yield` |
@@ -1744,6 +1744,19 @@ channels), linked to the sink in order. `by_name` is therefore `by_index` on
 PipeWire today. Stating the positions in the format would make it real, and
 would also make PipeWire remix a stream whose layout is not the sink's: a
 change of behaviour to decide, not made here.
+
+**Decided and done since (branch `feat/output-sink-channel-map`):** the
+positions are stated in the format. `by_index` reads the target sink's own
+map (`audio.position`, in port order) and tags the channels with it, so port
+N carries speaker N on a sink that routes by position too; a sink with a map
+PipeWire cannot route by (a null sink's `1 2 3 …`) is linked in order as
+before, and a sink with fewer channels than the stream is refused with a
+message. `by_name` tags each speaker with the position its channel label
+gives (`TBL` is `TRL`, `FWL` is `FLW`). The reason: WirePlumber links an
+untagged port to whatever port of the sink scores best, a MIDI port
+included, and a sink with one (`module-netjack2-driver`) then refused the
+whole stream ("no more output formats"). No remix follows: the stream's
+ports are DSP ports linked one to one, tags route them, they do not mix.
 
 ### The `file` output
 
@@ -2410,3 +2423,34 @@ box.
 - **Listening.** The real session was listened to by its user as it ran;
   no verdict is recorded here.
 - The audit on TrueHD through a pipe (above).
+
+## 30. A burst carrier on the sink's linear PCM (2026-10-13)
+
+Not a phase of this plan: the receiving end of
+[iamf-transport-plan.md](iamf-transport-plan.md), on this host.
+
+- The capture's pump passes the sink's linear PCM through a gate
+  (`sync_host::carrier`). PCM that holds IAMF bursts of the private IEC
+  61937 type (16-bit words, one per float sample) is handed over as the
+  words it carries, as an IEC 958 carrier with the capture's transport
+  count: another stream of the same capture, which the host deframes and
+  counts like any other. It is never rendered as audio.
+- `render.live_input.carrier_channels` (option
+  `live_input_carrier_channels`, in the staged `live_input` group) makes the
+  sink a carrier sink: that many unpositioned channels in place of the 7.1
+  map, a carrier and nothing else.
+- The zeros between two bursts are not handed over: the chunk that follows
+  says how much of the carrier idled (`skipped`), as after a cycle a player
+  gave nothing for (§25). The source's clock is published on a burst's
+  bytes only, so a carrier whose player stopped does not read as a source
+  that keeps sending with nothing delivered; without that, the half second
+  before the stream ends raised the floor to 500 ms.
+- Ports of another node linked into the sink bring that node's driver: the
+  sink's group, its timer driver included, then runs on it (§6.1's "driver
+  merge"). The cycle stamps are that driver's, on the same monotonic clock,
+  and the servo follows them as it follows its own: 45 s on a null sink's
+  driver held the target with no realign.
+- The count of an IAMF stream starts at the first burst that gives audio
+  (`counts_from`): a receiver that missed the stream's descriptors drops
+  the units before their next copy, which is not a decoder holding them.
+  Counted from the first burst seen, they raised the floor to a second.

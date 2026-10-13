@@ -618,6 +618,9 @@ pub fn seed_runtime_state_from_render_config(
         .and_then(|cfg| cfg.options.ramp_mode)
         .unwrap_or(renderer::options::defaults::ramp_mode);
     control.live.write().options.ramp_mode = ramp_mode;
+    // Logged here, with the mode the run renders with: the constructor only
+    // knows the declared default it starts from.
+    log::info!("Ramp mode: {}", ramp_mode.as_str());
 
     // Declared live options (registry rows) plus their param bags and the
     // virtual bed: one shared registry seed, same call as the CLI bootstrap.

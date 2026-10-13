@@ -103,6 +103,7 @@ Status: ✅ OK · 🟡 **justified** gap (do not fix) · 🔴 gap **to fix**.
 | Option | CLI | OSC/Studio | mpv | Status | Why |
 |---|:--:|:--:|:--:|:--:|---|
 | `input_mode`, `live_input.node`, `live_input.description` | ✅ | ✅ | 🟡 | 🟡 | mpv supplies the decoded input, so the `input` domain is withdrawn. **Justified.** |
+| `live_input.carrier_channels` | ✅ | ✅ | 🟡 | 🟡 | as above for mpv. In the Studio: the carrier sink's switch and channels in the Audio Input panel (`docs/iamf-transport-plan.md`). |
 
 ### OSC / monitoring / miscellaneous
 

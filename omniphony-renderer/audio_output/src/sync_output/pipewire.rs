@@ -27,7 +27,7 @@ use anyhow::{Result, anyhow};
 use pipewire as pw;
 
 use super::core::{DeviceTiming, OutputCore};
-use crate::pipewire::{output_target_properties, to_pipewire_position};
+use crate::pipewire::{channel_position_id, output_target_properties, to_pipewire_position};
 
 /// What the stream is opened with.
 #[derive(Debug, Clone)]
@@ -36,7 +36,9 @@ pub struct PipewireSyncOutputConfig {
     /// Pin to this sink (no move, no fallback); `None` follows the session
     /// manager's choice.
     pub target: Option<String>,
-    /// Device channel count and, optionally, their positions (`FL`, `FR`, …).
+    /// Device channel count and, optionally, their positions (`FL`, `FR`, …),
+    /// which the session manager routes by; a name PipeWire does not know
+    /// leaves its channel untagged.
     pub channels: u32,
     pub positions: Option<Vec<String>>,
     pub rate: u32,
@@ -143,15 +145,17 @@ fn run(
     let channels = config.channels.max(1);
     let channels_str = channels.to_string();
     props.insert("audio.channels", channels_str.as_str());
+    // The positions in PipeWire's spelling, once: for the format below,
+    // which is where PipeWire reads them, and the property, which only
+    // shows them (`pw-dump`).
     let positions = config.positions.as_ref().map(|names| {
         names
             .iter()
             .map(|n| to_pipewire_position(n))
             .collect::<Vec<_>>()
-            .join(",")
     });
-    if let Some(p) = positions.as_deref() {
-        props.insert("audio.position", p);
+    if let Some(names) = positions.as_deref() {
+        props.insert("audio.position", names.join(",").as_str());
     }
     if let Some(target) = config.target.as_deref() {
         for (k, v) in output_target_properties(target) {
@@ -190,21 +194,7 @@ fn run(
         .register()
         .map_err(|e| anyhow!("PipeWire listener: {e:?}"))?;
 
-    let mut info = pw::spa::param::audio::AudioInfoRaw::new();
-    info.set_format(pw::spa::param::audio::AudioFormat::F32LE);
-    info.set_rate(config.rate);
-    info.set_channels(channels);
-    let format = pw::spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &pw::spa::pod::Value::Object(pw::spa::pod::Object {
-            type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
-            id: pw::spa::param::ParamType::EnumFormat.as_raw(),
-            properties: info.into(),
-        }),
-    )
-    .map_err(|e| anyhow!("format pod: {e:?}"))?
-    .0
-    .into_inner();
+    let format = format_pod(config.rate, channels, positions.as_deref())?;
     let pod = pw::spa::pod::Pod::from_bytes(&format).ok_or_else(|| anyhow!("format pod"))?;
 
     {
@@ -228,6 +218,55 @@ fn run(
     }
     main_loop.stop();
     Ok(())
+}
+
+/// The format the stream is connected with: F32 at `rate`, `channels` wide,
+/// each channel tagged with its position when there are any.
+///
+/// The tags go in the format: PipeWire does not read a client stream's
+/// `audio.position` property, and a stream without them comes out as
+/// `output_1…N`, channel `UNK`. The session manager links such ports in
+/// order, to whatever port of the sink is free — a MIDI port as readily as
+/// an audio one, which the format negotiation then refuses, and the whole
+/// stream with it.
+fn format_pod(rate: u32, channels: u32, positions: Option<&[String]>) -> Result<Vec<u8>> {
+    use pw::spa::param::audio::{AudioFormat, AudioInfoRaw, AudioInfoRawFlags, MAX_CHANNELS};
+    use pw::spa::sys::SPA_AUDIO_CHANNEL_UNKNOWN;
+
+    let mut info = AudioInfoRaw::new();
+    info.set_format(AudioFormat::F32LE);
+    info.set_rate(rate);
+    info.set_channels(channels);
+    if let Some(names) = positions {
+        let mut position = [SPA_AUDIO_CHANNEL_UNKNOWN; MAX_CHANNELS];
+        let channels = (channels as usize).min(MAX_CHANNELS);
+        for (slot, name) in position.iter_mut().zip(names.iter().take(channels)) {
+            *slot = channel_position_id(name).unwrap_or(SPA_AUDIO_CHANNEL_UNKNOWN);
+        }
+        info.set_position(position);
+        // `set_position` reads the first slot only: a map whose first name
+        // is unknown but that tags any other channel is still a map.
+        let tagged = position[..channels]
+            .iter()
+            .any(|&p| p != SPA_AUDIO_CHANNEL_UNKNOWN);
+        info.set_flags(if tagged {
+            AudioInfoRawFlags::empty()
+        } else {
+            AudioInfoRawFlags::UNPOSITIONED
+        });
+    }
+    let bytes = pw::spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &pw::spa::pod::Value::Object(pw::spa::pod::Object {
+            type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+            id: pw::spa::param::ParamType::EnumFormat.as_raw(),
+            properties: info.into(),
+        }),
+    )
+    .map_err(|e| anyhow!("format pod: {e:?}"))?
+    .0
+    .into_inner();
+    Ok(bytes)
 }
 
 /// A cycle's timing in the stream's own frames, from what PipeWire reports
@@ -345,6 +384,52 @@ mod tests {
         // own frames.
         let timing = device_timing(&time(0, 48_000, 4800, 441), 441, 44_100.0).unwrap();
         assert!((timing.heard_delay_s - 0.12).abs() < 1e-12);
+    }
+
+    fn parse(bytes: &[u8]) -> pw::spa::param::audio::AudioInfoRaw {
+        let pod = pw::spa::pod::Pod::from_bytes(bytes).expect("a pod");
+        let mut info = pw::spa::param::audio::AudioInfoRaw::new();
+        info.parse(pod).expect("a raw audio format");
+        info
+    }
+
+    /// The positions are in the format, where PipeWire reads them: the
+    /// ones it knows by their id, the others unknown.
+    #[test]
+    fn the_format_carries_the_positions() {
+        use pw::spa::param::audio::AudioInfoRawFlags;
+        use pw::spa::sys as spa;
+        let names: Vec<String> = ["FL", "AUX5", "FWL"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let info = parse(&format_pod(48_000, 3, Some(&names)).unwrap());
+        assert_eq!(info.rate(), 48_000);
+        assert_eq!(info.channels(), 3);
+        assert!(!info.flags().contains(AudioInfoRawFlags::UNPOSITIONED));
+        assert_eq!(
+            &info.position()[..3],
+            &[
+                spa::SPA_AUDIO_CHANNEL_FL,
+                spa::SPA_AUDIO_CHANNEL_AUX5,
+                spa::SPA_AUDIO_CHANNEL_UNKNOWN
+            ]
+        );
+    }
+
+    /// No positions, or none PipeWire knows: an unpositioned format, as
+    /// before.
+    #[test]
+    fn no_positions_is_an_unpositioned_format() {
+        use pw::spa::param::audio::AudioInfoRawFlags;
+        use pw::spa::sys::SPA_AUDIO_CHANNEL_UNKNOWN;
+        let info = parse(&format_pod(48_000, 2, None).unwrap());
+        assert_eq!(info.channels(), 2);
+        assert_eq!(info.position()[0], SPA_AUDIO_CHANNEL_UNKNOWN);
+        let names: Vec<String> = ["1", "2"].iter().map(|s| s.to_string()).collect();
+        let info = parse(&format_pod(48_000, 2, Some(&names)).unwrap());
+        assert!(info.flags().contains(AudioInfoRawFlags::UNPOSITIONED));
+        assert_eq!(info.position()[0], SPA_AUDIO_CHANNEL_UNKNOWN);
     }
 
     #[test]

@@ -96,7 +96,7 @@ stays green unless something *new* breaks.
 | Wide case | Status | Deferred value recorded in `#[ignore]` |
 | --- | --- | --- |
 | `lr4_reconstruction_is_magnitude_flat_wide` (3 cutoff sets × 44.1/48/96 kHz) | gate | — |
-| `vbap_conserves_energy_over_the_sphere_wide` (5.1, 7.1, 7.1.4, 9.1.6 × 4 spreads, 8192 dirs) | deferred | 5.1 spread=0 has a silent direction at az=−117.4° el=86.5° |
+| `vbap_conserves_energy_over_the_sphere_wide` (5.1, 7.1, 7.1.4, 9.1.6 × 4 spreads, 8192 dirs) | gate since 2026-10-13 (see below) | — |
 | `itd_magnitude_tracks_the_model_wide` (13 azimuths, 30° apart) | deferred | measured delta −39.954 samples at az=−120°, target ±3 samples |
 
 The wide VBAP case fails earlier and harder than its narrow counterpart: on the
@@ -104,6 +104,13 @@ The wide VBAP case fails earlier and harder than its narrow counterpart: on the
 fall outside the convex hull entirely and receive no energy at all rather than
 merely mis-normalised energy. That is the same convex-hull question the
 narrow-gate observation above raises, seen from a layout with no height layer.
+
+*Addendum, 2026-10-13.* The wide VBAP case is a live gate. Its deferral had
+moved from the silent direction above, fixed with pole coverage, to the energy
+of MDAP spread (5.1 at spread 0.25, −3.0090 dB). That no longer reproduces:
+run on main, the sixteen cases (four presets, four spreads, 8192 directions
+each) all measure 0.0000 dB against the ±0.25 dB target, so the `#[ignore]` is
+removed. The change that fixed the spread energy was not identified.
 
 The wide ITD case reaches azimuths the narrow gate never visits (±120° and
 ±150°) and breaks down there in the same way it does at ±90°: at az = −120° the

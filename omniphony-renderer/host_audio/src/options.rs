@@ -107,6 +107,10 @@ const LATENCY_TARGET_KIND: OptionKind = OptionKind::OptionalInt {
     min: 1,
     max: 10_000,
 };
+const CARRIER_CHANNELS_KIND: OptionKind = OptionKind::OptionalInt {
+    min: audio_input::CARRIER_MIN_CHANNELS as i64,
+    max: audio_input::CARRIER_MAX_CHANNELS as i64,
+};
 const LOOP_BANDWIDTH_KIND: OptionKind = OptionKind::Float {
     min: 0.0,
     max: 1.0,
@@ -413,6 +417,29 @@ pub static HOST_OPTIONS: &[HostOptionSpec<HostIo>] = &[
         LegacyAddr::Exact(osc_contract::CONTROL_INPUT_LIVE_DESCRIPTION),
         Some(|host| opt_string_json(&host.input.applied_snapshot().node_description))
     ),
+    // Unset: the sink takes audio. Set: it takes a burst carrier on this
+    // many channels, and nothing else (`docs/iamf-transport-plan.md`).
+    HostOptionSpec {
+        key: "live_input_carrier_channels",
+        kind: CARRIER_CHANNELS_KIND,
+        default: OptionDefault::Unset,
+        flags: OptionFlags::NONE,
+        group: Some(&LIVE_INPUT),
+        i18n_key: "input.carrierChannels",
+        help_i18n_key: Some("help.input.carrierChannels"),
+        legacy_control_addr: LegacyAddr::None,
+        set: |host, raw| {
+            let value = raw_optional_int(raw, CARRIER_CHANNELS_KIND)?.map(|n| n as u16);
+            host.input.set_requested_carrier_channels(value);
+            Some(value.map_or_else(String::new, |n| n.to_string()))
+        },
+        get_json: |host| opt_json(host.input.requested_snapshot().carrier_channels),
+        applied_json: None,
+        config_store: |render, host| {
+            live_input_cfg(render).carrier_channels =
+                host.input.requested_snapshot().carrier_channels;
+        },
+    },
 ];
 
 /// Pre-registry addresses that are further aliases of a row (the row names
