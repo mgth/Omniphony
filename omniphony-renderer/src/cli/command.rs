@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use clap::{
     ArgMatches, Args, CommandFactory, FromArgMatches, Parser as ClapParser, Subcommand, ValueEnum,
@@ -12,6 +13,21 @@ pub const VERSION_INFO: &str = concat!(
     " Built: ",
     env!("BUILD_TIMESTAMP")
 );
+
+/// What `--version` prints: the build, then what it pairs with, so a
+/// mismatch can be read off before anything plays (`docs/installer.md`,
+/// step 4). The liborender ABI is the one of the library built from the same
+/// tree; a decoder bridge loads only when built against the same `bridge_api`
+/// minor (`BRIDGE_API.md`, "Versioning"). `-V` keeps the one line.
+static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let bridge_api = orender_engine::bridge_loader::host_bridge_api_version();
+    format!(
+        "{VERSION_INFO}\nliborender ABI: {}\nbridge_api: {}.{}.x",
+        env!("ORENDER_LIBORENDER_ABI"),
+        bridge_api.major,
+        bridge_api.minor
+    )
+});
 
 #[derive(Debug, Clone, ClapParser)]
 #[command(
@@ -58,6 +74,7 @@ impl ParsedCli {
         T: Into<std::ffi::OsString> + Clone,
     {
         let matches = Cli::command()
+            .long_version(LONG_VERSION.as_str())
             .mut_subcommand("render", |render| {
                 render.args(crate::cli::options::option_args())
             })
@@ -111,6 +128,10 @@ pub enum Commands {
     /// Generate VBAP gain table from speaker layout configuration
     GenerateVbap(GenerateVbapArgs),
 
+    /// Load the decoder bridges the way `render` would and report each one;
+    /// exits with an error, and the reason, when none loads
+    CheckBridges(CheckBridgesArgs),
+
     /// Write an IAMF file as a private IEC 61937 burst stream (test tool).
     #[command(name = "wrap-iec61937", hide = true)]
     WrapIec61937(WrapIec61937Args),
@@ -123,6 +144,14 @@ pub enum Commands {
     /// List available CoreAudio output devices (macOS only)
     #[cfg(target_os = "macos")]
     ListCoreaudioDevices,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CheckBridgesArgs {
+    /// Bridge plugin library to check instead of the configured or discovered
+    /// ones; repeat it to check several
+    #[arg(long = "bridge-path", value_name = "FILE")]
+    pub bridge_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
