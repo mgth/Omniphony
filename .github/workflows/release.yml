@@ -257,7 +257,8 @@ jobs:
             macOS)   platform=macos-arm64;    lib=liborender.dylib ;;
             *) echo "unexpected runner OS: $RUNNER_OS" >&2; exit 1 ;;
           esac
-          name="liborender-${GITHUB_REF_NAME}-${platform}"
+          # A manual run on a branch has a ref name with slashes.
+          name="liborender-${GITHUB_REF_NAME//\//-}-${platform}"
           mkdir -p "staging/$name"
           cp "omniphony-renderer/target/release/$lib" \
             omniphony-renderer/orender_ffi/include/orender.h "staging/$name/"
