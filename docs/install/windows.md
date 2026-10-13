@@ -6,6 +6,54 @@ Omniphony, through **mpv-omniphony** (the player) and the **harletty bridge**
 
 Other systems: [Linux](linux.md) · [macOS](macos.md).
 
+## The installer
+
+When the release page lists `omniphony-<version>-windows-x86_64-setup.exe`,
+that one download holds the player, the engine and Studio of that release, and
+puts each where the others look for it. It installs for your account, asks
+for no administrator rights and writes no config file.
+
+The installer is not code-signed: SmartScreen shows *Windows protected your
+PC*. Choose *More info*, then *Run anyway*
+(see [failure 4](#4-the-engine-or-studio-is-blocked-as-an-unknown-app)).
+
+| Installed | Where |
+| --- | --- |
+| The player | `%LOCALAPPDATA%\Programs\Omniphony\player\` |
+| Studio and `orender.exe` | `%LOCALAPPDATA%\Programs\Omniphony\studio\` |
+| The engine | `%LOCALAPPDATA%\omniphony\lib\`, where the player, Studio and `orender` look before their own copy |
+| Start menu | *Omniphony Studio*, and *mpv-omniphony*, the player started with `--ad=orender` |
+| `%ProgramData%\omniphony\` | created empty, for the config Studio saves later |
+
+**The decoder bridge is not in the installer.** Take it as in
+[step 2](#2-the-decoder-bridge) and put its DLL into
+`%LOCALAPPDATA%\omniphony\lib\`, next to the engine: every host finds it
+there without any option. The installer's last page says whether it found a
+bridge the engine accepts. To ask again after adding one:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Omniphony\studio\orender.exe" check-bridges
+```
+
+**Start the renderer when I log on** is an unchecked option of the installer.
+Most setups do not need it: the player carries its own engine. When checked,
+`orender` starts with your session in a minimized console window; closing
+that window stops it. Studio's own *Install service* remains the way to a
+Windows service.
+
+**Upgrade** by running the installer of the newer release, with mpv and Studio
+closed. **Remove** from *Settings → Apps → Installed apps → Omniphony*: it
+deletes what the installer wrote and keeps `config.yaml`, Studio's
+preferences, `mpv.conf` and the bridge.
+
+Silent install: `omniphony-<version>-windows-x86_64-setup.exe /S`, with
+`/STARTUP` for the logon start and `/D=C:\some\folder` (last, unquoted) for
+another folder.
+
+Then go to [step 3](#3-headphones-or-speakers), using
+`%LOCALAPPDATA%\Programs\Omniphony\player\mpv.exe` where the steps say
+`.\mpv`. The rest of this page is the same install by hand.
+
 ## What you download
 
 | Piece | Asset | From |

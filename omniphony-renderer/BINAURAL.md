@@ -395,7 +395,8 @@ How it renders:
   subjects and keep the best match). A click downloads and activates the
   file live. `synthetic` is the no-measured-HRTF baseline (analytic head
   shadow, no pinna colouration) — useful as an A/B reference.
-  SOFA support is compiled into liborender by default (`sofa` feature).
+  SOFA support is compiled into liborender and `orender` by default (`sofa`
+  feature of each).
 - **Head-tracking reaction latency under mpv**: rendered audio waits in mpv's
   output queue, so rotation is only audible once that queue drains. Set
   `audio-buffer=0.05` in `mpv.conf` (default is 0.2 s) to cut the dominant

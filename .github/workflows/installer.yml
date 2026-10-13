@@ -110,10 +110,14 @@ jobs:
               --jq '"\(.isDraft) \(.isPrerelease)"' 2>/dev/null || true)"
             [ "$state" = "false false" ] || not_ready "Omniphony $tag is not a published stable release: no installer."
           fi
-          has_asset "$tag" '^omniphony-studio-egui-.*-linux-x86_64\.tar\.gz$' \
-            || not_ready "Omniphony $tag is not published with its Studio archive yet."
-          has_asset "$player" '^mpv-omniphony-.*-linux-x86_64\.AppImage$' \
-            || not_ready "The player release $player is not published with its AppImage yet: the installer of $tag is composed when it is."
+          for asset in 'linux-x86_64\.tar\.gz' 'windows-x86_64\.zip'; do
+            has_asset "$tag" "^omniphony-studio-egui-.*-$asset\$" \
+              || not_ready "Omniphony $tag is not published with its Studio archives yet."
+          done
+          for asset in 'linux-x86_64\.AppImage' 'windows-x86_64\.zip'; do
+            has_asset "$player" "^mpv-omniphony-.*-$asset\$" \
+              || not_ready "The player release $player is not published with its files yet: the installers of $tag are composed when it is."
+          done
 
           echo "Omniphony $tag with the player of $player (attach: $attach)"
           {
@@ -141,12 +145,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir assets
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+          mkdir release-files
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
             --pattern 'omniphony-studio-egui-*-linux-x86_64.tar.gz'
-          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
             --pattern 'mpv-omniphony-*-linux-x86_64.AppImage'
-          ls -la assets
+          ls -la release-files
 
       # The scripts are this ref's; the unit is the release's own, so a manual
       # run for an older release installs the command line its orender takes.
@@ -166,8 +170,8 @@ jobs:
         run: |
           set -euo pipefail
           bundle="$(packaging/installer/linux/build.sh "$TAG" \
-            assets/omniphony-studio-egui-*-linux-x86_64.tar.gz \
-            assets/mpv-omniphony-*-linux-x86_64.AppImage out)"
+            release-files/omniphony-studio-egui-*-linux-x86_64.tar.gz \
+            release-files/mpv-omniphony-*-linux-x86_64.AppImage out)"
           echo "bundle=$bundle" >> "$GITHUB_ENV"
 
       # A plain user in a container with only what a desktop always has: the
@@ -189,3 +193,115 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" "$bundle" --clobber --repo "$GITHUB_REPOSITORY"
+
+  # The NSIS script on a real Windows, with stand-in release files: per user
+  # (install, upgrade, a file in use, uninstall) and per machine with the
+  # renderer service. Needs no release, so it runs on every pull request that
+  # touches the installer. The installers are compiled on Linux, as the real
+  # one is: the same NSIS everywhere, and none to install on the Windows runner.
+  windows-standins:
+    if: github.event_name != 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install NSIS and a Windows C compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nsis gcc-mingw-w64-x86-64
+
+      - name: Two installers of stand-in files
+        run: packaging/installer/windows/make-standins.sh standins
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-windows-standins
+          path: standins
+
+  windows-scripts:
+    needs: windows-standins
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: installer-windows-standins
+          path: standins
+
+      - name: Install, upgrade, uninstall
+        shell: pwsh
+        run: packaging/installer/windows/test.ps1 -Out standins
+
+  windows-build:
+    needs: resolve
+    if: needs.resolve.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      PLAYER_TAG: ${{ needs.resolve.outputs.player_tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install NSIS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nsis
+
+      - name: Download the release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir release-files
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
+            --pattern 'omniphony-studio-egui-*-windows-x86_64.zip'
+          gh release download "$PLAYER_TAG" --repo "$GITHUB_REPOSITORY" --dir release-files \
+            --pattern 'mpv-omniphony-*-windows-x86_64.zip'
+          ls -la release-files
+
+      - name: Compose the installer
+        run: |
+          packaging/installer/windows/build.sh "$TAG" \
+            release-files/omniphony-studio-egui-*-windows-x86_64.zip \
+            release-files/mpv-omniphony-*-windows-x86_64.zip out
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-windows
+          path: out/*-setup.exe
+
+  windows:
+    needs: [resolve, windows-build]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: installer-windows
+          path: out
+
+      # A silent per-user install on the runner: the engine in the per-user
+      # folder, the player loading it from there, orender starting without a
+      # Visual C++ runtime, an uninstall that keeps the config.
+      - name: Install it
+        shell: pwsh
+        run: |
+          $setup = (Get-Item out\*-setup.exe).FullName
+          packaging/installer/windows/verify-release.ps1 -Setup $setup
+
+      - name: Attach the installer to the release
+        if: needs.resolve.outputs.attach == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" out/*-setup.exe --clobber --repo "$GITHUB_REPOSITORY"

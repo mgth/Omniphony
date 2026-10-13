@@ -684,6 +684,12 @@ pub struct LiveInputConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub lfe_mode: Option<InputLfeModeConfig>,
+    /// The sink is a carrier sink (`docs/iamf-transport-plan.md`): its linear
+    /// PCM is this many unpositioned channels that carry IEC 61937 bursts,
+    /// one 16-bit word per sample, and never audio. Unset, the sink takes
+    /// audio on the 7.1 map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier_channels: Option<u16>,
     /// See `Config::extra` — preserve unknown keys through round-trips, and
     /// the enum values this build does not know (see `unknown_values`).
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]

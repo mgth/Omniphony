@@ -321,6 +321,7 @@ seeds its state at its own bootstrap (the CLI's argument resolution).
 | `input_mode` | `pipe_bridge` \| `pipewire` | `"pipe_bridge"` | `live_input` (staged, restart_input) | — | `/control/input/mode` |
 | `live_input_node` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/node` |
 | `live_input_description` | string | `""` | `live_input` (staged, restart_input) | — | `/control/input/live/description` |
+| `live_input_carrier_channels` | int or null [4, 64] | unset | `live_input` (staged, restart_input) | — | — |
 <!-- END GENERATED host-options -->
 
 The host exposes its rows through `runtime_control::HostControlHandler`'s
