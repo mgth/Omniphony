@@ -1,6 +1,10 @@
 # RFC: several bridges in one host, one bridge per codec family
 
-Status: **proposal**. Nothing here is built.
+Status: **built**, except step 9 of the plan (packaging and install pages,
+#789), which waits for the harletty-bridge release that ships the family
+plugins. The text below is the proposal as it was accepted (#779) and was not
+rewritten afterwards: its present tense describes the single-bridge host it
+replaced. The pull request of each step is in the plan.
 
 Paths are under `omniphony-renderer/` unless stated.
 
@@ -562,18 +566,18 @@ explicit setting:
 
 Each step is one PR, merged before the next is built on it.
 
-| # | Repo | Change |
-|---|---|---|
-| 1 | Omniphony | Loader: load by path without abi_stable's process-wide cache; regression test. `bridge_api` stays 0.5. |
-| 2 | Omniphony | `bridge_api` 0.6: `probe`, `input_codecs`; reference bridge; ABI baseline; `BRIDGE_API.md` (incl. `input_codec`). |
-| 3 | Omniphony | `BridgeSet` in `orender_engine` (undecided-byte buffer, fallback route after a seek, DRC forwarding); Engine, CLI, live sink and `sync-play` hold it. |
-| 4 | Omniphony | `render.bridge_paths`, discovery of every bridge, combined-library path substitution, repeatable flag, env list, OSC state and control, docs. |
-| 4b | Omniphony | `render.evaluation_grid` (`bridge` / `custom`): grid requests with a generation, rebuild on a hint change, conservative migration, edits refused in `bridge`, negative z as an option, state, Studio switch. |
-| 5 | harletty-bridge | `FamilyPipeline` and `PluginBridge` in `bridge-common`; the combined router built on them; output unchanged. |
-| 6 | harletty-bridge | Three plugin crates on `bridge_api` 0.6; bit-exactness through the host. |
-| 7 | harletty-bridge | Release, build scripts, CI matrix, isolation check per plugin; the combined cdylib leaves the release. |
-| 8 | Omniphony | Studio egui bridge list. |
-| 9 | Omniphony | Packaging, installers, install pages, `wfbuild.sh`. |
+| # | Repo | Change | Pull request |
+|---|---|---|---|
+| 1 | Omniphony | Loader: load by path without abi_stable's process-wide cache; regression test. `bridge_api` stays 0.5. | #780 |
+| 2 | Omniphony | `bridge_api` 0.6: `probe`, `input_codecs`; reference bridge; ABI baseline; `BRIDGE_API.md` (incl. `input_codec`). | #782 |
+| 3 | Omniphony | `BridgeSet` in `orender_engine` (undecided-byte buffer, fallback route after a seek, DRC forwarding); Engine, CLI, live sink and `sync-play` hold it. | #784 |
+| 4 | Omniphony | `render.bridge_paths`, discovery of every bridge, combined-library path substitution, repeatable flag, env list, OSC state and control, docs. | #785 |
+| 4b | Omniphony | `render.evaluation_grid` (`bridge` / `custom`): grid requests with a generation, rebuild on a hint change, conservative migration, edits refused in `bridge`, negative z as an option, state, Studio switch. | #790 |
+| 5 | harletty-bridge | `FamilyPipeline` and `PluginBridge` in `bridge-common`; the combined router built on them; output unchanged. | harletty/harletty-bridge#135 |
+| 6 | harletty-bridge | Three plugin crates on `bridge_api` 0.6; bit-exactness through the host. | harletty/harletty-bridge#136 |
+| 7 | harletty-bridge | Release, build scripts, CI matrix, isolation check per plugin; the combined cdylib leaves the release. | harletty/harletty-bridge#137 |
+| 8 | Omniphony | Studio egui bridge list. | #788 |
+| 9 | Omniphony | Packaging, installers, install pages, `wfbuild.sh`. | #789, open |
 
 Steps 5 and 8 depend on nothing but their predecessors in the same repo and
 can run alongside 2–4.

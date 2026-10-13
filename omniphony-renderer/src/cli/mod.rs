@@ -1,3 +1,4 @@
+pub(crate) mod check_bridges;
 pub(crate) mod command;
 pub(crate) mod decode;
 pub(crate) mod generate_vbap;

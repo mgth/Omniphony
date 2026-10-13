@@ -98,6 +98,9 @@ the smallest example for writing your own bridge ([BRIDGE_API.md](BRIDGE_API.md)
 
 - default command: render an input stream to a realtime backend
 - `generate-vbap`: generate a binary VBAP table from a speaker layout
+- `check-bridges`: load the decoder bridges the way a run would (`--bridge-path`,
+  else the config's, else the discovered ones) and report each one; it fails,
+  with the reason, when none loads
 - `list-asio-devices`: list the realtime output devices on Windows builds — the
   ASIO ones, or the WASAPI ones when output falls back to WASAPI
 
@@ -106,6 +109,10 @@ Inspect the exact CLI supported by your build with:
 ```bash
 orender --help
 ```
+
+`orender --version` also names what the build pairs with: the liborender ABI
+of the same tree, and the `bridge_api` series a decoder bridge must be built
+against ([BRIDGE_API.md](BRIDGE_API.md), *Versioning*).
 
 ## Typical Usage
 
