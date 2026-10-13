@@ -217,7 +217,8 @@ published not-latest.
 and attaches it to the `vX.Y.Z` release once both `vX.Y.Z` and the player
 release its manifest names are out, so in practice when `mpv-vX.Y.Z` is
 published (§7); the run started by `vX.Y.Z` alone ends on a notice. Check
-that `omniphony-vX.Y.Z-linux-x86_64.tar.gz` is on the release afterwards. To
+that `omniphony-vX.Y.Z-linux-x86_64.tar.gz` and
+`omniphony-vX.Y.Z-windows-x86_64-setup.exe` are on the release afterwards. To
 compose it again, or for a release published before the workflow existed:
 
 ```sh
