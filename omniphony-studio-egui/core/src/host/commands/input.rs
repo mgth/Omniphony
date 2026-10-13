@@ -148,6 +148,20 @@ pub fn carrier_channels(state: &SharedState) -> Option<u16> {
         .filter(|channels| CARRIER_CHANNELS.contains(channels))
 }
 
+/// The channels of the carrier sink that runs, when the input in use is one.
+///
+/// A carrier sink states its channels in the applied input's `channels`.
+/// So does the regular PipeWire sink of an engine from before the carrier
+/// sink existed: the field means a carrier only from an engine that
+/// declares the option.
+pub fn running_carrier_channels(state: &SharedState) -> Option<u32> {
+    let live = state.read();
+    (live.declares_option(CARRIER_CHANNELS_OPTION)
+        && live.app.input_active_mode.as_deref() == Some("pipewire"))
+    .then_some(live.app.input_channels)
+    .flatten()
+}
+
 /// Ask for a carrier sink of `channels` (bounded), or with `None` for the
 /// sink that takes audio: shown at once and sent, to take at the next Apply
 /// like the rest of the input.
@@ -274,6 +288,37 @@ mod apply_tests {
                 rosc::OscType::Nil
             ]
         );
+    }
+
+    /// The sink that runs is a carrier sink when an engine that has one says
+    /// so by its channels. An older engine states its regular sink's channels
+    /// in the same field of the input state: that is not a carrier.
+    #[test]
+    fn only_an_engine_with_a_carrier_sink_runs_one() {
+        let (state, _rx) = state_with_outbox(std::sync::Arc::new(|| {}));
+        let legacy = r#"{"mode":"pipewire","activeMode":"pipewire",
+            "applied":{"backend":"pipewire","channels":2,"sampleRate":48000}}"#;
+        assert!(crate::osc::apply::apply_input_domain_state(
+            &mut state.inner.lock().unwrap().app,
+            legacy
+        ));
+        assert_eq!(running_carrier_channels(&state), None);
+
+        state.inner.lock().unwrap().options_schema = Some(serde_json::json!([
+            {"key": CARRIER_CHANNELS_OPTION, "group": {"key": "live_input", "mode": "staged"}}
+        ]));
+        assert_eq!(running_carrier_channels(&state), Some(2));
+        // Its audio sink states none, and the pipe is no sink at all.
+        for snapshot in [
+            r#"{"activeMode":"pipewire","applied":{"channels":null}}"#,
+            r#"{"activeMode":"pipe_bridge","applied":{"channels":8}}"#,
+        ] {
+            crate::osc::apply::apply_input_domain_state(
+                &mut state.inner.lock().unwrap().app,
+                snapshot,
+            );
+            assert_eq!(running_carrier_channels(&state), None, "{snapshot}");
+        }
     }
 
     /// The document carries what the renderer's input takes: the mode and

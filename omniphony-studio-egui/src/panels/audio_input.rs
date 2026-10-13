@@ -33,7 +33,7 @@ impl StudioSpike {
     pub(crate) fn audio_input_section(&mut self, ui: &mut Ui) {
         let policy = crate::host::capabilities::ActionPolicy::of(&self.host);
         let bridges = bridges::Snapshot::read(&self.host);
-        let (mode, active, pipe, error, node, description, pending, applied_channels) = {
+        let (mode, active, pipe, error, node, description, pending) = {
             let live = self.host.read();
             (
                 live.app
@@ -46,13 +46,13 @@ impl StudioSpike {
                 live.app.live_input.node.clone().unwrap_or_default(),
                 live.app.live_input.description.clone().unwrap_or_default(),
                 live.app.input_apply_pending.unwrap_or(0) != 0,
-                live.app.input_channels,
             )
         };
-        // The carrier sink: whether this engine has one to offer, and the
-        // channels of the one asked for.
+        // The carrier sink: whether this engine has one to offer, the
+        // channels of the one asked for, and of the one that runs.
         let carrier_offered = input::carrier_sink_offered(&self.host);
         let carrier = input::carrier_channels(&self.host);
+        let running_carrier = input::running_carrier_channels(&self.host);
         let pipewire = mode == "pipewire";
         let summary = tf(
             if pipewire {
@@ -95,11 +95,7 @@ impl StudioSpike {
                         ),
                     ],
                 );
-                // (The sink that runs states its channels when it is a carrier
-                // sink: the one that takes audio has the stream's.)
-                if let Some(channels) =
-                    applied_channels.filter(|_| active.as_deref() == Some("pipewire"))
-                {
+                if let Some(channels) = running_carrier {
                     status.push_str(&tf(
                         "input.status.carrier",
                         &[("channels", &channels.to_string())],
