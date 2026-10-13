@@ -88,11 +88,17 @@ systemd_reachable() { systemctl --user show-environment >/dev/null 2>&1; }
 orender="$root/studio/orender"
 # As the packaged unit has it for a plain path. A path with a space or another
 # character systemd reads specially goes between double quotes: systemd
-# refuses a backslash-escaped space in the executable's path.
+# refuses a backslash-escaped space in the executable's path. A `%` is doubled,
+# quoted or not it would be read as a specifier. This is the rule of Studio's
+# systemd_quote_word() (omniphony-studio-egui/core/src/host/commands/orender.rs)
+# for the executable, character for character: keep the two alike, or an
+# upgrade stops recognising the unit Studio wrote for this orender.
 case "$orender" in
     *[!A-Za-z0-9_./@:+-]*)
         quoted="${orender//\\/\\\\}"
         quoted="${quoted//\"/\\\"}"
+        quoted="${quoted//$'\n'/\\n}"
+        quoted="${quoted//\%/%%}"
         exec_start="ExecStart=\"$quoted\"" ;;
     *)
         exec_start="ExecStart=$orender" ;;

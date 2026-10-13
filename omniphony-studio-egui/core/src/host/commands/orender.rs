@@ -496,18 +496,52 @@ fn run_elevated_windows(program: &str, args: &[String], action: &str) -> Result<
     run_command(cmd, action)
 }
 
+/// Which word of an `ExecStart=` line is being written: systemd substitutes
+/// `$NAME` in the arguments, and not in the path of the executable.
 #[cfg(any(target_os = "linux", test))]
-fn systemd_escape_arg(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
+#[derive(Clone, Copy, PartialEq)]
+enum ExecWord {
+    Executable,
+    Argument,
+}
+
+/// One word of an `ExecStart=` line, as systemd reads it back
+/// (systemd.syntax(7), "Quoting"; systemd.service(5), "Command lines").
+///
+/// A word made only of the characters below is written as it is, so the unit
+/// of an ordinary install carries no quotes. Anything else goes between double
+/// quotes with `\` and `"` escaped: systemd does not know `\ ` and refuses the
+/// unit when the executable's path is written that way. The quotes do not stop
+/// a specifier or a variable from being expanded, so `%` is doubled, and `$`
+/// too where systemd would substitute it.
+///
+/// systemd refuses an executable whose path holds a quote, a backslash or a
+/// control character however it is written; nothing here can change that.
+///
+/// `packaging/installer/linux/install.sh` writes the executable's path by the
+/// same rule; keep the two alike.
+#[cfg(any(target_os = "linux", test))]
+fn systemd_quote_word(value: &str, word: ExecWord) -> String {
+    let plain = |ch: char| ch.is_ascii_alphanumeric() || "_./@:+-".contains(ch);
+    if !value.is_empty() && value.chars().all(plain) {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
     for ch in value.chars() {
         match ch {
-            ' ' | '\t' | '\n' | '\\' | '"' | '\'' => {
+            '\\' | '"' => {
                 out.push('\\');
                 out.push(ch);
             }
+            // A line break would end the setting.
+            '\n' => out.push_str("\\n"),
+            '%' => out.push_str("%%"),
+            '$' if word == ExecWord::Argument => out.push_str("$$"),
             _ => out.push(ch),
         }
     }
+    out.push('"');
     out
 }
 
@@ -518,8 +552,14 @@ fn systemd_escape_arg(value: &str) -> String {
 #[cfg(any(target_os = "linux", test))]
 fn linux_service_unit(exec_path: &Path, args: &[String]) -> String {
     let mut exec = Vec::with_capacity(args.len() + 1);
-    exec.push(systemd_escape_arg(&exec_path.display().to_string()));
-    exec.extend(args.iter().map(|arg| systemd_escape_arg(arg)));
+    exec.push(systemd_quote_word(
+        &exec_path.display().to_string(),
+        ExecWord::Executable,
+    ));
+    exec.extend(
+        args.iter()
+            .map(|arg| systemd_quote_word(arg, ExecWord::Argument)),
+    );
     format!(
         "[Unit]\nDescription=Omniphony Renderer\nAfter=graphical-session.target pipewire.service wireplumber.service\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={}\nRestart=on-failure\nRestartSec=2\nKillSignal=SIGINT\nTimeoutStopSec=30\n\n[Install]\nWantedBy=default.target\n",
         exec.join(" ")
@@ -1227,6 +1267,93 @@ mod tests {
             body,
             linux_service_unit(Path::new("/usr/bin/orender"), &args),
             "{SHIPPED_UNIT} drifted from linux_service_unit(); regenerate it"
+        );
+    }
+
+    /// The whole `ExecStart=` line of the unit for `exec_path args…`.
+    fn exec_start(exec_path: &str, args: &[&str]) -> String {
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        linux_service_unit(Path::new(exec_path), &args)
+            .lines()
+            .find(|line| line.starts_with("ExecStart="))
+            .expect("the unit has an ExecStart line")
+            .to_string()
+    }
+
+    #[test]
+    fn a_word_systemd_reads_as_it_is_carries_no_quotes() {
+        assert_eq!(
+            exec_start(
+                "/home/u/.local/lib/omniphony/studio/orender",
+                &["render", "/tmp/orender.pipe", "--osc-host", "127.0.0.1"]
+            ),
+            "ExecStart=/home/u/.local/lib/omniphony/studio/orender render \
+             /tmp/orender.pipe --osc-host 127.0.0.1"
+        );
+        // Every character install.sh writes without quotes.
+        assert_eq!(
+            exec_start("/opt/a_b.c@d:e+f-g/orender", &[]),
+            "ExecStart=/opt/a_b.c@d:e+f-g/orender"
+        );
+    }
+
+    #[test]
+    fn a_path_with_a_space_goes_between_double_quotes() {
+        // systemd 262 refuses `/home/u/sp\ ace/orender`: "Ignoring unknown
+        // escape sequences", "Executable path contains special characters",
+        // and the unit never starts.
+        assert_eq!(
+            exec_start("/home/u/sp ace/orender", &["render", "/run/my pipe"]),
+            r#"ExecStart="/home/u/sp ace/orender" render "/run/my pipe""#
+        );
+        assert_eq!(
+            exec_start("/home/u/t\tab/orender", &[]),
+            "ExecStart=\"/home/u/t\tab/orender\""
+        );
+        // Not ASCII: quoted, and otherwise left alone.
+        assert_eq!(
+            exec_start("/home/Zoé/orender", &["it's"]),
+            r#"ExecStart="/home/Zoé/orender" "it's""#
+        );
+    }
+
+    #[test]
+    fn a_quote_and_a_backslash_are_escaped_inside_the_quotes() {
+        assert_eq!(
+            exec_start(r#"/home/u/quo"te/orender"#, &[r#"say "hi""#]),
+            r#"ExecStart="/home/u/quo\"te/orender" "say \"hi\"""#
+        );
+        assert_eq!(
+            exec_start(r"/home/u/back\slash/orender", &[r"ends with\"]),
+            r#"ExecStart="/home/u/back\\slash/orender" "ends with\\""#
+        );
+        // A line break would end the setting; systemd reads `\n` back as one.
+        assert_eq!(
+            exec_start("/opt/orender", &["two\nlines"]),
+            r#"ExecStart=/opt/orender "two\nlines""#
+        );
+    }
+
+    #[test]
+    fn what_systemd_would_expand_is_doubled() {
+        // A specifier is expanded everywhere, quoted or not.
+        assert_eq!(
+            exec_start("/home/u/100%h/orender", &["%n"]),
+            r#"ExecStart="/home/u/100%%h/orender" "%%n""#
+        );
+        // A variable only in the arguments: in the path, `$$` would stay two
+        // characters and name a file that does not exist.
+        assert_eq!(
+            exec_start("/home/u/$HOME/orender", &["$HOME", "${HOME}"]),
+            r#"ExecStart="/home/u/$HOME/orender" "$$HOME" "$${HOME}""#
+        );
+    }
+
+    #[test]
+    fn an_empty_argument_is_still_an_argument() {
+        assert_eq!(
+            exec_start("/opt/orender", &["--name", ""]),
+            r#"ExecStart=/opt/orender --name """#
         );
     }
 

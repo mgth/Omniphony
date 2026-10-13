@@ -25,7 +25,20 @@ ours=0
 for path in "${paths[@]}"; do
     [ "$path" != "$unit" ] || ours=1
 done
-if [ "$ours" -eq 0 ] && [ -f "$unit" ] && grep -q "^ExecStart=\"\{0,1\}$root/studio/orender\"\{0,1\} " "$unit"; then
+# Its ExecStart= as install.sh and Studio write it (the rule is explained
+# there): quoted when the path holds a character systemd reads specially.
+orender="$root/studio/orender"
+case "$orender" in
+    *[!A-Za-z0-9_./@:+-]*)
+        quoted="${orender//\\/\\\\}"
+        quoted="${quoted//\"/\\\"}"
+        quoted="${quoted//$'\n'/\\n}"
+        quoted="${quoted//\%/%%}"
+        exec_start="ExecStart=\"$quoted\"" ;;
+    *)
+        exec_start="ExecStart=$orender" ;;
+esac
+if [ "$ours" -eq 0 ] && [ -f "$unit" ] && grep -qF "$exec_start " "$unit"; then
     ours=1
     paths+=("$unit")
 fi

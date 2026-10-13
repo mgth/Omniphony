@@ -471,10 +471,14 @@ it differs from the text above:
   not the link in `~/.local/bin`: it is the path Studio's *Install service*
   writes for this install (it resolves its own executable), so the two units
   are the same text, and a `~/.local/bin/orender` of the user's own is not
-  what the service runs. One exception to "the same text": a path with a
-  space or another special character goes between double quotes, because
-  systemd refuses the backslash-escaped space Studio writes for it (a defect
-  of Studio's own, outside this step).
+  what the service runs. A path with a space or another character systemd
+  reads specially goes between double quotes, with `\`, `"` and `%` escaped
+  inside, in both: systemd refuses a backslash-escaped space in the
+  executable's path. Studio's `systemd_quote_word` and the `exec_start` of
+  `install.sh` and `uninstall.sh` follow one rule, so an upgrade or an
+  uninstall recognises the unit Studio wrote for this install. systemd
+  refuses an executable whose path holds a quote or a backslash however it
+  is written: from such a folder the unit does not start.
 - **No decoder bridge** (decision C below). `install.sh` ends with
   `orender check-bridges` (step 4) and prints its report, or, with an orender
   that predates it, lists the bridge files next to the engine.

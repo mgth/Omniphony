@@ -162,6 +162,11 @@ echo "== a home directory with a space in its name"
     spaced="$HOME/.config/systemd/user/omniphony-renderer.service"
     grep -qF "ExecStart=\"$work/home dir/.local/lib/omniphony/studio/orender\" render " "$spaced" \
         || fail "unit path not quoted"
+    # Still the packaged unit apart from the path, which is written as Studio
+    # writes it (systemd_quote_word in the Studio core, and its tests).
+    diff <(grep -v '^#' "$here/../../systemd/omniphony-renderer.service" | sed '/./,$!d' \
+            | sed "s|^ExecStart=/usr/bin/orender |ExecStart=\"$HOME/.local/lib/omniphony/studio/orender\" |") "$spaced" \
+        || fail "the unit of a path with a space differs from the packaged one"
     grep -qF "Exec=\"$work/home dir/.local/bin/mpv-omniphony\" --ad=orender" \
         "$HOME/.local/share/applications/mpv-omniphony.desktop" || fail "menu entry path not quoted"
     if command -v systemd-analyze >/dev/null 2>&1; then
@@ -172,6 +177,37 @@ echo "== a home directory with a space in its name"
         ! grep -q "spaced.service" <<<"$verify" || { echo "$verify"; fail "systemd-analyze rejects the unit of a path with a space"; }
     fi
     "$HOME/.local/lib/omniphony/uninstall.sh" > /dev/null || fail "uninstall with a space in HOME"
+)
+
+echo "== the unit Studio writes for a path with a space and a percent sign is recognised"
+(
+    export HOME="$work/100% home"
+    mkdir -p "$HOME/.config/systemd/user"
+    studio_unit="$HOME/.config/systemd/user/omniphony-renderer.service"
+    # Studio's "Install service" for this orender, with a port of the user's.
+    studio_exec="ExecStart=\"$work/100%% home/.local/lib/omniphony/studio/orender\" render /tmp/orender.pipe --osc-port 9100"
+    printf '[Service]\n%s\n' "$studio_exec" > "$studio_unit"
+    "$second/install.sh" --service > /dev/null 2>&1 || fail "install over Studio's unit"
+    grep -qxF "$studio_exec" "$studio_unit" || { cat "$studio_unit"; fail "Studio's unit was rewritten"; }
+    # The installer writes the same line when the unit is its own.
+    rm "$studio_unit"
+    "$second/install.sh" --service > /dev/null 2>&1 || fail "install with a percent sign in HOME"
+    grep -qF "ExecStart=\"$work/100%% home/.local/lib/omniphony/studio/orender\" render " "$studio_unit" \
+        || { cat "$studio_unit"; fail "percent sign not doubled"; }
+    if command -v systemd-analyze >/dev/null 2>&1; then
+        mkdir -p "$work/run3"
+        cp "$studio_unit" "$work/percent.service"
+        verify="$(XDG_RUNTIME_DIR="$work/run3" systemd-analyze --user verify "$work/percent.service" 2>&1 || true)"
+        ! grep -q "percent.service" <<<"$verify" || { echo "$verify"; fail "systemd-analyze rejects the unit of a path with a percent sign"; }
+    fi
+    "$HOME/.local/lib/omniphony/uninstall.sh" > /dev/null || fail "uninstall with a percent sign in HOME"
+    # One Studio wrote, never recorded by the installer, goes with the uninstall.
+    "$second/install.sh" > /dev/null 2>&1 || fail "install without the service"
+    printf '[Service]\n%s\n' "$studio_exec" > "$studio_unit"
+    : > "$work/systemctl.log"
+    "$HOME/.local/lib/omniphony/uninstall.sh" > /dev/null || fail "uninstall with Studio's unit"
+    asked "--user disable --now omniphony-renderer"
+    hasnt "$studio_unit"
 )
 
 echo "== uninstall"
