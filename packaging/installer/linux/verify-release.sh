@@ -33,7 +33,8 @@ case "$image" in
                apt-get update -qq >/dev/null
                apt-get install -y -qq --no-install-recommends systemd \
                  libx11-6 libxext6 libxss1 libxpresent1 libxrandr2 libxfixes3 libxcb1 \
-                 libegl1 libgl1 libgbm1 libdrm2 libvulkan1 libva2 libpipewire-0.3-0 \
+                 libegl1 libgl1 libgbm1 libdrm2 libvulkan1 libva2 libva-drm2 libva-x11-2 \
+                 libva-wayland2 libpipewire-0.3-0 \
                  libasound2t64 libpulse0 libwayland-client0 libwayland-cursor0 \
                  libwayland-egl1 libxkbcommon0 libfontconfig1 libfreetype6 \
                  libharfbuzz0b libexpat1 zlib1g >/dev/null' ;;
