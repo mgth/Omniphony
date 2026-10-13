@@ -15,10 +15,11 @@
 //! The option is a path list in the platform's syntax (`:` on Unix, `;` on
 //! Windows), as `ORENDER_BRIDGE_FILE` is: mpv hands the string to liborender,
 //! which splits it with `std::env::split_paths`. Each entry is resolved on its
-//! own; the ones naming no file are dropped, except a path naming the
-//! combined harletty library of 0.5, which the engine replaces with the
-//! `harletty_*_bridge` family libraries in the same folder whether the old
-//! file is still there or not (docs/multi-bridge.md, "Loading").
+//! own, and the ones naming no file are dropped. A value naming
+//! `harletty_bridge` alone, written when that library decoded every format,
+//! is handed over as it is: the engine reads the variable as it reads a
+//! requested path, and loads the libraries split out of it that sit beside
+//! it (docs/multi-bridge.md, "Compatibility").
 //!
 //! Read-only: `mpv.conf` belongs to mpv and nothing here writes to it (or to
 //! anything else); the lookup runs once per spawn, off the UI thread.
@@ -208,21 +209,8 @@ fn resolve(value: &str, paths: &MpvPaths, dirs: &[PathBuf]) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
-/// The combined harletty library's file name of `bridge_api` 0.5. The engine
-/// stands the family libraries beside it in for such a path, even once the
-/// old file is gone, so the entry is handed over as it is rather than
-/// dropped for naming no file. A transition rule, removed with the engine's
-/// (`orender_engine::bridge_loader::is_combined_library`).
-fn is_combined_library(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("libharletty_bridge.so" | "harletty_bridge.dll" | "libharletty_bridge.dylib")
-    )
-}
-
 /// The bridges a value names, in order: each entry of the path list
-/// resolved, kept when it is a file or the combined library, and listed
-/// once.
+/// resolved, kept when it is a file, and listed once.
 fn bridges_in(value: &str, paths: &MpvPaths, dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut bridges = Vec::new();
     for entry in std::env::split_paths(value) {
@@ -230,7 +218,7 @@ fn bridges_in(value: &str, paths: &MpvPaths, dirs: &[PathBuf]) -> Vec<PathBuf> {
             continue;
         };
         match resolve(entry, paths, dirs) {
-            Some(path) if path.is_file() || is_combined_library(&path) => {
+            Some(path) if path.is_file() => {
                 if !bridges.contains(&path) {
                     bridges.push(path);
                 }
@@ -249,8 +237,7 @@ fn bridges_in(value: &str, paths: &MpvPaths, dirs: &[PathBuf]) -> Vec<PathBuf> {
 pub struct MpvBridge {
     /// The `mpv.conf` the value came from.
     pub conf: PathBuf,
-    /// The bridge files it names, in its order: each exists, or names the
-    /// combined library the engine replaces.
+    /// The bridge files it names, in its order: each exists.
     pub bridges: Vec<PathBuf>,
 }
 
@@ -611,8 +598,8 @@ ad-orender-bridge-path=/profile_bridge.so
     fn a_list_hands_over_every_bridge_in_order() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
-        let dts = root.join("player").join("harletty_dts_bridge.so");
-        let iamf = root.join("other dir").join("harletty_iamf_bridge.so");
+        let dts = root.join("player").join("alicia_bridge.so");
+        let iamf = root.join("other dir").join("eclipsa_bridge.so");
         write(&dts, "x");
         write(&iamf, "x");
         // Quoted as a whole, since an entry holds a space; the same entry
@@ -640,9 +627,9 @@ ad-orender-bridge-path=/profile_bridge.so
     fn a_missing_entry_is_skipped() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
-        let dts = root.join("player").join("harletty_dts_bridge.so");
+        let dts = root.join("player").join("alicia_bridge.so");
         write(&dts, "x");
-        let missing = root.join("gone").join("harletty_iamf_bridge.so");
+        let missing = root.join("gone").join("eclipsa_bridge.so");
         let conf = user_dir(root).join("mpv.conf");
         // A relative entry and an empty one are dropped too.
         write(
@@ -663,47 +650,6 @@ ad-orender-bridge-path=/profile_bridge.so
             &format!("ad-orender-bridge-path={}\n", missing.display()),
         );
         assert_eq!(bridge_file_for_renderer(None, None, &paths), None);
-    }
-
-    /// A path naming the combined library of 0.5 is handed over even once
-    /// the file is gone: the engine loads the family libraries beside it in
-    /// its place.
-    #[test]
-    fn a_missing_combined_library_is_passed_for_the_engine_to_replace() {
-        let root = tempfile::tempdir().unwrap();
-        let root = root.path();
-        let player = root.join("player");
-        write(&player.join("harletty_dts_bridge.so"), "x");
-        let combined = if cfg!(windows) {
-            player.join("harletty_bridge.dll")
-        } else if cfg!(target_os = "macos") {
-            player.join("libharletty_bridge.dylib")
-        } else {
-            player.join("libharletty_bridge.so")
-        };
-        let other = root.join("mine").join("liby_bridge.so");
-        write(&other, "x");
-        write(
-            &user_dir(root).join("mpv.conf"),
-            &format!(
-                "ad-orender-bridge-path={}{SEP}{}\n",
-                combined.display(),
-                other.display()
-            ),
-        );
-        assert_eq!(
-            bridge_file_for_renderer(None, None, &unix_paths(root)),
-            Some(list(&[&combined, &other]))
-        );
-        // Every platform's spelling counts, whatever this one is.
-        for name in [
-            "libharletty_bridge.so",
-            "harletty_bridge.dll",
-            "libharletty_bridge.dylib",
-        ] {
-            assert!(is_combined_library(&player.join(name)), "{name}");
-        }
-        assert!(!is_combined_library(&player.join("harletty_dts_bridge.so")));
     }
 
     /// Windows' list syntax quotes an entry that holds the separator.

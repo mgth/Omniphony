@@ -100,14 +100,14 @@ pub struct RenderConfig {
     pub output_file_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation: Option<u8>,
-    /// The decoder bridge, when there is one: see [`Self::bridges`]. Written
-    /// when exactly one is asked for, so a build that predates
-    /// [`Self::bridge_paths`] reads it.
+    /// The decoder bridge, as the builds that loaded one wrote it: read when
+    /// [`Self::bridge_paths`] is empty, never written
+    /// ([`Self::set_bridges`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_path: Option<PathBuf>,
-    /// The decoder bridges, in load order, when there are several
-    /// (`docs/multi-bridge.md`). An older build keeps the key through a save
-    /// (`extra`) and auto-discovers its bridge instead.
+    /// The decoder bridges, in load order (`docs/multi-bridge.md`). An older
+    /// build keeps the key through a save (`extra`) and auto-discovers its
+    /// bridge instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bridge_paths: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -724,19 +724,20 @@ impl RenderConfig {
         }
     }
 
-    /// Store `paths` as [`bridges`](Self::bridges): one path in
-    /// `bridge_path`, as every build reads it; several in `bridge_paths`.
+    /// Whether [`bridges`](Self::bridges) is read from `bridge_path`: the
+    /// file was last saved by a build that loaded one bridge, since
+    /// [`set_bridges`](Self::set_bridges) no longer writes that key.
+    pub fn bridges_under_the_single_key(&self) -> bool {
+        self.bridge_paths.is_empty() && self.bridge_path.is_some()
+    }
+
+    /// Store `paths` as [`bridges`](Self::bridges): always in `bridge_paths`,
+    /// one path included, so that one bridge asked for by a build that knows
+    /// several is told from the one bridge of a build that knew no other
+    /// ([`bridges_under_the_single_key`](Self::bridges_under_the_single_key)).
     pub fn set_bridges(&mut self, paths: &[PathBuf]) {
-        match paths {
-            [one] => {
-                self.bridge_path = Some(one.clone());
-                self.bridge_paths.clear();
-            }
-            _ => {
-                self.bridge_path = None;
-                self.bridge_paths = paths.to_vec();
-            }
-        }
+        self.bridge_path = None;
+        self.bridge_paths = paths.to_vec();
     }
 
     /// The input an absent `input_mode` stands for: the bridge pipe.
@@ -2147,16 +2148,25 @@ render:
         );
     }
 
-    /// One bridge is written as `bridge_path`, which every build reads;
-    /// several as `bridge_paths`, which an older build keeps through a save
-    /// as an unknown key. Reading takes `bridge_paths` first.
+    /// Bridges are written as `bridge_paths`, one included, which an older
+    /// build keeps through a save as an unknown key. `bridge_path` is only
+    /// read, when there is no list, and tells a file of the builds that
+    /// loaded one bridge.
     #[test]
-    fn bridges_are_written_the_way_older_builds_read_them() {
-        let mut render = RenderConfig::default();
+    fn bridges_are_written_as_a_list_and_the_single_key_is_only_read() {
+        let old: RenderConfig =
+            serde_yaml_ng::from_str("bridge_path: /opt/libone_bridge.so\n").expect("parse");
+        assert_eq!(old.bridges(), [PathBuf::from("/opt/libone_bridge.so")]);
+        assert!(old.bridges_under_the_single_key());
+
+        let mut render = old;
         render.set_bridges(&[PathBuf::from("/opt/libone_bridge.so")]);
         let out = serde_yaml_ng::to_string(&render).expect("serialize");
-        assert!(out.contains("bridge_path: /opt/libone_bridge.so"), "{out}");
-        assert!(!out.contains("bridge_paths"), "{out}");
+        assert!(out.contains("bridge_paths:"), "{out}");
+        assert!(!out.contains("bridge_path:"), "{out}");
+        let read: RenderConfig = serde_yaml_ng::from_str(&out).expect("parse");
+        assert_eq!(read.bridges(), [PathBuf::from("/opt/libone_bridge.so")]);
+        assert!(!read.bridges_under_the_single_key());
 
         let several = [
             PathBuf::from("/opt/liba_bridge.so"),
@@ -2177,6 +2187,7 @@ render:
         )
         .expect("parse");
         assert_eq!(both.bridges(), [PathBuf::from("/opt/liba_bridge.so")]);
+        assert!(!both.bridges_under_the_single_key());
     }
 
     #[test]

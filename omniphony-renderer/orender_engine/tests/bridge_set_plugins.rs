@@ -9,6 +9,7 @@ use orender_engine::bridge_loader::{
     BRIDGE_STATUS_ERROR_MAX_BYTES, BRIDGE_STATUS_MAX_FAILURES, BridgeFailure, BridgeLibs,
     BridgeRequest, LoadedBridge, load_bridge_library, load_bridges, resolve_bridges,
 };
+use orender_engine::engine::Engine;
 use std::path::{Path, PathBuf};
 
 /// `source` copied under `name` in this run's own directory: another file
@@ -111,6 +112,34 @@ fn every_requested_bridge_loads_and_a_missing_one_is_reported() {
     let set = LoadedBridge::open(loaded.libs).unwrap();
     assert_eq!(set.bridge.len(), 2);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A config of the builds that loaded one bridge, naming harletty's library:
+/// the engine also loads the library split out of it that is beside it, and
+/// holds both as what the next Save writes. Named in `bridge_paths`, which
+/// that Save writes, the same file is loaded alone.
+#[test]
+fn a_config_written_for_harletty_s_library_loads_the_ones_split_out_of_it() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("bridge-set-split-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the test directory");
+    let source = common::reference_bridge_path();
+    let harletty = copy_as(&source, &dir, "harletty_bridge");
+    let alicia = copy_as(&source, &dir, "alicia_bridge");
+    let config = dir.join("config.yaml");
+    let bridges_of = |render: String| {
+        std::fs::write(&config, format!("render:\n{render}")).expect("write the config");
+        Engine::from_paths(Some(&config), None, &[], None, 48_000)
+            .expect("build engine")
+            .bridge_paths()
+    };
+
+    let single_key = bridges_of(format!("  bridge_path: {}\n", harletty.display()));
+    let list = bridges_of(format!("  bridge_paths:\n  - {}\n", harletty.display()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(single_key, [harletty.clone(), alicia]);
+    assert_eq!(list, [harletty]);
 }
 
 /// abi_stable reports a layout mismatch in tens of kilobytes: the published

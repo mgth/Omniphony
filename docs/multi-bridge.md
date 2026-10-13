@@ -6,6 +6,11 @@ plugins. The text below is the proposal as it was accepted (#779) and was not
 rewritten afterwards: its present tense describes the single-bridge host it
 replaced. The pull request of each step is in the plan.
 
+The three libraries were renamed before their first release (step 10):
+`harletty_bridge`, `alicia_bridge` and `eclipsa_bridge`. Their names, what a
+Save writes and the transition rule under Compatibility are given here as
+they shipped.
+
 Paths are under `omniphony-renderer/` unless stated.
 
 ## Problem
@@ -45,9 +50,10 @@ passes and the old bridge silently keeps decoding.
 2. **Each bridge says which packets it decodes** through a new `probe` entry
    in its root module, and which `input_codec` names it answers to. Detection
    stays in the plugins: the host knows no sync word.
-3. **harletty ships one bridge per codec family**: `harletty_dolby_bridge`,
-   `harletty_dts_bridge`, `harletty_iamf_bridge`. The combined
-   `harletty_bridge` library is no longer released.
+3. **One bridge per codec family**, each released under its own name:
+   `harletty_bridge` (TrueHD, E-AC-3, AC-3), which keeps the name of the
+   library it comes from, `alicia_bridge` (DTS, Auro-3D) and `eclipsa_bridge`
+   (IAMF). No library decodes every format any more.
 
 ### Loading
 
@@ -58,11 +64,13 @@ passes and the old bridge silently keeps decoding.
   loading a different file really loads it. This fix lands first, on its own,
   under the current `bridge_api` 0.5.
 - **Config**: a new `render.bridge_paths: [path, …]`. An existing
-  `render.bridge_path` is read as a one-element list. Save writes one bridge
-  as `bridge_path`, which every build reads, and several as `bridge_paths`
-  (and no `bridge_path`). No key moves, so `CONFIG_SCHEMA_VERSION` stays: an
-  older build keeps `bridge_paths` through a save as an unknown key
-  (`extra`) and auto-discovers its own bridge meanwhile. The list changes
+  `render.bridge_path` is read as a one-element list when there is no
+  `bridge_paths`. Save writes `bridge_paths`, one bridge included, and no
+  `bridge_path`: that key then marks a file last saved by a build that
+  loaded one bridge (see the request written for harletty's library, below).
+  `CONFIG_SCHEMA_VERSION` stays: an older build keeps `bridge_paths` through
+  a save as an unknown key (`extra`) and auto-discovers its own bridge
+  meanwhile. The list changes
   what the engine decodes, so it is saved only through Save, as
   `bridge_path` is today (`docs/persistence-policy.md`).
 - **CLI**: `--bridge-path` becomes repeatable.
@@ -76,18 +84,21 @@ passes and the old bridge silently keeps decoding.
   the executable) does not stop the search. It does not merge folders: a
   stale per-user bridge must not be added to the system ones. The folders and
   their order are unchanged.
-- **The combined library's path**: a configured path (config, CLI,
-  `ORENDER_BRIDGE_FILE`, mpv's `ad-orender-bridge-path`) whose file name is
-  the combined harletty library of 0.5 (`libharletty_bridge.so`,
-  `harletty_bridge.dll`, `libharletty_bridge.dylib`) stands for the family
-  libraries that replace it: the host loads the `harletty_*_bridge` files
-  found in the same folder, whether the old file is still there or not, and
-  logs the substitution. If that folder holds none, it falls back to
-  auto-discovery with a warning. The next Save writes the resolved list.
-  This is a transition rule, the only place where the host knows a plugin's
-  file name: it is removed in the minor release after the one that ships
-  the family libraries.
-  Every other path keeps the strict rule: it must exist and load.
+- **A request written for harletty's library**: up to 0.5,
+  `harletty_bridge` (`libharletty_bridge.so`, `harletty_bridge.dll`,
+  `libharletty_bridge.dylib`) decoded every format. The library of that name
+  now decodes one family, so a request that names it and nothing else also
+  loads `alicia_bridge` and `eclipsa_bridge` when they are in the same
+  folder, after it, and the host logs it. This holds for the requests that
+  predate the split: the config's `render.bridge_path`, the CLI's
+  `--bridge-path`, mpv's `ad-orender-bridge-path` and
+  `ORENDER_BRIDGE_FILE`. It does not hold for `render.bridge_paths` nor for
+  a list set over OSC, which only builds that know the three libraries
+  write: one path there is one bridge, and that is how harletty's is loaded
+  alone. The next Save writes the resolved list. This is a transition rule,
+  the only place where the host knows a plugin's file name: it is removed
+  in the minor release after the one that ships the three libraries.
+  Every path keeps the strict rule: it must exist and load.
 - **Partial failure**: a bridge that fails to load (missing file, ABI
   mismatch) is reported in `/omniphony/state/render/bridges` and skipped,
   and a missing path stays in what a Save writes; `bridge_error` is set only
@@ -452,15 +463,15 @@ explicit setting:
 
   | Library | Family crate | Raw probe | IEC burst types |
   |---|---|---|---|
-  | `harletty_dolby_bridge` | `bridge-family-dolby` | TrueHD major sync, E-AC-3/AC-3 sync | 0x01, 0x15, 0x16 |
-  | `harletty_dts_bridge` | `bridge-family-dts` | DTS core / substream sync | 0x0B–0x0D, 0x11 |
-  | `harletty_iamf_bridge` | `bridge-family-iamf` | IAMF sequence header | none |
+  | `harletty_bridge` | `bridge-family-dolby` | TrueHD major sync, E-AC-3/AC-3 sync | 0x01, 0x15, 0x16 |
+  | `alicia_bridge` | `bridge-family-dts` | DTS core / substream sync | 0x0B–0x0D, 0x11 |
+  | `eclipsa_bridge` | `bridge-family-iamf` | IAMF sequence header | none |
 
 - The combined router in `bridge/` stops being a cdylib. It stays an rlib for
   the fuzz target, the bench and the bit-exactness kit while those move to
   the per-family plugins; removing it is a follow-up.
-- `release.yml` packages the three libraries in each platform archive. The
-  IAMF library links libopus, which the Linux build takes from the system;
+- `release.yml` packages each library in an archive of its own per platform.
+  The IAMF library links libopus, which the Linux build takes from the system;
   Windows and macOS build it from source and link it statically.
 - `check-crate-isolation.sh` checks each plugin's crate graph holds only its
   own family's decoders.
@@ -468,13 +479,14 @@ explicit setting:
 ### Compatibility
 
 - A 0.6 host refuses a 0.5 bridge, and the reverse, by name, as today.
-- Configs with `render.bridge_path` keep working, including one that names
-  the combined library (see Loading); a Save keeps one bridge as
-  `bridge_path` and writes several as `bridge_paths`, which an older build
-  keeps through its own saves.
-- Packaging and install: the AUR `harletty-bridge` package, the installers
-  and `scripts/wfbuild.sh` install three libraries and remove the old
-  `libharletty_bridge`. The install pages list the three.
+- Configs with `render.bridge_path` keep working, including one written for
+  harletty's library when it decoded every format (see Loading); a Save
+  writes `bridge_paths`, which an older build keeps through its own saves.
+- Packaging and install: the AUR packages (`harletty-bridge`,
+  `alicia-bridge`, `eclipsa-bridge`), the installers
+  and `scripts/wfbuild.sh` install three libraries; the 0.5
+  `libharletty_bridge` is replaced by the library of the same name. The
+  install pages list the three.
 - mpv needs no code change: it hands its `ad-orender-bridge-path` string (or
   none) to liborender, which splits an explicit path as a path list, like
   `ORENDER_BRIDGE_FILE`. Its error text that names `render.bridge_path` is
@@ -523,11 +535,12 @@ explicit setting:
   A without loss.
 - DRC: legacy aliases (`Standard`, `Line`, `Heavy`, `RF`) from an old config
   reach the Dolby bridge and take effect; a mode no bridge accepts warns.
-- Combined-library path: a config pointing at `libharletty_bridge.so`, with
-  and without the old file present, loads the family libraries beside it;
-  a folder without them falls back to discovery, and discovery passes over
-  a priority folder that still holds the old file alone; any other missing
-  path still fails.
+- A request written for harletty's library: `render.bridge_path`, a host's
+  own path and `ORENDER_BRIDGE_FILE` naming `libharletty_bridge.so` alone
+  load the libraries split out of it that are beside it, on each platform's
+  file names; `render.bridge_paths` naming it alone loads it alone; a list
+  of several is taken as it is; a missing path still fails, and discovery
+  passes over a priority folder that still holds the 0.5 file alone.
 - Evaluation grid: in `bridge`, a stream switch to a bridge with other hints
   triggers one evaluation-only rebuild and none with the same hints; grid
   edits are refused; in `custom`, no rebuild on a switch and edits apply.
@@ -578,6 +591,7 @@ Each step is one PR, merged before the next is built on it.
 | 7 | harletty-bridge | Release, build scripts, CI matrix, isolation check per plugin; the combined cdylib leaves the release. | harletty/harletty-bridge#137 |
 | 8 | Omniphony | Studio egui bridge list. | #788 |
 | 9 | Omniphony | Packaging, installers, install pages, `wfbuild.sh`. | #789, open |
+| 10 | both | The libraries' names (`harletty_bridge`, `alicia_bridge`, `eclipsa_bridge`); the rule for a request written for harletty's library replaces the combined-library substitution; Save writes `bridge_paths` always. | PRNUM |
 
 Steps 5 and 8 depend on nothing but their predecessors in the same repo and
 can run alongside 2–4.

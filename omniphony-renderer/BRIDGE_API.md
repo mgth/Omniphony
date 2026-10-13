@@ -77,9 +77,9 @@ decodes it ("Probing"; [`docs/multi-bridge.md`](../docs/multi-bridge.md)).
 Bridge lookup order:
 1. `--bridge-path <FILE>`, repeatable (or the C config's `bridge_path`, a path
    list in the platform's syntax: `:` on Unix, `;` on Windows)
-2. `render.bridge_paths` in the config file, else its single
-   `render.bridge_path` (a Save writes the latter when there is one bridge, so
-   older builds still read it)
+2. `render.bridge_paths` in the config file, which a Save writes, else the
+   single `render.bridge_path` of a file saved by a build that loaded one
+   bridge
 3. else auto-discovery:
    1. `$ORENDER_BRIDGE_FILE`, a path list: the files it names that exist
       (Studio sets it, see below). Names of no file are logged and skipped;
@@ -97,17 +97,24 @@ Bridge lookup order:
          `~/Library/Application Support/omniphony/lib` on macOS,
          `%LOCALAPPDATA%\omniphony\lib` on Windows;
       4. the system plugin folder, `/usr/lib/orender` on Unix (where the AUR's
-         `harletty-bridge` installs it; packagers override it with
+         bridge packages install them; packagers override it with
          `ORENDER_BRIDGE_DIR` at build time). None on Windows.
 
 A path named in 1 or 2 must exist: it is never replaced by a discovered one.
 One that does not, or a bridge that does not load, is skipped and reported
 (`/omniphony/state/render/bridges`) while the others load; the host fails only
-when none does. One exception, for one release: a named
-`libharletty_bridge.so` / `harletty_bridge.dll` / `libharletty_bridge.dylib`,
-the combined library of `bridge_api` 0.5, stands for the `harletty_*_bridge`
-family libraries in the same folder (auto-discovery when there are none), and
-the next Save writes them instead.
+when none does.
+
+One rule, for one release, knows a bridge by its name.
+`libharletty_bridge.so` / `harletty_bridge.dll` / `libharletty_bridge.dylib`
+decoded every format up to `bridge_api` 0.5; the library of that name now
+decodes one codec family, and `alicia_bridge` and `eclipsa_bridge` decode the
+others. A request that names it and nothing else, in a place that predates
+the split (`--bridge-path`, mpv's `ad-orender-bridge-path`,
+`$ORENDER_BRIDGE_FILE`, the config's `render.bridge_path`), also loads those
+two when they are in the same folder, and the next Save writes the three.
+`render.bridge_paths`, which a Save writes even for one bridge, is taken as
+it is: naming `harletty_bridge` alone there loads it alone.
 
 When nothing is named and nothing is found, `orender` still starts, without a
 decoder: PCM and channel input work, and the published
@@ -120,9 +127,7 @@ config (mpv's own lookup: `$MPV_HOME`, else `$XDG_CONFIG_HOME/mpv` or
 `~/.config/mpv`, `~/.mpv`, `/etc/mpv`; `%APPDATA%\mpv` on Windows; default
 profile only) as a path list (`:` on Unix, `;` on Windows), keeps the entries
 that name an existing file, in order, and passes them as
-`$ORENDER_BRIDGE_FILE` (step 3.1). A missing entry naming the combined
-harletty library is passed on too, for the engine's substitution (see the
-combined library's path above). Files, not their folder: the folder scan
+`$ORENDER_BRIDGE_FILE` (step 3.1). Files, not their folder: the folder scan
 loads every bridge of the folder, which need not be the ones named. Bridges
 named in the engine's own config (`render.bridge_paths`) or on its command
 line still come first, and when Studio's own environment

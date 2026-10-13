@@ -63,7 +63,7 @@ Bridge lookup order:
          `~/Library/Application Support/omniphony/lib` on macOS,
          `%LOCALAPPDATA%\omniphony\lib` on Windows;
       4. the system plugin folder, `/usr/lib/orender` on Unix (where the AUR's
-         `harletty-bridge` installs it; packagers override it with
+         bridge packages install them; packagers override it with
          `ORENDER_BRIDGE_DIR` at build time). None on Windows.
 
 A path named in 1 or 2 must exist: it is never replaced by a discovered one.

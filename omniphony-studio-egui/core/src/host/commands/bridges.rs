@@ -565,12 +565,12 @@ mod tests {
         let discovered = bridges(
             &[],
             vec![
-                loaded("/usr/lib/harletty_dolby_bridge.so", &["dolby"]),
-                loaded("/usr/lib/harletty_iamf_bridge.so", &["iamf"]),
+                loaded("/usr/lib/harletty_bridge.so", &["dolby"]),
+                loaded("/usr/lib/eclipsa_bridge.so", &["iamf"]),
             ],
         );
         let list = BridgeList::of(&discovered, false, family("iamf"));
-        assert_eq!(decoding(&list), ["/usr/lib/harletty_iamf_bridge.so"]);
+        assert_eq!(decoding(&list), ["/usr/lib/eclipsa_bridge.so"]);
         assert!(list.rows.iter().all(|row| row.position.is_none()));
 
         // Removed from the list, still loaded until the restart: it decodes.

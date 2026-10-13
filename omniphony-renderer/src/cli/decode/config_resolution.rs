@@ -160,9 +160,14 @@ pub(super) fn merge_render_config(
     // The registered options' flags are already folded into `cfg`, so the
     // fields below that mirror them are read from it unconditionally.
     args.output_sample_rate = cfg.output_sample_rate;
-    if args.bridge_paths.is_empty() {
-        args.bridge_paths = cfg.bridges();
-    }
+    // Flags, else the config. Either may have been written for harletty's
+    // library when it decoded every format, and then also asks for the ones
+    // split out of it (`bridge_loader::with_split_out_bridges`).
+    args.bridge_paths = if args.bridge_paths.is_empty() {
+        orender_engine::bridge_loader::config_bridges(cfg)
+    } else {
+        orender_engine::bridge_loader::with_split_out_bridges(&args.bridge_paths, "--bridge-path")
+    };
     // In continuous (studio bridge) mode the config is the source of truth for the
     // input pipe, overriding the positional default the studio passes at launch.
     if args.continuous {

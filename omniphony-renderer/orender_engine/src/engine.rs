@@ -7,7 +7,7 @@
 
 use crate::bridge_loader::{
     LoadedBridge, configure_presentation, load_bridges, publish_bridges, record_bridge_request,
-    resolve_bridges,
+    resolve_bridges, with_split_out_bridges,
 };
 use crate::decode_step::{
     Declaration, DeclarationTracker, DecodedPacket, DrcModeSync, LogLevelSync, decode_packet,
@@ -665,11 +665,22 @@ impl Engine {
         // discovered bridge; only when nothing is requested do we
         // auto-discover *_bridge.* next to the host binary. See
         // `bridge_loader::resolve_bridges`.
+        // A request written for harletty's library when it decoded every
+        // format also loads the ones split out of it
+        // (`bridge_loader::with_split_out_bridges`).
+        let bridge_paths = with_split_out_bridges(bridge_paths, "bridge path");
+        let bridge_paths = bridge_paths.as_slice();
         let config_bridges = render_cfg
             .as_ref()
             .map(RenderConfig::bridges)
             .unwrap_or_default();
-        let bridge_request = resolve_bridges(bridge_paths, &config_bridges)?;
+        let bridge_request = resolve_bridges(
+            bridge_paths,
+            &render_cfg
+                .as_ref()
+                .map(crate::bridge_loader::config_bridges)
+                .unwrap_or_default(),
+        )?;
 
         // The renderer's table mode/defaults come from the bridges, so load
         // and configure them before building the renderer.
