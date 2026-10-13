@@ -212,6 +212,22 @@ gh release edit vX.Y.Z --repo mgth/Omniphony --draft=false --latest
 Only the Studio `v*` release is marked `--latest`; `mpv-v*` is
 published not-latest.
 
+**The installers** (`docs/installer.md`). Publishing a release starts
+`installer.yml`. It composes the combined installer from the published files
+and attaches it to the `vX.Y.Z` release once both `vX.Y.Z` and the player
+release its manifest names are out, so in practice when `mpv-vX.Y.Z` is
+published (§7); the run started by `vX.Y.Z` alone ends on a notice. Check
+that `omniphony-vX.Y.Z-linux-x86_64.tar.gz` is on the release afterwards. To
+compose it again, or for a release published before the workflow existed:
+
+```sh
+gh workflow run installer.yml --repo mgth/Omniphony -f tag=vX.Y.Z -f attach=true
+```
+
+`-f player_tag=…` takes the player from another release than the manifest's.
+A Studio archive older than 0.7.0 has no `engine/` directory and cannot be
+composed.
+
 To verify the latest marker, use `gh api repos/mgth/Omniphony/releases/latest`
 — `gh release view --json` has no `isLatest` field.
 
