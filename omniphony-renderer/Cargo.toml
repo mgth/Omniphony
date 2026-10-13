@@ -165,7 +165,17 @@ strip = false
 
 [features]
 # Pure-Rust native VBAP backend is the default — no external library required.
-default = []
+# SOFA files are read by default, as in liborender (`orender_ffi`): `orender`
+# is the renderer the Studio starts, and must read the HRTF or BRIR file chosen
+# there however it was built. Without a feature of its own the binary only got
+# the reader when cargo built it in the same command as `orender_ffi`, whose
+# default then enabled it for both; built alone it fell back to the bundled
+# HRTF. Embedded builds can use --no-default-features.
+default = ["sofa"]
+
+# SOFA (personalised HRTF, BRIR) support: the pure-Rust reader, no system
+# dependency.
+sofa = ["orender_engine/sofa"]
 
 # SAF/SPARTA-backed VBAP (C FFI, requires libsaf.a + OpenBLAS/LAPACKE on Linux,
 # MSVC+vcpkg on Windows). Opt-in only.

@@ -184,3 +184,17 @@ fn main() -> Result<()> {
 
     result
 }
+
+#[cfg(test)]
+mod build_features {
+    /// The binary reads SOFA files by its own default feature, not because a
+    /// sibling package's default (`orender_ffi`) happened to be built in the
+    /// same cargo command: the release workflow builds `orender` on its own.
+    #[test]
+    fn sofa_support_is_a_default_of_the_binary() {
+        assert!(
+            cfg!(feature = "sofa"),
+            "`sofa` is no longer a default feature of the orender binary"
+        );
+    }
+}
