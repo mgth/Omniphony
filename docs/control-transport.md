@@ -1,7 +1,7 @@
 # RFC: a reliable local transport for Studio ↔ engine control
 
-Status: **proposal** for the long-term part of #680. Nothing here is built.
-The interim part (control errors, state generation, contract revision,
+Status: **implemented** (#763, #764, #765 and the step-4 follow-up), shipped
+in 0.7.0; it was the long-term part of #680. The interim part (control errors, state generation, contract revision,
 payload shapes) shipped in #709 and stays.
 
 ## Problem
