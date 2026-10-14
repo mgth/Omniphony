@@ -959,6 +959,11 @@ pub fn build_live_state_bundle_with_host(
 
     let mut all_messages = messages;
 
+    all_messages.push(OscPacket::Message(OscMessage {
+        addr: crate::osc_contract::STATE_SOURCE_BOUNDS.to_string(),
+        args: crate::osc::source_bounds_args(&live.source_bounds),
+    }));
+
     for (&idx, obj) in &live.objects {
         if obj.muted {
             all_messages.push(OscPacket::Message(OscMessage {

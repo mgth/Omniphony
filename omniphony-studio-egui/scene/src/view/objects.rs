@@ -376,7 +376,14 @@ pub fn collect(
         let level_scale = dbfs_to_scale(rms, 0.5, 2.4);
 
         let selected = selected_object == Some(id.as_str());
-        let muted = live.app.object_mutes.get(id).is_some_and(|m| *m != 0);
+        // Muted, or outside the source box: the renderer silences both alike,
+        // and judges a direct channel by its speaker's place, as here.
+        let adm = src
+            .direct_speaker_index
+            .and_then(|i| live.selected_speakers().get(i as usize))
+            .map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z]);
+        let muted = live.app.object_mutes.get(id).is_some_and(|m| *m != 0)
+            || !live.app.source_bounds.admits(adm);
         let (palette_color, semantic) = base_color(id, src.source_tag.as_deref());
         let use_object_color = settings.object_colors_enabled || semantic;
         let object_color = if use_object_color {

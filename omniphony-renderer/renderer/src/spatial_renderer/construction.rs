@@ -454,6 +454,7 @@ impl SpatialRenderer {
                 ..Default::default()
             },
             objects: std::collections::HashMap::new(),
+            source_bounds: crate::live_params::SourceBounds::default(),
             spread_min,
             spread_max,
             spread_from_distance,

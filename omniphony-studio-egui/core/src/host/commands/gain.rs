@@ -298,3 +298,35 @@ mod tests {
         assert_eq!(rx.try_iter().count(), 0);
     }
 }
+
+/// Set the box sources must sit in to be heard (`/control/source_bounds`).
+///
+/// Sent once per pointer move while an edge is dragged, so the model takes the
+/// value at once — the panel and the scene draw from it — and the renderer's
+/// echo, clamped the same way, confirms it. Transient, like a mute: no Save is
+/// for it and the renderer forgets it at restart.
+pub fn control_source_bounds(state: &SharedState, bounds: crate::model::app_state::SourceBounds) {
+    let mut bounds = bounds;
+    for axis in 0..3 {
+        let lo = bounds.min[axis].clamp(-1.0, 1.0);
+        let hi = bounds.max[axis].clamp(-1.0, 1.0);
+        bounds.min[axis] = lo.min(hi);
+        bounds.max[axis] = lo.max(hi);
+    }
+    state.inner.lock().unwrap().app.source_bounds = bounds;
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: osc_contract::CONTROL_SOURCE_BOUNDS.to_string(),
+            args: vec![
+                rosc::OscType::Int(i32::from(bounds.enabled)),
+                rosc::OscType::Float(bounds.min[0]),
+                rosc::OscType::Float(bounds.max[0]),
+                rosc::OscType::Float(bounds.min[1]),
+                rosc::OscType::Float(bounds.max[1]),
+                rosc::OscType::Float(bounds.min[2]),
+                rosc::OscType::Float(bounds.max[2]),
+            ],
+        },
+    );
+}

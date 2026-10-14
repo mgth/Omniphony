@@ -926,6 +926,10 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             }
             Change::Scene
         }
+        OscEvent::StateSourceBounds { enabled, min, max } => {
+            live.app.source_bounds = crate::model::app_state::SourceBounds { enabled, min, max };
+            Change::Scene
+        }
         OscEvent::StateObjectSourceTag { id, source_tag } => {
             live.app.sources.entry(id).or_default().source_tag = Some(source_tag);
             Change::Scene

@@ -732,6 +732,73 @@ impl Default for ObjectLiveParams {
     }
 }
 
+/// The box a source must sit in to be heard, in the normalised cube
+/// (`x` left → right, `y` back → front, `z` floor → ceiling, each in
+/// `[-1, 1]`). An input channel outside it is muted: an object at its
+/// position, a bed channel at its speaker's. A side at its end of the cube
+/// bounds nothing, so the full cube admits everything, sources beyond it
+/// included. Transient, like a mute (`docs/persistence-policy.md`): never
+/// saved, off at start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceBounds {
+    pub enabled: bool,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+impl Default for SourceBounds {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        }
+    }
+}
+
+impl SourceBounds {
+    /// `min`/`max` clamped to the cube, each pair in order (a non-finite
+    /// value reads as its end of the cube).
+    pub fn new(enabled: bool, min: [f32; 3], max: [f32; 3]) -> Self {
+        let mut bounds = Self {
+            enabled,
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        };
+        for axis in 0..3 {
+            let lo = if min[axis].is_finite() {
+                min[axis].clamp(-1.0, 1.0)
+            } else {
+                -1.0
+            };
+            let hi = if max[axis].is_finite() {
+                max[axis].clamp(-1.0, 1.0)
+            } else {
+                1.0
+            };
+            bounds.min[axis] = lo.min(hi);
+            bounds.max[axis] = lo.max(hi);
+        }
+        bounds
+    }
+
+    /// Whether it mutes anything: enabled, with a side inside the cube.
+    pub fn is_active(&self) -> bool {
+        self.enabled
+            && (self.min.iter().any(|&lo| lo > -1.0) || self.max.iter().any(|&hi| hi < 1.0))
+    }
+
+    /// Whether a source at `position` is heard. Ignores `enabled`: the render
+    /// path asks only while [`Self::is_active`].
+    #[inline]
+    pub fn admits(&self, position: [f32; 3]) -> bool {
+        (0..3).all(|axis| {
+            (self.min[axis] <= -1.0 || position[axis] >= self.min[axis])
+                && (self.max[axis] >= 1.0 || position[axis] <= self.max[axis])
+        })
+    }
+}
+
 /// Live-tunable parameters for a single output speaker.
 #[derive(Clone)]
 pub struct SpeakerLiveParams {
@@ -1236,6 +1303,9 @@ pub struct LiveParams {
     /// Per-object live parameters (mute).
     /// Absent entries use `ObjectLiveParams::default()` (muted=false).
     pub objects: HashMap<usize, ObjectLiveParams>,
+
+    /// The box sources must sit in to be heard (transient, like the mutes).
+    pub source_bounds: SourceBounds,
 
     /// Minimum spread applied when the object spread value is 0.0.
     pub spread_min: f32,

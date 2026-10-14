@@ -26,9 +26,9 @@ use super::gaintable::GaintableCache;
 use super::peer::Peer;
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
-    broadcast_blob, broadcast_fff, broadcast_float, broadcast_int, broadcast_string,
-    resolve_register_addr, send_diag_state, send_message_to_client, send_metering_state,
-    send_update_to_client,
+    broadcast_args, broadcast_blob, broadcast_fff, broadcast_float, broadcast_int,
+    broadcast_string, resolve_register_addr, send_diag_state, send_message_to_client,
+    send_metering_state, send_update_to_client,
 };
 
 /// What became of a control message, for its sender
@@ -366,6 +366,7 @@ fn apply_control_effects(
             BroadcastValue::String(value) => {
                 broadcast_string(socket, clients, &update.addr, &value)
             }
+            BroadcastValue::Args(args) => broadcast_args(socket, clients, &update.addr, args),
             BroadcastValue::Blob(bytes) => broadcast_blob(socket, clients, &update.addr, &bytes),
         }
     }

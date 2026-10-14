@@ -104,6 +104,19 @@ fn broadcast_state(socket: &UdpSocket, clients: &OscClientRegistry, msg: OscMess
     publish_state(socket, clients, || vec![msg]);
 }
 
+pub(crate) fn broadcast_args(
+    socket: &UdpSocket,
+    clients: &OscClientRegistry,
+    addr: &str,
+    args: Vec<OscType>,
+) {
+    let msg = OscMessage {
+        addr: addr.to_string(),
+        args,
+    };
+    broadcast_state(socket, clients, msg);
+}
+
 pub(crate) fn broadcast_float(
     socket: &UdpSocket,
     clients: &OscClientRegistry,
@@ -300,6 +313,7 @@ pub(crate) fn send_update_to_client(socket: &UdpSocket, client: &Peer, update: &
             vec![OscType::Float(*a), OscType::Float(*b), OscType::Float(*c)]
         }
         BroadcastValue::String(s) => vec![OscType::String(s.clone())],
+        BroadcastValue::Args(args) => args.clone(),
         BroadcastValue::Blob(b) => vec![OscType::Blob(b.clone())],
     };
     let packet = OscPacket::Message(OscMessage {

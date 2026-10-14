@@ -36,6 +36,7 @@ pub mod row_glyphs;
 pub mod scene_fx;
 pub mod script_editor;
 pub mod sofa_browser;
+pub mod source_bounds;
 pub mod sources_2d;
 pub mod speaker_editor;
 pub mod speaker_layouts;

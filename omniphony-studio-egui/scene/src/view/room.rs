@@ -22,6 +22,58 @@ pub const MEASURED_ROOM_COLOR: u32 = 0xffb86b;
 /// cube and the amber measured room.
 pub const LISTENING_ROOM_COLOR: u32 = 0xe0c9a0;
 
+/// The colour of the source box (`/state/source_bounds`): pink, apart from
+/// the blue room, the teal cube, the amber measured room and the sand
+/// listening room. The Studio's source bounds panel draws it in the same.
+pub const SOURCE_BOUNDS_COLOR: u32 = 0xff6bd6;
+
+/// Segments per edge of the source box: its edges are drawn through
+/// [`super::scene_position`], which bends them on the sphere-reading path.
+const SOURCE_BOUNDS_SEGMENTS: usize = 16;
+
+/// The source box: the twelve edges of the box the renderer hears sources in,
+/// placed where the sources inside it are drawn.
+pub fn emit_source_bounds(
+    bounds: &crate::model::app_state::SourceBounds,
+    room: &RoomRatio,
+    frame: &mut FrameData,
+) {
+    let colour = with_alpha(hex_linear(SOURCE_BOUNDS_COLOR), 0.85);
+    let corner = |i: usize| -> [f64; 3] {
+        std::array::from_fn(|axis| {
+            f64::from(if i & (1 << axis) == 0 {
+                bounds.min[axis]
+            } else {
+                bounds.max[axis]
+            })
+        })
+    };
+    for a in 0..8usize {
+        for bit in [1usize, 2, 4] {
+            let b = a | bit;
+            if b == a {
+                continue;
+            }
+            let (from, to) = (corner(a), corner(b));
+            let at = |t: f64| {
+                super::scene_position(
+                    std::array::from_fn(|k| from[k] + (to[k] - from[k]) * t),
+                    room,
+                )
+            };
+            for step in 0..SOURCE_BOUNDS_SEGMENTS {
+                let n = SOURCE_BOUNDS_SEGMENTS as f64;
+                for p in [at(step as f64 / n), at((step + 1) as f64 / n)] {
+                    frame.overlay_lines.push(LineVertex {
+                        pos: p.to_array(),
+                        color: colour,
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// How a box is drawn: the user's room, with walls and a screen, or the
 /// listener's cube of the direct binaural path, which has neither.
 pub struct RoomStyle {

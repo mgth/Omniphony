@@ -4227,3 +4227,112 @@ fn a_position_and_its_mirror_pan_alike_across_planar_faces() {
         }
     }
 }
+
+/// The source box mutes what sits outside it exactly as a mute would, on the
+/// speaker path and on the headphone one: a bed channel by the speaker its
+/// label routes to, an object by its position. Disabled, it changes nothing.
+#[test]
+fn source_bounds_mute_the_channels_outside_the_box_like_a_mute() {
+    use crate::live_params::{OutputMode, SourceBounds};
+    let pcm: Vec<f32> = (0..3 * 480)
+        .map(|i| ((i * 7919) % 211) as f32 / 211.0 - 0.5)
+        .collect();
+    let events = vec![
+        // Channel 0: the bed's L, routed to FL on the floor.
+        SpatialChannelEvent {
+            channel_idx: 0,
+            is_bed: true,
+            gain_db: Some(0.0),
+            ramp_length: Some(0),
+            size: None,
+            position: None,
+            sample_pos: Some(0),
+        },
+        // Channel 1: an object up at the front, inside the box below.
+        SpatialChannelEvent {
+            channel_idx: 1,
+            is_bed: false,
+            gain_db: Some(0.0),
+            ramp_length: Some(0),
+            size: Some([0.0; 3]),
+            position: Some([0.0, 1.0, 1.0]),
+            sample_pos: Some(0),
+        },
+        // Channel 2: an object at the back, on the floor.
+        SpatialChannelEvent {
+            channel_idx: 2,
+            is_bed: false,
+            gain_db: Some(0.0),
+            ramp_length: Some(0),
+            size: Some([0.0; 3]),
+            position: Some([0.0, -1.0, 0.0]),
+            sample_pos: Some(0),
+        },
+    ];
+    let render = |mode: OutputMode, setup: &dyn Fn(&mut crate::live_params::LiveParams)| {
+        let mut r = renderer_for_layout(SpeakerLayout::preset("7.1.4").unwrap());
+        r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::L)]);
+        {
+            let mut live = r.control.live.write();
+            live.binaural.output_mode = mode;
+            setup(&mut live);
+        }
+        r.control.mark_object_params_dirty();
+        let mut out = Vec::new();
+        for block in 0..6 {
+            let ev: &[SpatialChannelEvent] = if block == 0 { &events } else { &[] };
+            out.extend(
+                r.render_frame(&pcm, 3, ev, Vec::new(), false)
+                    .unwrap()
+                    .samples,
+            );
+        }
+        out
+    };
+    // Heights only: the floor bed channel and the floor object are out.
+    let heights = SourceBounds::new(true, [-1.0, -1.0, 0.5], [1.0, 1.0, 1.0]);
+    for mode in [OutputMode::SpeakerArray, OutputMode::Binaural] {
+        let plain = render(mode, &|_| {});
+        let muted = render(mode, &|live| {
+            live.objects.entry(0).or_default().muted = true;
+            live.objects.entry(2).or_default().muted = true;
+        });
+        let bounded = render(mode, &|live| live.source_bounds = heights);
+        let disabled = render(mode, &|live| {
+            live.source_bounds = SourceBounds {
+                enabled: false,
+                ..heights
+            }
+        });
+        assert!(
+            energy(&muted) > 1e-3,
+            "{mode:?}: the object inside is heard"
+        );
+        assert!(
+            energy(&muted) < energy(&plain),
+            "{mode:?}: the mutes cut something"
+        );
+        assert_eq!(bounded, muted, "{mode:?}: the box mutes as the mutes do");
+        assert_eq!(disabled, plain, "{mode:?}: a disabled box changes nothing");
+    }
+}
+
+#[test]
+fn source_bounds_clamp_order_and_bound_nothing_at_the_cube_ends() {
+    use crate::live_params::SourceBounds;
+    let b = SourceBounds::new(true, [0.5, 2.0, f32::NAN], [-0.5, -3.0, 0.25]);
+    assert_eq!(b.min, [-0.5, -1.0, -1.0]);
+    assert_eq!(b.max, [0.5, 1.0, 0.25]);
+    assert!(b.is_active());
+    assert!(!SourceBounds::default().is_active());
+    assert!(!SourceBounds::new(true, [-1.0; 3], [1.0; 3]).is_active());
+    assert!(!SourceBounds::new(false, [0.0; 3], [0.5; 3]).is_active());
+    // A side at the end of the cube admits what lies beyond it.
+    let full_x = SourceBounds::new(true, [-1.0, 0.0, -1.0], [1.0, 1.0, 1.0]);
+    assert!(full_x.admits([1.5, 0.5, -2.0]));
+    assert!(!full_x.admits([0.0, -0.1, 0.0]));
+    assert!(
+        full_x.admits([0.0, 0.0, 0.0]),
+        "the sides themselves are inside"
+    );
+}

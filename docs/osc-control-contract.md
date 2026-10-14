@@ -282,6 +282,7 @@ payload shape.
 | `/control/realtime/speaker_gain` | id int, f `≥0` (linear), seq int | Per-speaker output gain; echoed on `/state/realtime/speaker_gain`. Saved as the layout speaker's `gain_db` (0.1 dB), which seeds it at the next start. |
 | `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. Registry option `master_gain` (the file stores dB). |
 | `/control/object/{id}/mute` | int bool | Per-object mute. Transient: never saved. |
+| `/control/source_bounds` | enabled int bool, x_min f, x_max f, y_min f, y_max f, z_min f, z_max f `[-1,1]` | The box a source must sit in to be heard (`x` left → right, `y` back → front, `z` floor → ceiling). While enabled, every input channel outside it is muted: an object at its position, a bed channel at its speaker's, through the same gain slew as a mute. A side at the end of the cube bounds nothing. A min above its max is swapped. Transient, like a mute: never saved, off at start. Echoed on `/state/source_bounds`. |
 | `/control/config/speakers` | json | Speaker edits: delay (saved) and mute (transient, never saved). |
 | `/control/loudness` | int bool | Dialogue-norm / loudness correction. Registry option alias (`use_loudness`). |
 | `/control/auto_gain` | int bool | Auto gain-reduction on clipping. Registry option alias. |
@@ -779,6 +780,9 @@ exhaustive machine-readable list.
 - **Object test** — `object_test/position` (`x, y, z, peak dB, rms dB` of the
   running test), `object_test/clip` (the loaded clip as JSON, `{"error"}`, or
   `{}` when cleared).
+- **Source bounds** — `source_bounds` (`enabled, x_min, x_max, y_min, y_max,
+  z_min, z_max`, as the engine clamped them; on every change and in the
+  snapshot).
 - **Backend files** — `backend/file/content`, `backend/file/list`,
   `backend/file/error`: point-to-point replies to `/control/backend/file/*`.
 - **Head tracking** — `head_pose` (4-float quaternion `w,x,y,z`, broadcast at
@@ -930,6 +934,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/control/object_test`
 - `/omniphony/control/object_test/clip`
 - `/omniphony/control/object_test/rotation`
+- `/omniphony/control/source_bounds`
 - `/omniphony/control/option`
 - `/omniphony/control/options`
 - `/omniphony/control/options/apply`
@@ -1030,6 +1035,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/osc/metering`
 - `/omniphony/state/overlay`
 - `/omniphony/state/phantom`
+- `/omniphony/state/source_bounds`
 - `/omniphony/state/profiles`
 - `/omniphony/state/realtime/master_gain`
 - `/omniphony/state/realtime/speaker_gain`

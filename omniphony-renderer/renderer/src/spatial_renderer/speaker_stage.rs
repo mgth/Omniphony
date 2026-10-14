@@ -23,7 +23,7 @@ use crate::crossover::{
 use crate::delay_line::IntegerDelay;
 use crate::live_params::{
     CrossoverInfo, CrossoverType, MAX_SAMPLE_RAMP_STRIDE, ObjectLiveParams, RampMode,
-    RenderTopology, RendererControl,
+    RenderTopology, RendererControl, SourceBounds,
 };
 use crate::ramp_strategy::{RampContext, RampStrategy};
 use crate::render_backend::{BandGains, CornerCache, MultiBandTable};
@@ -290,6 +290,8 @@ pub(super) struct SpeakerStageFrame<'a> {
     pub(super) label_to_speaker: &'a HashMap<bridge_api::RChannelLabel, usize>,
     pub(super) layout: &'a SpeakerLayout,
     pub(super) object_params: &'a [ObjectLiveParams],
+    /// The source box, `None` while it mutes nothing.
+    pub(super) source_bounds: Option<SourceBounds>,
     pub(super) ramp_mode: RampMode,
     /// `RampMode::Sample`: samples between two gain lookups of a moving
     /// object (`LiveParams::sample_ramp_stride`).
@@ -791,6 +793,7 @@ impl SpeakerRenderStage {
             label_to_speaker: active_label_to_speaker,
             layout: active_layout,
             object_params,
+            source_bounds,
             ramp_mode,
             sample_ramp_stride,
             ramp_strategy,
@@ -842,14 +845,22 @@ impl SpeakerRenderStage {
         // all first changes nothing.
         self.slew_scratch.clear();
         for input_channel_idx in 0..input_channel_count {
-            // Per-channel mute (applies to beds and objects), as a 0/1 factor.
-            let obj_gain = match object_params.get(input_channel_idx) {
-                Some(o) if o.muted => 0.0,
-                _ => 1.0,
-            };
-
             // Get gain from cached metadata (common for ALL channels - beds and objects)
             let state = SpatialRenderer::state_mut(channel_states, input_channel_idx);
+
+            // Per-channel mute (applies to beds and objects), and the source
+            // box, which mutes a channel outside it alike: a 0/1 factor.
+            let muted = matches!(object_params.get(input_channel_idx), Some(o) if o.muted);
+            let outside = source_bounds.is_some_and(|bounds| {
+                !bounds.admits(SpatialRenderer::source_position(
+                    input_channel_idx,
+                    state,
+                    channel_routing,
+                    active_label_to_speaker,
+                    active_layout,
+                ))
+            });
+            let obj_gain = if muted || outside { 0.0 } else { 1.0 };
 
             // Convert gain from dB to linear (−inf floor honoured).
             let gain_linear = super::components::gain_db_to_linear(state.gain_db);

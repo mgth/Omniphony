@@ -490,6 +490,22 @@ icon!(
         }),
     ]
 );
+// Source bounds: the room's corners, and the box inside it that is heard.
+icon!(
+    SECTION_SOURCE_BOUNDS,
+    24.0,
+    1.8,
+    [
+        stroke(Path("M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5")),
+        stroke(R {
+            x: 8.0,
+            y: 8.0,
+            w: 8.0,
+            h: 8.0,
+            rx: 1.0
+        }),
+    ]
+);
 // Room geometry: a cube, the room model's box.
 icon!(
     SECTION_ROOM,
@@ -1138,6 +1154,7 @@ mod tests {
             &SECTION_DRC,
             &SECTION_SOURCES_2D,
             &SECTION_ROOM,
+            &SECTION_SOURCE_BOUNDS,
             &SECTION_AUDIO_OUTPUT,
             &SECTION_AUDIO_INPUT,
             &SECTION_CONNECTION,

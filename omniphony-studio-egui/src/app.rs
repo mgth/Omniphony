@@ -142,6 +142,8 @@ pub struct StudioSpike {
     pub(crate) object_test_playing: bool,
     pub(crate) object_test_muted: bool,
     pub(crate) object_test_drag: Option<crate::panels::object_test_sheet::Target>,
+    /// What a drag on the source bounds drawing holds, for the gesture.
+    pub(crate) source_bounds_grab: Option<crate::panels::source_bounds::Grab>,
     pub(crate) object_test_focus: Option<usize>,
     /// The orbit path, rebuilt in place each frame so drawing it allocates
     /// nothing after the first.
@@ -489,6 +491,7 @@ impl StudioSpike {
             object_test_playing: false,
             object_test_muted: false,
             object_test_drag: None,
+            source_bounds_grab: None,
             object_test_focus: None,
             object_test_orbit: Vec::new(),
             vbap_grid_cache: None,
@@ -871,6 +874,7 @@ impl StudioSpike {
                                 self.sources_2d_section(ui);
                                 self.room_geometry_section(ui);
                                 self.drc_section(ui);
+                                self.source_bounds_section(ui);
                             }
                             self.objects_section(ui);
                         },
