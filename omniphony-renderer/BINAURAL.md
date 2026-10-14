@@ -258,15 +258,17 @@ render:
 
 How it renders:
 
-- **The virtual-speaker path is implied.** A room response only knows its
-  loudspeakers, so the programme is first mixed onto the app's speaker layout
-  as a virtual room (the cascaded mode, whatever `mode` says), then each
-  virtual speaker is convolved with the pair measured from the set's nearest
-  loudspeaker. A channel whose label matches a virtual speaker is routed to
-  it directly, without panning: a 7.1.4 stream on a BRIR measured on a 7.1.4
-  array reaches the ears exactly as the measurement did. Configure the
-  speaker layout to match the set's loudspeakers for that; mismatches beyond
-  10° and loudspeakers shared by several virtual speakers are logged.
+- **The virtual-speaker path is implied, on the set's own loudspeakers.** A
+  room response only knows its loudspeakers, so the programme is first mixed
+  onto them as a virtual room (the cascaded mode, whatever `mode` says), then
+  each one is convolved with the pair measured from it. The layout is the
+  file's (#777), placed in the measured room (see *Enabling it*
+  above), not the app's speaker layout: that one is kept but unused, and its
+  per-speaker gain, mute, delay and bands do not apply. Each loudspeaker
+  within 20° of a standard position takes that position's label, so a channel
+  whose label matches is routed to it directly, without panning: a 7.1.4
+  stream on a BRIR measured on a 7.1.4 array reaches the ears exactly as the
+  measurement did.
 - **Nothing else is added**: no ITD model, air absorption, reflections or
   reverb — they are in the measurement. The LFE keeps its direct feed to
   both ears.
