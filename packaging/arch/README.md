@@ -8,7 +8,7 @@ bundles, which ship everything in one installer). The mpv package itself
 |--------------------|----------------------------|--------------|----------|
 | `orender`          | this repo (tag `v*`)       | GPL-3.0-only | `/usr/bin/orender`, `liborender.so*`, `orender.h`, `orender.pc`, layouts, the `omniphony-renderer` user service (not enabled) |
 | `omniphony-studio` | this repo (tag `v*`)       | GPL-3.0-only | Omniphony Studio, the native egui/wgpu UI (depends on `orender`) |
-| `harletty-bridge`  | sibling `harletty-bridge`  | Apache-2.0   | `/usr/lib/orender/libharletty_{dolby,dts,iamf}_bridge.so`, one library per codec family (up to harletty 0.8.x: one `libharletty_bridge.so`, removed on upgrade) |
+| `harletty-bridge`  | its AUR repository only    | Apache-2.0   | `/usr/lib/orender/libharletty_{dolby,dts,iamf}_bridge.so`, one library per codec family (up to harletty 0.8.x: one `libharletty_bridge.so`, removed on upgrade) |
 
 Dependency shape:
 
@@ -23,7 +23,8 @@ Dependency shape:
 - `harletty-bridge` is a hard dependency of **nothing**: it is an `optdepends`
   everywhere. The bridges are runtime `dlopen` plugins (the `*_bridge.so`
   pattern) that add compressed/object-audio decoding; without them PCM input
-  still renders. It is packaged separately (different repo, different license).
+  still renders. It is packaged separately (different repo, different license),
+  and its recipe is kept in its AUR repository only, not here.
 
 ## Install layout
 
@@ -69,26 +70,22 @@ These fetch pinned release tarballs — no checkout layout needed:
 
 - `orender` 0.4.1 ← Omniphony `v0.4.1`.
 - `omniphony-studio` 0.4.1 ← Omniphony `v0.4.1`.
-- `harletty-bridge` ← harletty-bridge `v$pkgver`, plus the matching
-  Omniphony `v$_omniver` source for its workspace path-deps
-  (`bridge_api`/`spdif`/`sys`). From the release that splits it per codec
-  family it builds and installs three plugins; the IAMF one links the
-  system `opus`.
 
 No cross-package build order is required (nothing hard-depends on the bridge;
 Studio needs `orender` **installed** to run, not to build):
 
 ```sh
 cd orender          && makepkg -si
-cd ../harletty-bridge && makepkg -si   # optional but recommended
 cd ../omniphony-studio && makepkg -si
 ```
+
+The bridges, optional but recommended, come from the AUR: `paru -S harletty-bridge`.
 
 Then the mpv package from the separate `mpv-omniphony` repo (depends on
 `orender>=0.4.1`).
 
 **Bumping a release:** retag the source repo(s), then refresh the version vars
-(`pkgver`, and `_omniver` in the bridge) and `sha256sums` (`updpkgsums` or
+(`pkgver`) and `sha256sums` (`updpkgsums` or
 `makepkg -g`).
 
 ### Clean-room build
