@@ -1032,6 +1032,6 @@
   "sourceBounds.transient": "Nicht gespeichert, wie eine Stummschaltung: der Renderer vergisst die Box beim Neustart.",
   "help.sourceBounds": "Eine Box, in der der Renderer Quellen hört. Ist sie aktiv, wird jede Quelle außerhalb stummgeschaltet: ein Objekt nach seiner Position, ein Bed-Kanal nach der seines Lautsprechers. Ziehen Sie eine Kante der Box im Grundriss oder in der Seitenansicht, um diese Seite zu verschieben, oder ziehen Sie innerhalb der Box, um sie ganz zu verschieben. Grau gezeichnete Quellen sind stumm. Eine Seite an der Wand begrenzt auf dieser Seite nichts.",
   "help.sourceBounds.enabled": "Schaltet jede Quelle außerhalb der Box stumm. Eine Kante zu verschieben oder eine Vorgabe zu wählen schaltet sie ein. Aus bleibt die Box erhalten, schaltet aber nichts stumm.",
-  "help.sourceBounds.presets": "Höhen behält die obere Raumhälfte, Boden die untere, Vorn und Hinten die Hälften vor und hinter dem Hörer. Alle gibt jede Quelle zurück.",
+  "help.sourceBounds.presets": "Höhen behält alles über der Bed-Ebene, Boden die Bed-Ebene und darunter; die Grenze liegt einen halben Schritt über Ohrhöhe, bei der feinsten Höhenauflösung eines Streams. Vorn und Hinten behalten die Hälften vor und hinter dem Hörer. Alle gibt jede Quelle zurück.",
   "sourceBounds.rowExcluded": "Außerhalb der Quellgrenzen: nicht gerendert"
 }
