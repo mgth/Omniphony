@@ -128,7 +128,8 @@ download quarantine once:
 xattr -dr com.apple.quarantine /path/to/mpv-omniphony.app
 ```
 
-(or right-click → Open the first time).
+(or try to open it once, then System Settings → Privacy & Security → *Open
+Anyway*).
 
 ## Play
 
