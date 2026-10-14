@@ -428,6 +428,11 @@ pub fn build_frame(
         );
     }
     room::emit_axes(&mut frame, &project, &points_per_unit, &mut labels);
+    // The source box, whenever it mutes something, panel open or not: what
+    // is silent and why must not depend on a folded section.
+    if live.app.source_bounds.is_active() {
+        room::emit_source_bounds(&live.app.source_bounds, &room, &mut frame);
+    }
     // The hybrid backend's iso-distance surface, for the selected curve point.
     if path.warps_with_room()
         && measured.is_none()

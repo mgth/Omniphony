@@ -117,6 +117,11 @@ pub const STATE: &[(&str, &[Arg])] = &[
         &[Float, Float, Float, Float, Float],
     ),
     (STATE_PHANTOM, &[Json]),
+    // enabled, then x_min, x_max, y_min, y_max, z_min, z_max.
+    (
+        STATE_SOURCE_BOUNDS,
+        &[Int, Float, Float, Float, Float, Float, Float],
+    ),
 ];
 
 /// The arguments `address` carries, when it is a state address.

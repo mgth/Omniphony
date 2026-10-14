@@ -440,6 +440,13 @@ pub enum OscEvent {
     StateRenderTimeMs {
         value: f64,
     },
+    /// The box sources must sit in to be heard, as the renderer clamped it.
+    #[serde(rename = "state:source_bounds")]
+    StateSourceBounds {
+        enabled: bool,
+        min: [f32; 3],
+        max: [f32; 3],
+    },
     /// Where the object test's source is right now, orbit and clamp applied.
     /// Published by the renderer because it owns the orbit phase — an interface
     /// animating its own copy would drift from what is being heard.
@@ -911,6 +918,14 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             y: to_number(args[2])? as f32,
             z: to_number(args[3])? as f32,
         }),
+        (3, "source_bounds") => {
+            let side = |i: usize| Some(to_number(*args.get(i)?)? as f32);
+            Some(OscEvent::StateSourceBounds {
+                enabled: to_number(*args.first()?)? != 0.0,
+                min: [side(1)?, side(3)?, side(5)?],
+                max: [side(2)?, side(4)?, side(6)?],
+            })
+        }
         (3, "overlay") => Some(OscEvent::StateOverlay {
             json: match raw_args.first() {
                 Some(OscType::String(v)) => v.clone(),
@@ -1298,6 +1313,7 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
 #[cfg(test)]
 mod tests {
     use super::{CoordinateFormat, OscEvent, parse_osc_message};
+    use crate::osc_contract;
     use rosc::OscType;
 
     #[test]
@@ -1460,6 +1476,28 @@ mod tests {
                 id,
                 freq_high: Some(value)
             }) if id == "3" && (value - 12000.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn parses_state_source_bounds_as_min_max_pairs() {
+        let parsed = parse_osc_message(
+            osc_contract::STATE_SOURCE_BOUNDS,
+            &[
+                OscType::Int(1),
+                OscType::Float(-0.5),
+                OscType::Float(0.5),
+                OscType::Float(-1.0),
+                OscType::Float(0.0),
+                OscType::Float(0.25),
+                OscType::Float(1.0),
+            ],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(matches!(
+            parsed,
+            Some(OscEvent::StateSourceBounds { enabled: true, min, max })
+                if min == [-0.5, -1.0, 0.25] && max == [0.5, 0.0, 1.0]
         ));
     }
 }

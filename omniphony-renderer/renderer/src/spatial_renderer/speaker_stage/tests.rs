@@ -380,6 +380,7 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
             label_to_speaker: &topology.label_to_speaker,
             layout: &topology.speaker_layout,
             object_params: &object_params,
+            source_bounds: None,
             ramp_mode,
             // The reference looks a moving object's gains up every sample.
             sample_ramp_stride: 1,

@@ -654,6 +654,46 @@ impl ChannelTag {
     pub const DIALOGUE: &'static str = "dialogue";
 }
 
+/// The box a source must sit in to be heard, as the renderer holds it
+/// (`/state/source_bounds`): the normalised cube, `x` left → right, `y` back
+/// → front, `z` floor → ceiling. While enabled the renderer mutes every source
+/// outside it; a side at its end of the cube bounds nothing. Transient, like a
+/// mute: the renderer starts with it off and never saves it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct SourceBounds {
+    pub enabled: bool,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+impl Default for SourceBounds {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        }
+    }
+}
+
+impl SourceBounds {
+    /// Whether it mutes anything: enabled, with a side inside the cube.
+    pub fn is_active(&self) -> bool {
+        self.enabled
+            && (self.min.iter().any(|&lo| lo > -1.0) || self.max.iter().any(|&hi| hi < 1.0))
+    }
+
+    /// Whether a source at `position` is heard, by the renderer's own rule.
+    pub fn admits(&self, position: [f64; 3]) -> bool {
+        !self.is_active()
+            || (0..3).all(|axis| {
+                let p = position[axis] as f32;
+                (self.min[axis] <= -1.0 || p >= self.min[axis])
+                    && (self.max[axis] >= 1.0 || p <= self.max[axis])
+            })
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppState {
     pub sources: HashMap<String, SourcePosition>,
@@ -686,6 +726,8 @@ pub struct AppState {
     pub speaker_gains: HashMap<String, f64>,
     #[serde(rename = "objectMutes")]
     pub object_mutes: HashMap<String, u8>,
+    #[serde(rename = "sourceBounds")]
+    pub source_bounds: SourceBounds,
     #[serde(rename = "speakerMutes")]
     pub speaker_mutes: HashMap<String, u8>,
     #[serde(rename = "roomRatio")]
@@ -1273,6 +1315,7 @@ impl Default for AppState {
             object_speaker_gains: HashMap::new(),
             speaker_gains: HashMap::new(),
             object_mutes: HashMap::new(),
+            source_bounds: SourceBounds::default(),
             speaker_mutes: HashMap::new(),
             room_ratio: RoomRatio::default(),
             spread: SpreadState::default(),

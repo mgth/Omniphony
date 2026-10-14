@@ -29,6 +29,8 @@ pub enum BroadcastValue {
     Float(f32),
     Fff(f32, f32, f32),
     String(String),
+    /// Several arguments of any type, as the state address's shape says.
+    Args(Vec<OscType>),
     /// Raw bytes sent as a single OSC `blob` arg. Used for bulk binary payloads
     /// (e.g. the chunked, compressed speaker gain table) where text/float args
     /// would be far too verbose. Any framing (version, chunk index, …) is encoded
@@ -748,6 +750,7 @@ pub static SIMPLE_CONTROL_COMMANDS: &[Command<SimpleHandler>] = &[
         spread_distance_curve,
     ),
     Command::prefix(osc_contract::CONTROL_HYBRID_PREFIX, hybrid),
+    Command::exact(osc_contract::CONTROL_SOURCE_BOUNDS, source_bounds),
     Command::prefix(osc_contract::CONTROL_OBJECT_PREFIX, object),
 ];
 
@@ -850,6 +853,59 @@ fn object(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffect
         return Some(effects);
     }
     None
+}
+
+/// `[enabled, x_min, x_max, y_min, y_max, z_min, z_max]`: the box a source
+/// must sit in to be heard. Transient, like a mute: its own state address
+/// publishes it (a drag sends a burst, so no bundle per write) and no Save is
+/// for it.
+fn source_bounds(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<ControlEffects> {
+    let enabled = parse_bool_arg(msg.args.first());
+    let side = |i: usize| parse_f32_arg(msg.args.get(i));
+    let (Some(enabled), Some(x0), Some(x1), Some(y0), Some(y1), Some(z0), Some(z1)) = (
+        enabled,
+        side(1),
+        side(2),
+        side(3),
+        side(4),
+        side(5),
+        side(6),
+    ) else {
+        return Some(ControlEffects::rejected(
+            "source_bounds takes enabled, x_min, x_max, y_min, y_max, z_min, z_max",
+        ));
+    };
+    let bounds = renderer::live_params::SourceBounds::new(enabled, [x0, y0, z0], [x1, y1, z1]);
+    ctx.renderer.live.write().source_bounds = bounds;
+    let mut effects = ControlEffects::transient(Notify::DirtyOnly);
+    effects.broadcasts.push(BroadcastUpdate {
+        addr: osc_contract::STATE_SOURCE_BOUNDS.to_string(),
+        value: BroadcastValue::Args(source_bounds_args(&bounds)),
+    });
+    effects.log_message = Some(format!(
+        "OSC: source_bounds -> {} x[{}, {}] y[{}, {}] z[{}, {}]",
+        if bounds.enabled { "on" } else { "off" },
+        bounds.min[0],
+        bounds.max[0],
+        bounds.min[1],
+        bounds.max[1],
+        bounds.min[2],
+        bounds.max[2],
+    ));
+    Some(effects)
+}
+
+/// The arguments of `/state/source_bounds`: the control's, as clamped.
+pub fn source_bounds_args(bounds: &renderer::live_params::SourceBounds) -> Vec<OscType> {
+    vec![
+        OscType::Int(i32::from(bounds.enabled)),
+        OscType::Float(bounds.min[0]),
+        OscType::Float(bounds.max[0]),
+        OscType::Float(bounds.min[1]),
+        OscType::Float(bounds.max[1]),
+        OscType::Float(bounds.min[2]),
+        OscType::Float(bounds.max[2]),
+    ]
 }
 
 /// Gain-table chunking at both sizes (#680, step 3).
@@ -1112,6 +1168,45 @@ mod persistence_class_tests {
             "object mute is still published"
         );
         assert!(ctx.renderer.live.read().objects[&3].muted);
+
+        let (effects, ctx) = apply(
+            osc_contract::CONTROL_SOURCE_BOUNDS,
+            vec![
+                OscType::Int(1),
+                OscType::Float(0.5),
+                OscType::Float(-0.5),
+                OscType::Float(-1.0),
+                OscType::Float(1.0),
+                OscType::Float(0.0),
+                OscType::Float(2.0),
+            ],
+        );
+        assert!(!effects.mark_dirty, "source bounds");
+        assert!(effects.publish_only, "source bounds are still published");
+        let bounds = ctx.renderer.live.read().source_bounds;
+        assert!(bounds.enabled);
+        assert_eq!(bounds.min, [-0.5, -1.0, 0.0], "ordered and clamped");
+        assert_eq!(bounds.max, [0.5, 1.0, 1.0]);
+        let echoed = &effects.broadcasts[0];
+        assert_eq!(echoed.addr, osc_contract::STATE_SOURCE_BOUNDS);
+        match &echoed.value {
+            BroadcastValue::Args(args) => assert_eq!(*args, source_bounds_args(&bounds)),
+            other => panic!("source bounds echoed as {other:?}"),
+        }
+    }
+
+    /// Source bounds missing a side are refused whole: nothing changes.
+    #[test]
+    fn source_bounds_need_every_side() {
+        let (effects, ctx) = apply(
+            osc_contract::CONTROL_SOURCE_BOUNDS,
+            vec![OscType::Int(1), OscType::Float(0.0)],
+        );
+        assert!(effects.rejected.is_some());
+        assert_eq!(
+            ctx.renderer.live.read().source_bounds,
+            renderer::live_params::SourceBounds::default()
+        );
     }
 
     /// A delay in the same patch as a mute is a setting: the patch dirties.

@@ -59,7 +59,7 @@ pub mod stream;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 7;
+pub const CONTRACT_REVISION: u32 = 8;
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -432,6 +432,16 @@ pub const CONTROL_RESUME: &str = "/omniphony/control/resume";
 /// Prefix for the per-object mute address. Append `"{id}/mute"`.
 pub const CONTROL_OBJECT_PREFIX: &str = "/omniphony/control/object/";
 
+/// The box a source must sit in to be heard: args `[enabled (int 0|1),
+/// x_min, x_max, y_min, y_max, z_min, z_max (float)]`, in the renderer's
+/// normalised cube (`x` left → right, `y` back → front, `z` floor → ceiling,
+/// each in `[-1, 1]`). While enabled, every input channel — an object at its
+/// position, a bed channel at its speaker's — outside the box is muted; a side
+/// at its end of the cube (`-1` or `1`) bounds nothing, so sources beyond the
+/// cube still pass it. Transient, like a mute: never saved, off at start.
+/// Echoed on [`STATE_SOURCE_BOUNDS`].
+pub const CONTROL_SOURCE_BOUNDS: &str = "/omniphony/control/source_bounds";
+
 // Families the engine matches by prefix and then by tail, rather than as whole
 // addresses. Naming the prefix is what both sides can share: the engine strips
 // it, a client appends to it, and neither spells the half the other relies on.
@@ -533,6 +543,9 @@ pub const STATE_LOUDNESS: &str = "/omniphony/state/loudness";
 pub const STATE_MONITORING: &str = "/omniphony/state/monitoring";
 pub const STATE_OBJECT_GENERATORS: &str = "/omniphony/state/object_generators";
 pub const STATE_OBJECT_TEST_POSITION: &str = "/omniphony/state/object_test/position";
+/// The source box in force: the arguments of [`CONTROL_SOURCE_BOUNDS`], as the
+/// engine clamped them. Sent on every change and in the snapshot.
+pub const STATE_SOURCE_BOUNDS: &str = "/omniphony/state/source_bounds";
 /// Schema of the declared live options (`renderer::options` registry rows),
 /// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
 pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
@@ -767,6 +780,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_RENDER_BRIDGE_PATH,
     CONTROL_RENDER_BRIDGE_PATHS,
     CONTROL_OBJECT_TEST,
+    CONTROL_SOURCE_BOUNDS,
     CONTROL_OBJECT_TEST_CLIP,
     CONTROL_OBJECT_TEST_ROTATION,
     CONTROL_RENDER_EVALUATION_MODE,
@@ -900,6 +914,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_OBJECT_TEST_POSITION,
     STATE_PHANTOM,
     STATE_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS,
+    STATE_SOURCE_BOUNDS,
 ];
 
 /// Session handshake and high-rate stream addresses: everything under
@@ -1110,7 +1125,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (7, 0x05dc_e6a1_b721_9d45);
+    const PINNED_ADDRESS_SET: (u32, u64) = (8, 0xa83f_d3d0_5c9d_44ab);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

@@ -24,7 +24,7 @@ class decides the plumbing.
 | **App** | How Studio reaches and launches the engine: host, ports, auto-start, keep-alive, last folders | `osc_config.json` | At once (200 ms debounce) | Never lights it |
 | **Render / engine** | Anything that changes what is heard or how the engine behaves: backend, layout, gains, delays, binaural, placement, input, output, latency, options, profiles | `config.yaml` | **Only** on `/control/save_config` | Lights it on a real change |
 | **Action** | A button that writes a file it names: layout export, backend script save, SOFA upload, installing the service | The file the action names | On the click | Never lights it |
-| **Transient** | Gestures and live-only state: mutes, a manual head pose, test signals, subscriptions, resets, selections, open modals | Nowhere | Never | Never lights it |
+| **Transient** | Gestures and live-only state: mutes, the source bounds box, a manual head pose, test signals, subscriptions, resets, selections, open modals | Nowhere | Never | Never lights it |
 
 ### Exceptions, and why
 

@@ -70,6 +70,8 @@ use speaker_stage::SpeakerRenderStage;
 struct LiveSnapshot<'a> {
     master_gain: f32,
     object_params: &'a [crate::live_params::ObjectLiveParams],
+    /// The source box, `None` while it mutes nothing.
+    source_bounds: Option<crate::live_params::SourceBounds>,
     ramp_mode: RampMode,
     sample_ramp_stride: usize,
     use_loudness: bool,
@@ -560,6 +562,29 @@ impl SpatialRenderer {
         &mut states[channel_idx]
     }
 
+    /// Where input channel `channel_idx` sits, for the source box: a directly
+    /// routed channel at the speaker its label maps to, any other at the
+    /// position its metadata last set — what a client shows, and known before
+    /// the block's ramp has moved the object there.
+    fn source_position(
+        channel_idx: usize,
+        state: &ChannelState,
+        channel_routing: &[ChannelRoute],
+        label_to_speaker: &std::collections::HashMap<bridge_api::RChannelLabel, usize>,
+        layout: &crate::speaker_layout::SpeakerLayout,
+    ) -> [f32; 3] {
+        if let Some(ChannelRoute::Direct(label)) = channel_routing.get(channel_idx) {
+            if let Some(s) = label_to_speaker
+                .get(label)
+                .and_then(|&idx| layout.speakers.get(idx))
+            {
+                return [s.x, s.y, s.z];
+            }
+        }
+        let [x, y, z] = state.ramp.target_position;
+        [x as f32, y as f32, z as f32]
+    }
+
     pub fn reset_runtime_state(&self) {
         self.reset_requested
             .store(true, std::sync::atomic::Ordering::Release);
@@ -908,6 +933,7 @@ impl SpatialRenderer {
             LiveSnapshot {
                 master_gain: g.master_gain,
                 object_params: &self.object_params_buf[..input_channel_count],
+                source_bounds: g.source_bounds.is_active().then_some(g.source_bounds),
                 ramp_mode: g.options.ramp_mode,
                 sample_ramp_stride: g.options.sample_ramp_stride,
                 use_loudness: g.options.use_loudness,
@@ -1071,6 +1097,7 @@ impl SpatialRenderer {
                         label_to_speaker: active_label_to_speaker,
                         layout: active_layout,
                         object_params: live.object_params,
+                        source_bounds: live.source_bounds,
                         ramp_mode: live.ramp_mode,
                         sample_ramp_stride: live.sample_ramp_stride,
                         ramp_strategy,
@@ -1103,11 +1130,21 @@ impl SpatialRenderer {
                     let states = &mut self.channel_states;
                     for c in 0..input_channel_count {
                         // Object-level mute as a 0/1 factor (per-object output gain was
-                        // removed; only mute remains live-tunable).
-                        let obj_gain = match self.object_params_buf.get(c) {
-                            Some(o) if o.muted => 0.0,
-                            _ => 1.0,
-                        };
+                        // removed; only mute remains live-tunable), and the
+                        // source box, which mutes a channel outside it alike.
+                        let muted = matches!(self.object_params_buf.get(c), Some(o) if o.muted);
+                        let outside = live.source_bounds.is_some_and(|bounds| {
+                            states.get(c).is_some_and(|state| {
+                                !bounds.admits(Self::source_position(
+                                    c,
+                                    state,
+                                    &channel_routing,
+                                    active_label_to_speaker,
+                                    active_layout,
+                                ))
+                            })
+                        });
+                        let obj_gain = if muted || outside { 0.0 } else { 1.0 };
                         // Stream metadata gain, same semantics as the VBAP path:
                         // silent (−inf floor) until the first metadata arrives.
                         let gain_db = states
@@ -1325,6 +1362,7 @@ impl SpatialRenderer {
             label_to_speaker: active_label_to_speaker,
             layout: active_layout,
             object_params: live.object_params,
+            source_bounds: live.source_bounds,
             ramp_mode: live.ramp_mode,
             sample_ramp_stride: live.sample_ramp_stride,
             ramp_strategy,

@@ -396,7 +396,7 @@ comparisons:
 | Table | Layer | What it holds |
 |---|---|---|
 | `LIVE_CONTROL_COMMANDS` | `runtime_control::live_control` | the generic setters and the group apply; the metering and diag cadences; the generator and phantom parameters; the placement |
-| `SIMPLE_CONTROL_COMMANDS` | `runtime_control::osc` | layout and speaker patches; the test signals; ear gain and mute; the manual head pose, recenter and calibration; the SOFA upload; backend parameters and the spread aliases; the layout radius; the hybrid curve; object mutes |
+| `SIMPLE_CONTROL_COMMANDS` | `runtime_control::osc` | layout and speaker patches; the test signals; ear gain and mute; the manual head pose, recenter and calibration; the SOFA upload; backend parameters and the spread aliases; the layout radius; the hybrid curve; object mutes; the source bounds |
 | `ENGINE_COMMANDS` | `orender_engine::osc::dispatch` | the mpv overlay; metering, diag and gain-table subscriptions; the realtime gains; the bridge and input paths; the profiles; the backend files; the layout export |
 | `HOST_COMMANDS` | `host_audio` | the audio and input JSON patches and group applies; the device refresh; the input layout import; the resampling hold and reset |
 
@@ -410,8 +410,8 @@ Why these are not options:
 
 - **Commands**: save, apply, refresh, upload, recenter, calibrate, a profile
   switch, a file get/put, an export. They do something; they hold no value.
-- **Transient state**: the test signals, speaker / ear / object mutes, the
-  manual head pose, the resampling hold. A listening gesture, published and
+- **Transient state**: the test signals, speaker / ear / object mutes, the source
+  bounds, the manual head pose, the resampling hold. A listening gesture, published and
   never saved (`docs/persistence-policy.md`).
 - **Per-client subscriptions**: metering, diag, gain tables. They belong to
   the client that asked, not to the renderer.
