@@ -22,14 +22,14 @@ use crate::ui::{theme, widgets};
 
 /// The box's colour: the 3D scene's (`room::SOURCE_BOUNDS_COLOR`).
 const BOX: Color32 = Color32::from_rgb(0xff, 0x6b, 0xd6);
-const BOX_FILL: Color32 = Color32::from_rgba_premultiplied(40, 17, 34, 40);
-const ROOM_FILL: Color32 = Color32::from_rgba_premultiplied(13, 13, 13, 13);
+const BOX_FILL: Color32 = Color32::from_rgba_premultiplied(38, 16, 32, 38);
+const ROOM_FILL: Color32 = Color32::from_rgba_premultiplied(14, 19, 24, 40);
 const ROOM_EDGE: Color32 = Color32::from_rgba_premultiplied(76, 83, 89, 89);
 const AXIS: Color32 = Color32::from_rgba_premultiplied(33, 35, 38, 38);
 /// What lies outside the box is shaded, so the part that is heard stands out.
-const OUTSIDE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 110);
+const OUTSIDE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 150);
 const HEARD: Color32 = Color32::from_rgb(0xd9, 0xec, 0xff);
-const SILENCED: Color32 = Color32::from_rgba_premultiplied(70, 76, 82, 110);
+const SILENCED: Color32 = Color32::from_rgba_premultiplied(66, 72, 78, 140);
 /// The drawing's height cap, in points.
 const MAX_HEIGHT: f32 = 200.0;
 /// The gap between the plan and the side view, as a fraction of the scale.
@@ -37,7 +37,7 @@ const GAP: f32 = 0.25;
 /// How far from an edge, in points, still grabs it.
 const GRAB: f32 = 6.0;
 /// The source dots' radius, in points.
-const DOT: f32 = 2.6;
+const DOT: f32 = 3.2;
 
 /// The plan or the side view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -307,7 +307,11 @@ impl StudioSpike {
             let (across, up) = (span(&extent, a), span(&extent, b));
             let size = vec2(width(across) * scale, width(up) * scale);
             Frame {
-                rect: Rect::from_min_size(Pos2::new(x, top + tallest * scale - size.y), size),
+                // Centred on the taller of the two.
+                rect: Rect::from_min_size(
+                    Pos2::new(x, top + (tallest * scale - size.y) / 2.0),
+                    size,
+                ),
                 view,
                 across,
                 up,
@@ -551,8 +555,11 @@ impl StudioSpike {
             for dot in dots {
                 let room_point = space.to_room(dot.adm);
                 let at = f.to_screen(room_axis(&room_point, a), room_axis(&room_point, v));
-                let colour = if dot.heard { HEARD } else { SILENCED };
-                painter.circle_filled(at, DOT, colour);
+                if dot.heard {
+                    painter.circle(at, DOT, HEARD, Stroke::new(1.0, Color32::BLACK));
+                } else {
+                    painter.circle_filled(at, DOT - 0.6, SILENCED);
+                }
             }
             let edge = if bounds.enabled {
                 BOX
