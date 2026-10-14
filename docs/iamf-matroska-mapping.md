@@ -1,9 +1,17 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # AOM IAMF codec mapping in Matroska — draft
 
 **Status:** draft, written in the Omniphony project as a proposal for
 [matroska-specification#940](https://github.com/ietf-wg-cellar/matroska-specification/issues/940).
 Not endorsed by AOMedia or the CELLAR working group. Version 0.2,
 2026-10-12 (v0.1: 2026-10-01). Changes since v0.1 are listed at the end.
+
+**License:** copyright 2026 Mathieu GRENET. Unlike the rest of the
+repository (GPL-3.0-or-later), this document is licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), the license of
+the Matroska specifications, so that its text can be reused there or
+elsewhere with attribution. The IAMF syntax and element names it quotes
+remain AOMedia's.
 
 This document specifies the storage of [IAMF](#iamf-specification) (AOMedia
 Immersive Audio Model and Formats) in [Matroska](#matroska-specifications)
