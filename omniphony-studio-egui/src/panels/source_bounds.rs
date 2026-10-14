@@ -30,6 +30,14 @@ const AXIS: Color32 = Color32::from_rgba_premultiplied(33, 35, 38, 38);
 const OUTSIDE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 150);
 const HEARD: Color32 = Color32::from_rgb(0xd9, 0xec, 0xff);
 const SILENCED: Color32 = Color32::from_rgba_premultiplied(66, 72, 78, 140);
+/// Where the bed layer ends, for the Floor and Heights presets: half a step
+/// above the ear-level plane (`z = 0`) at the finest height coding a stream
+/// carries, so the bed and every object at its level fall on the floor side
+/// and the first step up on the heights side. Object heights come in steps
+/// of 1/15 in the classic coding (E-AC-3 and TrueHD object metadata: a sign
+/// and four bits) and 1/127 in the extended one (IAMF's 8-bit cartesian
+/// positions); half of the finer is 1/254, below both first steps.
+const BED_TOP: f32 = 1.0 / 254.0;
 /// The drawing's height cap, in points.
 const MAX_HEIGHT: f32 = 200.0;
 /// The gap between the plan and the side view, as a fraction of the scale.
@@ -185,24 +193,15 @@ impl StudioSpike {
         let (bounds, room, dots, ready) = {
             let live = self.host.read();
             let bounds = live.app.source_bounds;
-            let speakers = live.selected_speakers();
             let dots: Vec<Dot> = live
                 .app
                 .sources
                 .values()
                 // Metadata-silent objects are not drawn in the scene either.
                 .filter(|src| !src.gain_db.is_some_and(|g| g <= -128))
-                .map(|src| {
-                    // A direct channel is judged by its speaker's place, as
-                    // the renderer does.
-                    let adm = src
-                        .direct_speaker_index
-                        .and_then(|i| speakers.get(i as usize))
-                        .map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z]);
-                    Dot {
-                        adm,
-                        heard: bounds.admits(adm),
-                    }
+                .map(|src| Dot {
+                    adm: live.source_bounds_position(src),
+                    heard: !live.outside_source_bounds(src),
                 })
                 .collect();
             (
@@ -257,8 +256,8 @@ impl StudioSpike {
                                 // the box on, but for the whole room, which
                                 // gives everything back.
                                 next = match index {
-                                    0 => preset(true, [-1.0, -1.0, 0.5], [1.0, 1.0, 1.0]),
-                                    1 => preset(true, [-1.0, -1.0, -1.0], [1.0, 1.0, 0.5]),
+                                    0 => preset(true, [-1.0, -1.0, BED_TOP], [1.0, 1.0, 1.0]),
+                                    1 => preset(true, [-1.0, -1.0, -1.0], [1.0, 1.0, BED_TOP]),
                                     2 => preset(true, [-1.0, 0.0, -1.0], [1.0, 1.0, 1.0]),
                                     3 => preset(true, [-1.0, -1.0, -1.0], [1.0, 0.0, 1.0]),
                                     _ => SourceBounds::default(),
@@ -599,7 +598,8 @@ fn bound_field(value: &mut f32, range: std::ops::RangeInclusive<f32>) -> egui::D
     egui::DragValue::new(value)
         .speed(0.01)
         .range(range)
-        .fixed_decimals(2)
+        // Three, so the presets' bed top reads as above zero.
+        .fixed_decimals(3)
 }
 
 /// The box's sides as numbers, an axis per row: min and max, in the cube's
@@ -615,10 +615,10 @@ fn source_bounds_fields(ui: &mut Ui, bounds: &mut SourceBounds) {
         let changed = widgets::label_row(ui, label, |ui| {
             // Right to left: the max is placed first.
             let hi_changed =
-                widgets::number_field(ui, 48.0, bound_field(&mut hi, lo..=1.0)).changed();
+                widgets::number_field(ui, 54.0, bound_field(&mut hi, lo..=1.0)).changed();
             ui.label(egui::RichText::new("…").color(theme::TEXT_MUTED));
             let lo_changed =
-                widgets::number_field(ui, 48.0, bound_field(&mut lo, -1.0..=hi)).changed();
+                widgets::number_field(ui, 54.0, bound_field(&mut lo, -1.0..=hi)).changed();
             hi_changed || lo_changed
         });
         if changed {
@@ -748,6 +748,27 @@ mod tests {
             "the depth followed the other view: {after:?}"
         );
         assert_eq!(after.min, front_half.min);
+    }
+
+    /// Floor keeps the bed layer and what is level with it; Heights keeps
+    /// the first step up and above, in the classic coding (1/15) as in the
+    /// extended one (1/127).
+    #[test]
+    fn floor_and_heights_split_just_above_the_bed() {
+        let floor = preset(true, [-1.0, -1.0, -1.0], [1.0, 1.0, BED_TOP]);
+        let heights = preset(true, [-1.0, -1.0, BED_TOP], [1.0, 1.0, 1.0]);
+        for z in [0.0, -1.0 / 15.0, -1.0] {
+            assert!(
+                floor.admits([0.0, 1.0, z]) && !heights.admits([0.0, 1.0, z]),
+                "z {z}"
+            );
+        }
+        for z in [1.0 / 127.0, 1.0 / 15.0, 1.0] {
+            assert!(
+                !floor.admits([0.0, 1.0, z]) && heights.admits([0.0, 1.0, z]),
+                "z {z}"
+            );
+        }
     }
 
     #[test]

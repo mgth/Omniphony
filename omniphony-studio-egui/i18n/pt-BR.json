@@ -1032,5 +1032,6 @@
   "sourceBounds.transient": "Não é salvo, como um mudo: o renderizador esquece a caixa ao reiniciar.",
   "help.sourceBounds": "Uma caixa na qual o renderizador ouve as fontes. Ligada, ela silencia toda fonte fora dela: um objeto pela sua posição, um canal do bed pela do seu alto-falante. Arraste uma borda da caixa na planta ou no perfil para mover esse lado, ou arraste dentro da caixa para movê-la inteira. As fontes em cinza são as silenciadas. Um lado deixado na parede não limita nada desse lado.",
   "help.sourceBounds.enabled": "Silencia toda fonte fora da caixa. Mover uma borda ou escolher uma predefinição a liga. Desligada, a caixa é mantida mas não silencia nada.",
-  "help.sourceBounds.presets": "Alturas mantém a metade superior da sala, Piso a inferior, Frente e Trás as metades à frente e atrás do ouvinte. Tudo devolve todas as fontes."
+  "help.sourceBounds.presets": "Alturas mantém tudo acima da camada do bed, Piso a camada do bed e abaixo; o limite fica meio passo acima do nível dos ouvidos, na resolução de altura mais fina de um fluxo. Frente e Trás mantêm as metades à frente e atrás do ouvinte. Tudo devolve todas as fontes.",
+  "sourceBounds.rowExcluded": "Fora dos limites das fontes: não renderizada"
 }

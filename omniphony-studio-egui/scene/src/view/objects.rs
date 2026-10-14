@@ -69,6 +69,9 @@ const EFFECTIVE_EMISSIVE_SELECTED: u32 = 0x10566c;
 const TAG_A: u32 = 0xff8b6b;
 const TAG_B: u32 = 0x62d7c7;
 const BASE_OPACITY: f32 = 0.7;
+/// A source the render leaves out — muted, or outside the source box — and
+/// its trail: grey, whatever its own colour.
+pub const SILENT_GREY: u32 = 0x6b7178;
 
 const PALETTE: [u32; 16] = [
     0xff6b6b, 0x4ecdc4, 0xffe66d, 0x5dade2, 0xaf7ac5, 0xf5b041, 0x58d68d, 0xec7063, 0x48c9b0,
@@ -376,14 +379,10 @@ pub fn collect(
         let level_scale = dbfs_to_scale(rms, 0.5, 2.4);
 
         let selected = selected_object == Some(id.as_str());
-        // Muted, or outside the source box: the renderer silences both alike,
-        // and judges a direct channel by its speaker's place, as here.
-        let adm = src
-            .direct_speaker_index
-            .and_then(|i| live.selected_speakers().get(i as usize))
-            .map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z]);
+        // Muted, or outside the source box: the renderer silences both
+        // alike, and both are drawn grey.
         let muted = live.app.object_mutes.get(id).is_some_and(|m| *m != 0)
-            || !live.app.source_bounds.admits(adm);
+            || live.outside_source_bounds(src);
         let (palette_color, semantic) = base_color(id, src.source_tag.as_deref());
         let use_object_color = settings.object_colors_enabled || semantic;
         let object_color = if use_object_color {
@@ -461,8 +460,21 @@ pub fn collect(
             halo_opacity = 0.2;
         }
 
+        // A source the render leaves out is drawn grey and dimmer, as its
+        // list row is: what is drawn in colour is what is heard.
+        if muted {
+            let grey = hex_linear(SILENT_GREY);
+            sphere_color = grey;
+            ring_color = grey;
+            halo_color = grey;
+            sphere_opacity *= 0.6;
+            ring_opacity *= 0.6;
+            halo_opacity *= 0.5;
+        }
+
         // --- updateSourceSelectionStyles ---
         let emissive = match mode {
+            ObjectDisplayMode::Circle if muted => scale_rgb(hex_linear(SILENT_GREY), 0.2),
             ObjectDisplayMode::Circle => {
                 if selected {
                     hex_linear(SOURCE_SELECTED_EMISSIVE)
@@ -692,5 +704,53 @@ mod tests {
             ..ChannelTag::default()
         };
         assert_eq!(tag_name(&unknown), "commentary");
+    }
+
+    /// What the render leaves out is drawn grey: an object outside the
+    /// source box, and a muted one, while the others keep their colour.
+    #[test]
+    fn a_source_the_render_leaves_out_is_grey() {
+        use crate::model::app_state::{AppState, SourceBounds, SourcePosition};
+        let mut live = crate::osc::dispatch::Live::new(AppState::new(Vec::new()));
+        for (id, z) in [("1", 1.0), ("2", -1.0), ("3", 1.0)] {
+            live.app.sources.insert(
+                id.to_owned(),
+                SourcePosition {
+                    z,
+                    ..SourcePosition::default()
+                },
+            );
+        }
+        live.app.object_mutes.insert("3".to_owned(), 1);
+        live.app.source_bounds = SourceBounds {
+            enabled: true,
+            min: [-1.0, -1.0, 0.5],
+            max: [1.0; 3],
+        };
+        let head = Head {
+            front: [1.0, 0.0, 0.0],
+            right: [0.0, 0.0, 1.0],
+        };
+        let settings = ViewSettings::default();
+        let visuals = collect(
+            &live,
+            &settings,
+            &live.app.room_ratio,
+            &[],
+            &head,
+            None,
+            None,
+        );
+        let grey = hex_linear(SILENT_GREY);
+        let of = |id: &str| visuals.iter().find(|o| o.id == id).unwrap();
+        assert!(
+            !of("1").muted && of("1").ring_color != grey,
+            "inside, heard"
+        );
+        assert!(
+            of("2").muted && of("2").ring_color == grey,
+            "outside the box"
+        );
+        assert!(of("3").muted && of("3").ring_color == grey, "muted");
     }
 }

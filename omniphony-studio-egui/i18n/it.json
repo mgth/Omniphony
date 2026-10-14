@@ -1032,5 +1032,6 @@
   "sourceBounds.transient": "Non salvato, come un mute: il renderer dimentica il box al riavvio.",
   "help.sourceBounds": "Un box in cui il renderer sente le sorgenti. Attivo, silenzia ogni sorgente fuori da esso: un oggetto secondo la sua posizione, un canale del bed secondo quella del suo altoparlante. Trascinate un bordo del box sulla pianta o sul profilo per spostare quel lato, o trascinate all'interno per spostarlo intero. Le sorgenti in grigio sono quelle silenziate. Un lato lasciato contro la parete non limita nulla da quel lato.",
   "help.sourceBounds.enabled": "Silenzia ogni sorgente fuori dal box. Spostare un bordo o scegliere una preimpostazione lo attiva. Disattivato, il box resta ma non silenzia nulla.",
-  "help.sourceBounds.presets": "Altezze tiene la metà superiore della stanza, Pavimento quella inferiore, Davanti e Dietro le metà davanti e dietro l'ascoltatore. Tutto restituisce ogni sorgente."
+  "help.sourceBounds.presets": "Altezze tiene tutto ciò che sta sopra lo strato del bed, Pavimento lo strato del bed e ciò che sta sotto; il limite è mezzo passo sopra il livello delle orecchie, alla risoluzione di altezza più fine di un flusso. Davanti e Dietro tengono le metà davanti e dietro l'ascoltatore. Tutto restituisce ogni sorgente.",
+  "sourceBounds.rowExcluded": "Fuori dai limiti delle sorgenti: non renderizzata"
 }

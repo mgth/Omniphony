@@ -1032,5 +1032,6 @@
   "sourceBounds.transient": "Non enregistré, comme un mute : le moteur oublie la boîte à son redémarrage.",
   "help.sourceBounds": "Une boîte dans laquelle le moteur entend les sources. Active, elle coupe toute source hors d'elle : un objet selon sa position, un canal du bed selon celle de son haut-parleur. Faites glisser un bord de la boîte sur le plan ou le profil pour déplacer ce côté, ou glissez à l'intérieur pour la déplacer entière. Les sources dessinées en gris sont celles qui sont coupées. Un côté laissé contre le mur ne borne rien de ce côté.",
   "help.sourceBounds.enabled": "Coupe toute source hors de la boîte. Déplacer un bord ou choisir un préréglage l'active. Désactivée, la boîte est gardée mais ne coupe rien.",
-  "help.sourceBounds.presets": "Hauteurs garde la moitié haute de la pièce, Sol la moitié basse, Avant et Arrière les moitiés devant et derrière l'auditeur. Tout rend toutes les sources."
+  "help.sourceBounds.presets": "Hauteurs garde tout ce qui est au-dessus de la couche du bed, Sol la couche du bed et en dessous ; la limite est un demi-pas au-dessus du niveau des oreilles, à la résolution de hauteur la plus fine d'un flux. Avant et Arrière gardent les moitiés devant et derrière l'auditeur. Tout rend toutes les sources.",
+  "sourceBounds.rowExcluded": "Hors des bornes des sources : non rendu"
 }
