@@ -100,6 +100,15 @@ SHAs and the guard rejects the tag.
 too, so the promotion PR re-runs the full suite it just ran on `main` — budget
 for two CI passes (~6 min each at 0.5.1) between the bump merge and the tag.
 
+A second promotion before the tag (0.7.0 had one: fifteen pull requests
+landed on `main` between the first promotion and the tag) shows as **behind**
+and cannot be merged the ordinary way: `release` requires an up-to-date head,
+and its own head is the first promotion's merge commit, which `main` does not
+contain. That commit adds nothing (its tree is `main`'s at the time), so the
+owner merges past the rule (`gh pr merge N --merge --admin`); the other way is
+a real merge of `release` into `main`, as after 0.6.0. The `listened` label is
+needed again whenever the new commits touch the render or output path.
+
 **`listened`** (`.github/workflows/listened.yml`, rules in
 `.github/scripts/listened-check.sh`): when the PR changes the render or output
 path — the sources of the crates between the decoder and the device, the CLI,
@@ -337,8 +346,9 @@ publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
 
 Every release bumps the AUR packages before the release is considered done.
 Local clones live in `aur/<pkg>/` at the workspace root (PKGBUILD sources of
-truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony; the
-`harletty-bridge` recipe has no copy here and lives in its AUR clone only).
+truth: `packaging/arch/` in this repo; `packaging/PKGBUILD` and, from 0.7.0,
+`packaging/PKGBUILD-fel` in mpv-omniphony; the `harletty-bridge` recipe has no
+copy here and lives in its AUR clone only).
 
 | Package | Bump when |
 |---|---|
@@ -361,11 +371,24 @@ Judge each package by its `.pkg.tar.zst`, not by the exit status of a
 status, and at 0.6.0 a 404 on the source tarball went unnoticed that way
 until the package list was checked.
 
+A template that fetches a tag of its own repository cannot carry that
+archive's checksum before the tag exists: after the push, copy each published
+PKGBUILD back over its template (one pull request per repository), so the
+templates are what the AUR builds.
+
+`mpv-omniphony-fel` pins libplacebo by commit (`_plcommit`). Move that pin
+only to a commit of libplacebo's own history that a build and a playback
+verified, never to the head of the local FEL work tree
+(`mpv-omniphony/fel-work/libplacebo`), which may hold uncommitted work: at
+0.7.0 it reported an API version no upstream commit has.
+
 Check the ssh agent holds the AUR key first
 (`SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket ssh-add -l`) and only ask for
 an `ssh-add` when it is empty. The AUR web site blocks robots (Anubis):
 verify with `ssh aur@aur.archlinux.org list-repos` or the RPC API
-(`aur.archlinux.org/rpc/v5/…`), never by scraping the site.
+(`aur.archlinux.org/rpc/v5/…`), never by scraping the site. The RPC index
+lags behind a push (about ten minutes at 0.7.0): what was pushed is
+`git ls-remote origin master` against the local head.
 
 ## 9. Post-release checks
 
