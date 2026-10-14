@@ -573,13 +573,12 @@ impl SpatialRenderer {
         label_to_speaker: &std::collections::HashMap<bridge_api::RChannelLabel, usize>,
         layout: &crate::speaker_layout::SpeakerLayout,
     ) -> [f32; 3] {
-        if let Some(ChannelRoute::Direct(label)) = channel_routing.get(channel_idx) {
-            if let Some(s) = label_to_speaker
+        if let Some(ChannelRoute::Direct(label)) = channel_routing.get(channel_idx)
+            && let Some(s) = label_to_speaker
                 .get(label)
                 .and_then(|&idx| layout.speakers.get(idx))
-            {
-                return [s.x, s.y, s.z];
-            }
+        {
+            return [s.x, s.y, s.z];
         }
         let [x, y, z] = state.ramp.target_position;
         [x as f32, y as f32, z as f32]

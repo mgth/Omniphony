@@ -61,8 +61,10 @@ impl View {
 /// What a drag on the drawing holds.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Grab {
-    /// One side of the box: an ADM axis, and its max end or its min end.
-    Edge { axis: usize, max: bool },
+    /// One side of the box, in the view it was grabbed in: an ADM axis, and
+    /// its max end or its min end. Depth is in both views; the gesture keeps
+    /// reading the pointer in the view it began in.
+    Edge { view: View, axis: usize, max: bool },
     /// The whole box, in a view's two axes, from where the drag began.
     Move {
         view: View,
@@ -274,8 +276,6 @@ impl StudioSpike {
         }
     }
 
-    /// The plan and the side view, side by side at one scale, with the box
-    /// drawn on both and its edges and inside draggable.
     fn source_bounds_drawing(
         &mut self,
         ui: &mut Ui,
@@ -283,304 +283,312 @@ impl StudioSpike {
         room: &RoomRatio,
         dots: &[Dot],
     ) {
-        let space = Space {
-            adm_view: false,
-            room,
-        };
-        let extent = space.extent();
-        let width = |s: Span| (s.max - s.min) as f32;
-        // Plan: lateral × depth. Side: depth × height.
-        let across_total = width(extent.lateral) + width(extent.depth);
-        let tallest = width(extent.depth).max(width(extent.height));
-        let avail = ui.available_width();
-        let scale = (avail / (across_total * (1.0 + GAP / 2.0)))
-            .min(MAX_HEIGHT / tallest)
-            .max(1.0);
-        let gap = GAP * scale;
-        let drawn = vec2(across_total * scale + gap, tallest * scale + 14.0);
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(avail, drawn.y), Sense::click_and_drag());
-        let left = rect.left() + (avail - drawn.x).max(0.0) / 2.0;
-        let top = rect.top() + 14.0;
-        let frame = |view: View, x: f32| {
-            let (a, b) = view.axes();
-            let (across, up) = (span(&extent, a), span(&extent, b));
-            let size = vec2(width(across) * scale, width(up) * scale);
-            Frame {
-                // Centred on the taller of the two.
-                rect: Rect::from_min_size(
-                    Pos2::new(x, top + (tallest * scale - size.y) / 2.0),
-                    size,
-                ),
-                view,
-                across,
-                up,
-                scale,
-            }
-        };
-        let plan = frame(View::Plan, left);
-        let side = frame(View::Side, left + width(extent.lateral) * scale + gap);
-        let frames = [&plan, &side];
+        drawing(ui, &mut self.source_bounds_grab, bounds, room, dots);
+    }
+}
 
-        // The box's sides in room units, per ADM axis.
-        let sides = |b: &SourceBounds| -> [(f64, f64); 3] {
-            std::array::from_fn(|axis| {
-                (
-                    to_room_axis(space, axis, f64::from(b.min[axis])),
-                    to_room_axis(space, axis, f64::from(b.max[axis])),
-                )
-            })
-        };
-        let box_rect = |f: &Frame, b: &SourceBounds| {
-            let s = sides(b);
-            let (a, v) = f.view.axes();
-            Rect::from_two_pos(f.to_screen(s[a].0, s[v].1), f.to_screen(s[a].1, s[v].0))
-        };
+/// Where the two views go in a drawing `avail` wide whose top left is
+/// `origin`: its height, then the plan and the side view, side by side at one
+/// scale and centred on the taller of the two.
+fn views(origin: Pos2, avail: f32, extent: &RoomExtent) -> (f32, Frame, Frame) {
+    let width = |s: Span| (s.max - s.min) as f32;
+    // Plan: lateral × depth. Side: depth × height.
+    let across_total = width(extent.lateral) + width(extent.depth);
+    let tallest = width(extent.depth).max(width(extent.height));
+    let scale = (avail / (across_total * (1.0 + GAP / 2.0)))
+        .min(MAX_HEIGHT / tallest)
+        .max(1.0);
+    let gap = GAP * scale;
+    let drawn = vec2(across_total * scale + gap, tallest * scale + 14.0);
+    let left = origin.x + (avail - drawn.x).max(0.0) / 2.0;
+    let top = origin.y + 14.0;
+    let frame = |view: View, x: f32| {
+        let (a, b) = view.axes();
+        let (across, up) = (span(extent, a), span(extent, b));
+        let size = vec2(width(across) * scale, width(up) * scale);
+        Frame {
+            rect: Rect::from_min_size(Pos2::new(x, top + (tallest * scale - size.y) / 2.0), size),
+            view,
+            across,
+            up,
+            scale,
+        }
+    };
+    let plan = frame(View::Plan, left);
+    let side = frame(View::Side, left + width(extent.lateral) * scale + gap);
+    (drawn.y, plan, side)
+}
 
-        // What the pointer is over: an edge, nearest first, else the inside.
-        let target_at = |p: Pos2, bounds: &SourceBounds| -> Option<Grab> {
-            let f = frames
-                .into_iter()
-                .find(|f| f.rect.expand(GRAB).contains(p))?;
-            let r = box_rect(f, bounds);
-            let (a, v) = f.view.axes();
-            let near_x = p.y >= r.top() - GRAB && p.y <= r.bottom() + GRAB;
-            let near_y = p.x >= r.left() - GRAB && p.x <= r.right() + GRAB;
-            let mut best: Option<(f32, Grab)> = None;
-            let mut consider = |d: f32, grab: Grab| {
-                if d <= GRAB && best.is_none_or(|(bd, _)| d < bd) {
-                    best = Some((d, grab));
-                }
-            };
-            if near_x {
-                consider(
-                    (p.x - r.left()).abs(),
-                    Grab::Edge {
-                        axis: a,
-                        max: false,
-                    },
-                );
-                consider((p.x - r.right()).abs(), Grab::Edge { axis: a, max: true });
+/// The plan and the side view, with the box drawn on both and its edges and
+/// inside draggable. `grab` is what the gesture under way holds.
+fn drawing(
+    ui: &mut Ui,
+    grab: &mut Option<Grab>,
+    bounds: &mut SourceBounds,
+    room: &RoomRatio,
+    dots: &[Dot],
+) {
+    let space = Space {
+        adm_view: false,
+        room,
+    };
+    let extent = space.extent();
+    let avail = ui.available_width();
+    let (height, plan, side) = views(ui.cursor().min, avail, &extent);
+    let (rect, response) = ui.allocate_exact_size(vec2(avail, height), Sense::click_and_drag());
+    let frames = [&plan, &side];
+
+    // The box's sides in room units, per ADM axis.
+    let sides = |b: &SourceBounds| -> [(f64, f64); 3] {
+        std::array::from_fn(|axis| {
+            (
+                to_room_axis(space, axis, f64::from(b.min[axis])),
+                to_room_axis(space, axis, f64::from(b.max[axis])),
+            )
+        })
+    };
+    let box_rect = |f: &Frame, b: &SourceBounds| {
+        let s = sides(b);
+        let (a, v) = f.view.axes();
+        Rect::from_two_pos(f.to_screen(s[a].0, s[v].1), f.to_screen(s[a].1, s[v].0))
+    };
+
+    // What the pointer is over: an edge, nearest first, else the inside.
+    let target_at = |p: Pos2, bounds: &SourceBounds| -> Option<Grab> {
+        let f = frames
+            .into_iter()
+            .find(|f| f.rect.expand(GRAB).contains(p))?;
+        let r = box_rect(f, bounds);
+        let (a, v) = f.view.axes();
+        let near_x = p.y >= r.top() - GRAB && p.y <= r.bottom() + GRAB;
+        let near_y = p.x >= r.left() - GRAB && p.x <= r.right() + GRAB;
+        let mut best: Option<(f32, Grab)> = None;
+        let mut consider = |d: f32, grab: Grab| {
+            if d <= GRAB && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, grab));
             }
-            if near_y {
-                consider(
-                    (p.y - r.bottom()).abs(),
-                    Grab::Edge {
-                        axis: v,
-                        max: false,
-                    },
-                );
-                consider((p.y - r.top()).abs(), Grab::Edge { axis: v, max: true });
-            }
-            if let Some((_, grab)) = best {
-                return Some(grab);
-            }
-            r.contains(p).then(|| {
-                let (ra, rb) = f.to_room(p);
-                Grab::Move {
+        };
+        if near_x {
+            consider(
+                (p.x - r.left()).abs(),
+                Grab::Edge {
                     view: f.view,
-                    from: [to_adm_axis(space, a, ra), to_adm_axis(space, v, rb)],
-                    start: *bounds,
-                }
-            })
-        };
+                    axis: a,
+                    max: false,
+                },
+            );
+            consider(
+                (p.x - r.right()).abs(),
+                Grab::Edge {
+                    view: f.view,
+                    axis: a,
+                    max: true,
+                },
+            );
+        }
+        if near_y {
+            consider(
+                (p.y - r.bottom()).abs(),
+                Grab::Edge {
+                    view: f.view,
+                    axis: v,
+                    max: false,
+                },
+            );
+            consider(
+                (p.y - r.top()).abs(),
+                Grab::Edge {
+                    view: f.view,
+                    axis: v,
+                    max: true,
+                },
+            );
+        }
+        if let Some((_, grab)) = best {
+            return Some(grab);
+        }
+        r.contains(p).then(|| {
+            let (ra, rb) = f.to_room(p);
+            Grab::Move {
+                view: f.view,
+                from: [to_adm_axis(space, a, ra), to_adm_axis(space, v, rb)],
+                start: *bounds,
+            }
+        })
+    };
 
-        if response.drag_started() {
-            self.source_bounds_grab = response
-                .interact_pointer_pos()
-                .and_then(|p| target_at(p, bounds));
-        }
-        if response.drag_stopped() {
-            self.source_bounds_grab = None;
-        }
-        if let Some(grab) = self.source_bounds_grab
-            && let Some(p) = response.interact_pointer_pos()
-        {
-            match grab {
-                Grab::Edge { axis, max } => {
-                    // Either view carrying the axis maps the pointer to it.
-                    let f = frames
-                        .into_iter()
-                        .filter(|f| {
-                            let (a, v) = f.view.axes();
-                            a == axis || v == axis
-                        })
-                        .min_by(|x, y| {
-                            x.rect
-                                .distance_to_pos(p)
-                                .total_cmp(&y.rect.distance_to_pos(p))
-                        });
-                    if let Some(f) = f {
-                        let (ra, rb) = f.to_room(p);
-                        let room_value = if f.view.axes().0 == axis { ra } else { rb };
-                        let value = to_adm_axis(space, axis, room_value) as f32;
-                        *bounds = with_side(*bounds, axis, max, value);
-                        // Dragging an edge means wanting the box heard.
-                        bounds.enabled = true;
-                    }
-                }
-                Grab::Move { view, from, start } => {
-                    let f = if view == View::Plan { &plan } else { &side };
-                    let (a, v) = view.axes();
-                    let (ra, rb) = f.to_room(p);
-                    let now = [to_adm_axis(space, a, ra), to_adm_axis(space, v, rb)];
-                    let moved = shifted(*bounds, &start, a, (now[0] - from[0]) as f32);
-                    *bounds = shifted(moved, &start, v, (now[1] - from[1]) as f32);
-                    bounds.enabled = true;
-                }
+    // The target is the one under the press, not under the pointer once
+    // the drag has started: egui starts it only past a few points of
+    // movement, by which time the pointer has left an edge it grabbed.
+    if response.drag_started() {
+        *grab = ui
+            .input(|i| i.pointer.press_origin())
+            .or(response.interact_pointer_pos())
+            .and_then(|p| target_at(p, bounds));
+    }
+    if response.drag_stopped() {
+        *grab = None;
+    }
+    if let Some(held) = *grab
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        match held {
+            Grab::Edge { view, axis, max } => {
+                let f = if view == View::Plan { &plan } else { &side };
+                let (ra, rb) = f.to_room(p);
+                let room_value = if view.axes().0 == axis { ra } else { rb };
+                let value = to_adm_axis(space, axis, room_value) as f32;
+                *bounds = with_side(*bounds, axis, max, value);
+                // Dragging an edge means wanting the box heard.
+                bounds.enabled = true;
+            }
+            Grab::Move { view, from, start } => {
+                let f = if view == View::Plan { &plan } else { &side };
+                let (a, v) = view.axes();
+                let (ra, rb) = f.to_room(p);
+                let now = [to_adm_axis(space, a, ra), to_adm_axis(space, v, rb)];
+                let moved = shifted(*bounds, &start, a, (now[0] - from[0]) as f32);
+                *bounds = shifted(moved, &start, v, (now[1] - from[1]) as f32);
+                bounds.enabled = true;
             }
         }
-        let hovered = self
-            .source_bounds_grab
-            .or_else(|| response.hover_pos().and_then(|p| target_at(p, bounds)));
-        match hovered {
-            Some(Grab::Edge { axis, .. }) => {
-                let horizontal = match axis {
-                    0 => true,
-                    // Depth runs up the plan and across the side view.
-                    1 => response
-                        .hover_pos()
-                        .or(response.interact_pointer_pos())
-                        .is_some_and(|p| side.rect.expand(GRAB).contains(p)),
-                    _ => false,
-                };
-                ui.ctx().set_cursor_icon(if horizontal {
-                    CursorIcon::ResizeHorizontal
-                } else {
-                    CursorIcon::ResizeVertical
-                });
-            }
-            Some(Grab::Move { .. }) => {
-                ui.ctx()
-                    .set_cursor_icon(if self.source_bounds_grab.is_some() {
-                        CursorIcon::Grabbing
-                    } else {
-                        CursorIcon::Grab
-                    })
-            }
-            None => {}
-        }
-
-        // Paint.
-        let painter = ui.painter().with_clip_rect(rect.expand(2.0));
-        let font = egui::FontId::proportional(theme::FONT_SIZE_SMALL);
-        for f in frames {
-            painter.rect_filled(f.rect, 2.0, ROOM_FILL);
-            // The listener's axes through the origin.
-            let o = f.to_screen(0.0, 0.0);
-            painter.line_segment(
-                [
-                    Pos2::new(f.rect.left(), o.y),
-                    Pos2::new(f.rect.right(), o.y),
-                ],
-                Stroke::new(1.0, AXIS),
-            );
-            painter.line_segment(
-                [
-                    Pos2::new(o.x, f.rect.top()),
-                    Pos2::new(o.x, f.rect.bottom()),
-                ],
-                Stroke::new(1.0, AXIS),
-            );
-            let caption = match f.view {
-                View::Plan => t("sourceBounds.plan"),
-                View::Side => t("sourceBounds.side"),
-            };
-            painter.text(
-                Pos2::new(f.rect.left(), f.rect.top() - 2.0),
-                egui::Align2::LEFT_BOTTOM,
-                caption,
-                font.clone(),
-                theme::TEXT_MUTED,
-            );
-            // Depth is the one direction a reader cannot guess.
-            let (front, back) = (t("sourceBounds.frontEnd"), t("sourceBounds.backEnd"));
-            match f.view {
-                View::Plan => {
-                    painter.text(
-                        Pos2::new(f.rect.center().x, f.rect.top() + 1.0),
-                        egui::Align2::CENTER_TOP,
-                        front,
-                        font.clone(),
-                        theme::TEXT_FAINT,
-                    );
-                    painter.text(
-                        Pos2::new(f.rect.center().x, f.rect.bottom() - 1.0),
-                        egui::Align2::CENTER_BOTTOM,
-                        back,
-                        font.clone(),
-                        theme::TEXT_FAINT,
-                    );
-                }
-                View::Side => {
-                    painter.text(
-                        Pos2::new(f.rect.right() - 2.0, f.rect.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        front,
-                        font.clone(),
-                        theme::TEXT_FAINT,
-                    );
-                    painter.text(
-                        Pos2::new(f.rect.left() + 2.0, f.rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        back,
-                        font.clone(),
-                        theme::TEXT_FAINT,
-                    );
-                }
-            }
-            let r = box_rect(f, bounds);
-            if bounds.enabled {
-                // Shade what lies outside the box: four bands around it.
-                for band in [
-                    Rect::from_min_max(f.rect.min, Pos2::new(f.rect.right(), r.top())),
-                    Rect::from_min_max(Pos2::new(f.rect.left(), r.bottom()), f.rect.max),
-                    Rect::from_min_max(
-                        Pos2::new(f.rect.left(), r.top()),
-                        Pos2::new(r.left(), r.bottom()),
-                    ),
-                    Rect::from_min_max(
-                        Pos2::new(r.right(), r.top()),
-                        Pos2::new(f.rect.right(), r.bottom()),
-                    ),
-                ] {
-                    if band.is_positive() {
-                        painter.rect_filled(band, 0.0, OUTSIDE);
-                    }
-                }
-                painter.rect_filled(r, 0.0, BOX_FILL);
-            }
-            painter.rect_stroke(f.rect, 2.0, Stroke::new(1.0, ROOM_EDGE), StrokeKind::Inside);
-            let (a, v) = f.view.axes();
-            for dot in dots {
-                let room_point = space.to_room(dot.adm);
-                let at = f.to_screen(room_axis(&room_point, a), room_axis(&room_point, v));
-                if dot.heard {
-                    painter.circle(at, DOT, HEARD, Stroke::new(1.0, Color32::BLACK));
-                } else {
-                    painter.circle_filled(at, DOT - 0.6, SILENCED);
-                }
-            }
-            let edge = if bounds.enabled {
-                BOX
+    }
+    let hovered = grab.or_else(|| response.hover_pos().and_then(|p| target_at(p, bounds)));
+    match hovered {
+        Some(Grab::Edge { view, axis, .. }) => {
+            ui.ctx().set_cursor_icon(if view.axes().0 == axis {
+                CursorIcon::ResizeHorizontal
             } else {
-                BOX.gamma_multiply(0.4)
-            };
-            painter.rect_stroke(r, 0.0, Stroke::new(1.5, edge), StrokeKind::Middle);
-            // The grabbed or hovered edge, thicker.
-            if let Some(Grab::Edge { axis, max }) = hovered {
-                let line = if axis == a {
-                    let x = if max { r.right() } else { r.left() };
-                    Some([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())])
-                } else if axis == v {
-                    let y = if max { r.top() } else { r.bottom() };
-                    Some([Pos2::new(r.left(), y), Pos2::new(r.right(), y)])
-                } else {
-                    None
-                };
-                if let Some(line) = line {
-                    painter.line_segment(line, Stroke::new(3.0, BOX));
+                CursorIcon::ResizeVertical
+            });
+        }
+        Some(Grab::Move { .. }) => ui.ctx().set_cursor_icon(if grab.is_some() {
+            CursorIcon::Grabbing
+        } else {
+            CursorIcon::Grab
+        }),
+        None => {}
+    }
+
+    // Paint.
+    let painter = ui.painter().with_clip_rect(rect.expand(2.0));
+    let font = egui::FontId::proportional(theme::FONT_SIZE_SMALL);
+    for f in frames {
+        painter.rect_filled(f.rect, 2.0, ROOM_FILL);
+        // The listener's axes through the origin.
+        let o = f.to_screen(0.0, 0.0);
+        painter.line_segment(
+            [
+                Pos2::new(f.rect.left(), o.y),
+                Pos2::new(f.rect.right(), o.y),
+            ],
+            Stroke::new(1.0, AXIS),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(o.x, f.rect.top()),
+                Pos2::new(o.x, f.rect.bottom()),
+            ],
+            Stroke::new(1.0, AXIS),
+        );
+        let caption = match f.view {
+            View::Plan => t("sourceBounds.plan"),
+            View::Side => t("sourceBounds.side"),
+        };
+        painter.text(
+            Pos2::new(f.rect.left(), f.rect.top() - 2.0),
+            egui::Align2::LEFT_BOTTOM,
+            caption,
+            font.clone(),
+            theme::TEXT_MUTED,
+        );
+        // Depth is the one direction a reader cannot guess.
+        let (front, back) = (t("sourceBounds.frontEnd"), t("sourceBounds.backEnd"));
+        match f.view {
+            View::Plan => {
+                painter.text(
+                    Pos2::new(f.rect.center().x, f.rect.top() + 1.0),
+                    egui::Align2::CENTER_TOP,
+                    front,
+                    font.clone(),
+                    theme::TEXT_FAINT,
+                );
+                painter.text(
+                    Pos2::new(f.rect.center().x, f.rect.bottom() - 1.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    back,
+                    font.clone(),
+                    theme::TEXT_FAINT,
+                );
+            }
+            View::Side => {
+                painter.text(
+                    Pos2::new(f.rect.right() - 2.0, f.rect.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    front,
+                    font.clone(),
+                    theme::TEXT_FAINT,
+                );
+                painter.text(
+                    Pos2::new(f.rect.left() + 2.0, f.rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    back,
+                    font.clone(),
+                    theme::TEXT_FAINT,
+                );
+            }
+        }
+        let r = box_rect(f, bounds);
+        if bounds.enabled {
+            // Shade what lies outside the box: four bands around it.
+            for band in [
+                Rect::from_min_max(f.rect.min, Pos2::new(f.rect.right(), r.top())),
+                Rect::from_min_max(Pos2::new(f.rect.left(), r.bottom()), f.rect.max),
+                Rect::from_min_max(
+                    Pos2::new(f.rect.left(), r.top()),
+                    Pos2::new(r.left(), r.bottom()),
+                ),
+                Rect::from_min_max(
+                    Pos2::new(r.right(), r.top()),
+                    Pos2::new(f.rect.right(), r.bottom()),
+                ),
+            ] {
+                if band.is_positive() {
+                    painter.rect_filled(band, 0.0, OUTSIDE);
                 }
+            }
+            painter.rect_filled(r, 0.0, BOX_FILL);
+        }
+        painter.rect_stroke(f.rect, 2.0, Stroke::new(1.0, ROOM_EDGE), StrokeKind::Inside);
+        let (a, v) = f.view.axes();
+        for dot in dots {
+            let room_point = space.to_room(dot.adm);
+            let at = f.to_screen(room_axis(&room_point, a), room_axis(&room_point, v));
+            if dot.heard {
+                painter.circle(at, DOT, HEARD, Stroke::new(1.0, Color32::BLACK));
+            } else {
+                painter.circle_filled(at, DOT - 0.6, SILENCED);
+            }
+        }
+        let edge = if bounds.enabled {
+            BOX
+        } else {
+            BOX.gamma_multiply(0.4)
+        };
+        painter.rect_stroke(r, 0.0, Stroke::new(1.5, edge), StrokeKind::Middle);
+        // The grabbed or hovered edge, thicker.
+        if let Some(Grab::Edge { axis, max, .. }) = hovered {
+            let line = if axis == a {
+                let x = if max { r.right() } else { r.left() };
+                Some([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())])
+            } else if axis == v {
+                let y = if max { r.top() } else { r.bottom() };
+                Some([Pos2::new(r.left(), y), Pos2::new(r.right(), y)])
+            } else {
+                None
+            };
+            if let Some(line) = line {
+                painter.line_segment(line, Stroke::new(3.0, BOX));
             }
         }
     }
@@ -640,6 +648,106 @@ mod tests {
         assert_eq!((moved.min[0], moved.max[0]), (0.0, 1.0));
         let moved = shifted(start, &start, 1, -0.4);
         assert!((moved.min[1] + 0.4).abs() < 1e-6 && (moved.max[1] - 0.6).abs() < 1e-6);
+    }
+
+    const WIDTH: f32 = 400.0;
+
+    /// Drive the drawing through a pointer gesture, one egui frame per
+    /// position: pressed at the first, moved through the others, released
+    /// after the last. Returns the box as the gesture left it.
+    fn drag(start: SourceBounds, path: &[Pos2]) -> SourceBounds {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(WIDTH, 300.0));
+        let room = RoomRatio::default();
+        let mut bounds = start;
+        let mut grab = None;
+        let mut frame = |events: Vec<egui::Event>, time: f64| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| drawing(ui, &mut grab, &mut bounds, &room, &[]),
+            );
+            output.textures_delta.clear();
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(path[0])], 0.0);
+        frame(vec![button(path[0], true)], 0.1);
+        for (n, &p) in path.iter().enumerate().skip(1) {
+            frame(vec![egui::Event::PointerMoved(p)], 0.1 + 0.05 * n as f64);
+        }
+        let last = *path.last().unwrap();
+        frame(vec![button(last, false)], 2.0);
+        bounds
+    }
+
+    /// The two views as the drawing lays them out in the test's window.
+    fn test_views() -> (Frame, Frame) {
+        let room = RoomRatio::default();
+        let extent = Space {
+            adm_view: false,
+            room: &room,
+        }
+        .extent();
+        let (_, plan, side) = views(Pos2::ZERO, WIDTH, &extent);
+        (plan, side)
+    }
+
+    /// egui starts a drag only past a few points of movement, by which time
+    /// the pointer has left the edge it pressed on: the edge under the
+    /// press is the one dragged, inward as well as outward.
+    #[test]
+    fn an_edge_is_grabbed_where_it_was_pressed() {
+        let (plan, _) = test_views();
+        let whole = SourceBounds::default();
+        let edge = Pos2::new(plan.rect.left(), plan.rect.center().y);
+        let inward = drag(
+            whole,
+            &[edge, edge + vec2(10.0, 0.0), edge + vec2(30.0, 0.0)],
+        );
+        assert!(inward.enabled, "dragging an edge turns the box on");
+        assert!(inward.min[0] > -0.9, "the left side moved in: {inward:?}");
+        assert_eq!(inward.max, whole.max, "nothing else moved");
+        assert_eq!(&inward.min[1..], &whole.min[1..]);
+    }
+
+    /// Depth is in both views. A plan edge dragged sideways towards the side
+    /// view keeps reading the pointer in the plan: the pointer's height did
+    /// not change, so neither does the depth.
+    #[test]
+    fn an_edge_drag_stays_in_the_view_it_began_in() {
+        let (plan, side) = test_views();
+        let front_half = preset(true, [-1.0, 0.0, -1.0], [1.0, 0.5, 1.0]);
+        // The plan's front side, at depth 0.5, reached mid-width.
+        let y = plan
+            .to_screen(
+                0.0,
+                to_room_axis(
+                    Space {
+                        adm_view: false,
+                        room: &RoomRatio::default(),
+                    },
+                    1,
+                    0.5,
+                ),
+            )
+            .y;
+        let start = Pos2::new(plan.rect.center().x, y);
+        let toward_side = Pos2::new(side.rect.left() + 5.0, y);
+        let after = drag(front_half, &[start, start + vec2(8.0, 0.0), toward_side]);
+        assert!(
+            (after.max[1] - 0.5).abs() < 0.02,
+            "the depth followed the other view: {after:?}"
+        );
+        assert_eq!(after.min, front_half.min);
     }
 
     #[test]
