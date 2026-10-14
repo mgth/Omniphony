@@ -185,24 +185,15 @@ impl StudioSpike {
         let (bounds, room, dots, ready) = {
             let live = self.host.read();
             let bounds = live.app.source_bounds;
-            let speakers = live.selected_speakers();
             let dots: Vec<Dot> = live
                 .app
                 .sources
                 .values()
                 // Metadata-silent objects are not drawn in the scene either.
                 .filter(|src| !src.gain_db.is_some_and(|g| g <= -128))
-                .map(|src| {
-                    // A direct channel is judged by its speaker's place, as
-                    // the renderer does.
-                    let adm = src
-                        .direct_speaker_index
-                        .and_then(|i| speakers.get(i as usize))
-                        .map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z]);
-                    Dot {
-                        adm,
-                        heard: bounds.admits(adm),
-                    }
+                .map(|src| Dot {
+                    adm: live.source_bounds_position(src),
+                    heard: !live.outside_source_bounds(src),
                 })
                 .collect();
             (

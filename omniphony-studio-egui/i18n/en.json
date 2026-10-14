@@ -1032,5 +1032,6 @@
   "sourceBounds.transient": "Not saved, like a mute: the renderer forgets the box when it restarts.",
   "help.sourceBounds": "A box the renderer hears sources in. While it is on, every source outside it is muted: an object by its position, a bed channel by its speaker's. Drag an edge of the box on the plan or the side view to move that side, or drag inside the box to move it whole. Sources drawn grey are the ones muted. A side left at the wall bounds nothing on that side.",
   "help.sourceBounds.enabled": "Mutes every source outside the box. Moving an edge or choosing a preset turns it on. Off, the box is kept but mutes nothing.",
-  "help.sourceBounds.presets": "Heights keeps the upper half of the room, Floor the lower half, Front and Rear the halves in front of and behind the listener. All gives every source back."
+  "help.sourceBounds.presets": "Heights keeps the upper half of the room, Floor the lower half, Front and Rear the halves in front of and behind the listener. All gives every source back.",
+  "sourceBounds.rowExcluded": "Outside the source bounds: not rendered"
 }

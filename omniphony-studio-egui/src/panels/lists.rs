@@ -24,6 +24,9 @@ struct Row {
     meter: Option<Meter>,
     hold: Option<f64>,
     muted: bool,
+    /// Left out of the render by the source box: silent like a mute while its
+    /// M is off, and drawn faded as a muted row is.
+    excluded: bool,
     /// The one entry left playing while every other is muted: its S is lit.
     soloed: bool,
     colour: Color32,
@@ -188,6 +191,7 @@ impl StudioSpike {
                     meter: live.ear_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("ear:{key}")),
                     muted: muted[ear],
+                    excluded: false,
                     soloed: self.ear_solo == Some(ear),
                     colour: theme::TEXT,
                     detail: None,
@@ -513,6 +517,7 @@ impl StudioSpike {
                     meter: live.app.source_levels.get(id).cloned(),
                     hold: live.peak_hold(&format!("src:{id}")),
                     muted: live.app.object_mutes.get(id).is_some_and(|m| *m != 0),
+                    excluded: live.outside_source_bounds(src),
                     soloed: false,
                     colour: Color32::from_rgb(
                         (base[0].powf(1.0 / 2.2) * 255.0) as u8,
@@ -673,6 +678,7 @@ impl StudioSpike {
                     meter: live.app.speaker_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("spk:{key}")),
                     muted: !brir && live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
+                    excluded: false,
                     soloed: false,
                     colour: theme::TEXT,
                     detail: gain
@@ -1091,7 +1097,7 @@ fn list_row(
                 .id_salt(("row", list, row.id.as_str()))
                 .sense(Sense::click()),
             |ui| {
-                if row.muted {
+                if row.muted || row.excluded {
                     ui.multiply_opacity(MUTED_OPACITY);
                 }
                 egui::Frame::new()
@@ -1105,6 +1111,12 @@ fn list_row(
             },
         )
         .response;
+    // Faded with its M off: what silences it is the source box.
+    let response = if row.excluded && !row.muted {
+        response.on_hover_text(t("sourceBounds.rowExcluded"))
+    } else {
+        response
+    };
     if response.clicked() && matches!(action, RowAction::None) {
         action = RowAction::Select;
     }
@@ -1406,6 +1418,7 @@ mod tests {
             meter: None,
             hold: None,
             muted,
+            excluded: false,
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
@@ -1468,6 +1481,7 @@ mod tests {
             meter: None,
             hold: None,
             muted: false,
+            excluded: false,
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
@@ -1546,6 +1560,7 @@ mod tests {
             meter: None,
             hold: None,
             muted: false,
+            excluded: false,
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,

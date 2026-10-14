@@ -622,7 +622,11 @@ pub fn build_frame(
                 labels.push(Label {
                     pos: p + glam::Vec2::new(0.0, 0.03 * points_per_unit(depth)),
                     text: obj.label.clone(),
-                    color: screen::WHITE,
+                    color: if obj.muted {
+                        screen::rgb(0x8a, 0x92, 0x9a)
+                    } else {
+                        screen::WHITE
+                    },
                     size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0).round(),
                     depth,
                 });
@@ -635,7 +639,11 @@ pub fn build_frame(
                     &settings.trails,
                     &room,
                     &speaker_refs,
-                    objects::trail_color(obj.base_color),
+                    objects::trail_color(if obj.muted {
+                        hex_linear(objects::SILENT_GREY)
+                    } else {
+                        obj.base_color
+                    }),
                     obj.level_scale,
                     now,
                     &mut frame,

@@ -625,6 +625,27 @@ impl Live {
             .unwrap_or(&[])
     }
 
+    /// Where the renderer judges a source against the source box: a channel
+    /// routed straight to a speaker at that speaker, any other at its own
+    /// position.
+    pub fn source_bounds_position(
+        &self,
+        src: &crate::model::app_state::SourcePosition,
+    ) -> [f64; 3] {
+        src.direct_speaker_index
+            .and_then(|i| self.selected_speakers().get(i as usize))
+            .map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z])
+    }
+
+    /// Whether the source box leaves `src` out of the render: it is on,
+    /// and `src` sits outside it.
+    pub fn outside_source_bounds(&self, src: &crate::model::app_state::SourcePosition) -> bool {
+        !self
+            .app
+            .source_bounds
+            .admits(self.source_bounds_position(src))
+    }
+
     fn with_selected_speaker(&mut self, id: &str, f: impl FnOnce(&mut Speaker)) {
         let Ok(index) = id.parse::<usize>() else {
             return;
@@ -1398,6 +1419,54 @@ mod panel_event_tests {
 
     fn live() -> Live {
         Live::new(AppState::new(Vec::new()))
+    }
+
+    /// The source box judges a direct channel by its speaker's place and
+    /// any other source by its own, as the renderer does; off, or open to the
+    /// whole room, it leaves nothing out.
+    #[test]
+    fn the_source_box_judges_a_direct_channel_by_its_speaker() {
+        use crate::model::app_state::{SourceBounds, SourcePosition};
+        let mut live = live();
+        // One speaker, up at the front left.
+        live.app.brir_speakers = Some(vec![Speaker {
+            id: "TFL".into(),
+            x: -1.0,
+            y: 1.0,
+            z: 1.0,
+            azimuth_deg: -45.0,
+            elevation_deg: 35.0,
+            distance_m: 1.0,
+            coord_mode: "cartesian".into(),
+            spatialize: 1,
+            delay_ms: 0.0,
+            freq_low: None,
+            freq_high: None,
+        }]);
+        // A channel routed to it, whose own position says floor.
+        let direct = SourcePosition {
+            direct_speaker_index: Some(0),
+            ..SourcePosition::default()
+        };
+        // An object on the floor at the back.
+        let object = SourcePosition {
+            y: -1.0,
+            ..SourcePosition::default()
+        };
+        assert!(!live.outside_source_bounds(&direct));
+        assert!(!live.outside_source_bounds(&object));
+        live.app.source_bounds = SourceBounds {
+            enabled: true,
+            min: [-1.0, -1.0, 0.5],
+            max: [1.0; 3],
+        };
+        assert!(!live.outside_source_bounds(&direct), "its speaker is up");
+        assert!(live.outside_source_bounds(&object), "the floor is out");
+        live.app.source_bounds.enabled = false;
+        assert!(
+            !live.outside_source_bounds(&object),
+            "off leaves nothing out"
+        );
     }
 
     /// A renderer that does not declare an option refuses a write to it, so
