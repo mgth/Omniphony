@@ -203,7 +203,8 @@ CI.
 ## License
 
 GPL-3.0-or-later — see [`LICENSE`](LICENSE). Decoder bridges are loaded at runtime
-via `dlopen` and may be licensed separately.
+via `dlopen` and may be licensed separately. The draft IAMF-in-Matroska mapping,
+[`docs/iamf-matroska-mapping.md`](docs/iamf-matroska-mapping.md), is CC-BY-4.0.
 
 ## Support
 
