@@ -982,3 +982,75 @@ fn host_pcm_is_rendered_by_its_labels() {
         "the bridge is not asked about a stream it never saw"
     );
 }
+
+#[test]
+fn measurement_sweep_reaches_one_output_with_existing_gain_and_delay() {
+    use renderer::live_params::SpeakerLiveParams;
+    use renderer::measurement::{Configuration, Signal};
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+    let (mut engine, _, control) = engine_with_control();
+    let width = engine.channel_count() as usize;
+    control.live.write().speakers.insert(
+        1,
+        SpeakerLiveParams {
+            gain: 0.5,
+            delay_ms: 10.0,
+            ..Default::default()
+        },
+    );
+    control.mark_speaker_params_dirty();
+    let now = Instant::now();
+    let signal = Signal::prepare(
+        runtime_control::osc_contract::measurement::Sweep {
+            duration_ms: 100,
+            peak_dbfs: -20.0,
+            start_hz: 200.0,
+            end_hz: 10000.0,
+        },
+        1,
+        Configuration {
+            sample_rate: 48000,
+            width,
+            speaker_generation: control.speaker_params_generation.load(Ordering::Acquire),
+            geometry_generation: control.geometry_generation.load(Ordering::Acquire),
+            master_gain_bits: control.live.read().master_gain.to_bits(),
+        },
+        now,
+    )
+    .unwrap();
+    control.measurement.install(signal.clone());
+    control.measurement.renew(now, Duration::from_secs(3));
+    let mut samples = Vec::new();
+    for _ in 0..60 {
+        let block = engine.render_silence(512).unwrap().expect("rendered audio");
+        samples.extend_from_slice(&block.samples);
+        engine.recycle(vec![block]);
+    }
+    assert_eq!(
+        signal.state(),
+        runtime_control::osc_contract::measurement::SignalState::Completed
+    );
+    let peak = samples
+        .chunks_exact(width)
+        .map(|f| f[1].abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        peak > 0.04 && peak <= 0.05001,
+        "existing gain is applied: {peak}"
+    );
+    assert!(
+        samples
+            .chunks_exact(width)
+            .all(|f| f.iter().enumerate().all(|(i, x)| i == 1 || *x == 0.0))
+    );
+    let first = samples
+        .chunks_exact(width)
+        .position(|f| f[1].abs() > 1e-8)
+        .unwrap();
+    assert!(
+        (12480..12500).contains(&first),
+        "250 ms settling + 10 ms output delay: {first}"
+    );
+    control.measurement.end();
+}

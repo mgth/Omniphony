@@ -1793,11 +1793,18 @@ mod contract_conformance_tests {
     use crate::osc_contract::{self, shapes::Arg};
     use rosc::OscType;
 
-    /// Read by the listener before the parser, not by it.
-    const BEFORE_THE_PARSER: &[(&str, &str)] = &[(
-        osc_contract::STATE_SHUTDOWN,
-        "osc::handle_message drops the registration on it",
-    )];
+    /// State outside the Studio parser's scope. Measurement replies are
+    /// point-to-point to the companion; the renderer never broadcasts them.
+    const OUTSIDE_STUDIO_PARSER: &[(&str, &str)] = &[
+        (
+            osc_contract::STATE_SHUTDOWN,
+            "osc::handle_message drops the registration on it",
+        ),
+        (
+            osc_contract::STATE_MEASUREMENT,
+            "only the requesting measurement companion receives this reply",
+        ),
+    ];
 
     fn sample(kind: Arg) -> OscType {
         match kind {
@@ -1813,7 +1820,7 @@ mod contract_conformance_tests {
     fn every_state_address_in_the_contract_parses_to_an_event() {
         let mut unread = Vec::new();
         for (address, shape) in osc_contract::shapes::STATE {
-            if BEFORE_THE_PARSER
+            if OUTSIDE_STUDIO_PARSER
                 .iter()
                 .any(|(skipped, _)| skipped == address)
             {

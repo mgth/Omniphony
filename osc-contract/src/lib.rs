@@ -44,6 +44,8 @@
 //! nest, and the check a listener runs before decoding one ([`nesting`]); and
 //! the arguments each state address carries ([`shapes`]).
 
+#[cfg(feature = "measurement")]
+pub mod measurement;
 pub mod nesting;
 pub mod shapes;
 pub mod stream;
@@ -59,7 +61,12 @@ pub mod stream;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 8;
+pub const CONTRACT_REVISION: u32 = 9;
+
+/// Versioned local TCP measurement requests; one JSON string. See docs/measurement-protocol.md.
+pub const CONTROL_MEASUREMENT: &str = "/omniphony/control/measurement";
+/// Point-to-point measurement replies, only to the requesting companion; one JSON string.
+pub const STATE_MEASUREMENT: &str = "/omniphony/state/measurement";
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -773,6 +780,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
     CONTROL_RESTART,
+    CONTROL_MEASUREMENT,
     CONTROL_SPEAKER_TEST,
     CONTROL_SPEAKER_TEST_IDLE_FEED,
     CONTROL_RENDER_BACKEND,
@@ -851,6 +859,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_CAPABILITIES,
     STATE_CLIP,
     STATE_CONTROL_ERROR,
+    STATE_MEASUREMENT,
     STATE_OBJECT_TEST_CLIP,
     STATE_OVERLAY,
     STATE_CONFIG_SAVED,
@@ -1125,7 +1134,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (8, 0xa83f_d3d0_5c9d_44ab);
+    const PINNED_ADDRESS_SET: (u32, u64) = (9, 0x2b349924759e75fd);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

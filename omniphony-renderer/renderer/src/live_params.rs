@@ -1849,6 +1849,9 @@ pub struct BridgeStatus {
 }
 
 pub struct RendererControl {
+    /// Transient measurement lease and prepared signals; never persisted.
+    pub measurement: crate::measurement::MeasurementControl,
+
     /// Live-tunable parameters: read lock-free, written under a mutex that
     /// only writers take (see [`LiveCell`]).
     pub live: LiveCell<LiveParams>,
@@ -2105,6 +2108,7 @@ impl RendererControl {
         backend_rebuild_params: Option<BackendRebuildParams>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            measurement: crate::measurement::MeasurementControl::default(),
             live: LiveCell::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),

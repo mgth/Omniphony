@@ -13,6 +13,7 @@ pub mod dsp;
 pub mod evaluation_grid;
 pub mod live_cell;
 pub mod live_params;
+pub mod measurement;
 pub mod metering;
 pub mod object_test;
 pub mod options;

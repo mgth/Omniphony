@@ -46,6 +46,7 @@ pub const STATE: &[(&str, &[Arg])] = &[
     (STATE_CAPABILITIES, &[Json]),
     (STATE_CLIP, &[Int]),
     (STATE_CONTROL_ERROR, &[String, String, String]),
+    (STATE_MEASUREMENT, &[Json]),
     (STATE_OBJECT_TEST_CLIP, &[Json]),
     (STATE_OVERLAY, &[Json]),
     (STATE_CONFIG_SAVED, &[Int]),

@@ -386,3 +386,36 @@ fn a_warmed_up_binaural_render_does_not_allocate() {
         }
     }
 }
+
+#[test]
+fn measurement_burst_does_not_allocate_in_the_audio_path() {
+    use renderer::live_params::RendererControl;
+    use renderer::measurement::{Configuration, Signal};
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    let r = renderer();
+    let control: std::sync::Arc<RendererControl> = r.renderer_control();
+    let now = Instant::now();
+    let signal = Signal::prepare(
+        omniphony_osc_contract::measurement::Sweep {
+            duration_ms: 1000,
+            peak_dbfs: -30.0,
+            start_hz: 200.0,
+            end_hz: 10000.0,
+        },
+        1,
+        Configuration {
+            sample_rate: 48000,
+            width: control.active_topology().speaker_layout.speakers.len(),
+            speaker_generation: control.speaker_params_generation.load(Ordering::Acquire),
+            geometry_generation: control.geometry_generation.load(Ordering::Acquire),
+            master_gain_bits: control.live.read().master_gain.to_bits(),
+        },
+        now,
+    )
+    .unwrap();
+    control.measurement.install(signal.clone());
+    control.measurement.renew(now, Duration::from_secs(30));
+    assert_eq!(count_steady_state_of(r, false, 800, 700), 0);
+    assert!(signal.rendered_frames() >= 32000);
+}

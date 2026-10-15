@@ -1,9 +1,9 @@
 # Omniphony OSC control / state contract
 
-The engine is driven and observed entirely over **OSC** (UDP). This document is
+The engine is driven and observed entirely over **OSC** (UDP and local TCP). This document is
 the human-readable contract for client authors (Omniphony Studio, alternative
 front-ends, automation). The machine-readable single source of truth for the
-address strings is the dependency-free
+address strings is the default-dependency-free
 [`omniphony-osc-contract`](../osc-contract/src/lib.rs) crate (re-exported to the
 engine as `runtime_control::osc_contract`, and used by Studio too) — every
 address below has a named constant there, and the exhaustive lists are
@@ -833,6 +833,15 @@ addresses), that the engine and Studio sources reference constants instead of
 spelling addresses, that every catalogued address appears in the index
 below, that every state address has a shape, and that the address set has not
 changed under the same `CONTRACT_REVISION`.
+
+## Measurement sessions
+
+Contract revision 9 adds `/omniphony/control/measurement` and
+`/omniphony/state/measurement`, each carrying one JSON string. This protocol
+requires the local TCP connection. Replies go only to the requesting companion,
+not to Studio subscribers. See [measurement sessions](measurement-protocol.md)
+for the versioned schema, ownership, finite signals and render-progress semantics.
+Rust clients opt into the contract crate's `measurement` feature for its serde types.
 
 ## Address index
 

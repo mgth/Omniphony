@@ -45,7 +45,7 @@ example_backend = { path = "example_backend" }
 host_audio = { path = "host_audio" }
 live_log = { path = "live_log" }
 omniphony_geometry = { path = "omniphony_geometry" }
-omniphony-osc-contract = { version = "0.1.0", path = "../osc-contract" }
+omniphony-osc-contract = { version = "0.1.0", path = "../osc-contract", features = ["measurement"] }
 orender_engine = { path = "orender_engine" }
 reference_bridge = { path = "reference_bridge" }
 renderer = { path = "renderer" }
