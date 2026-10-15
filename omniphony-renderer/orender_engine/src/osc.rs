@@ -664,7 +664,7 @@ impl OscSender {
             .spawn(move || {
                 let mut realtime_seq = RealtimeSeqState::default();
                 let mut measurement = control.as_ref().map(|ctrl|
-                    measurement::Service::new(Arc::clone(ctrl), instance_epoch));
+                    measurement::Service::new(Arc::clone(ctrl), instance_epoch, host_handler.clone()));
                 // Serialized gain table is cached here and shared with the
                 // recompute threads this loop spawns, so it's re-serialized only
                 // when the topology actually changes (not per push/heartbeat).
@@ -723,7 +723,7 @@ impl OscSender {
                         break;
                     }
                     if let Some(service) = measurement.as_mut() {
-                        service.poll(std::time::Instant::now(), host_handler.as_ref().map_or(0, |h| h.state_generation()));
+                        service.poll(std::time::Instant::now());
                     }
                     decode_errors.flush("undecodable datagram(s) dropped");
                     control_errors.flush("control message(s) not applied");
@@ -914,8 +914,7 @@ impl OscSender {
                                         [rosc::OscType::String(json)] if json.len() <= protocol::MAX_PACKET_BYTES => {
                                             match serde_json::from_str::<protocol::Request>(json) {
                                                 Ok(request) => match measurement.as_mut() {
-                                                    Some(service) => service.handle(request, src, std::time::Instant::now(),
-                                                        host_handler.as_ref().map_or(0, |h| h.state_generation())),
+                                                    Some(service) => service.handle(request, src, std::time::Instant::now()),
                                                     None => protocol::Response { version: protocol::VERSION, request_id: request.request_id,
                                                         reply: measurement::error("unavailable", "renderer control is unavailable") },
                                                 },

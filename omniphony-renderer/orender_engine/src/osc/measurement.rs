@@ -2,6 +2,7 @@
 use super::peer::Peer;
 use renderer::live_params::{OutputMode, RendererControl};
 use renderer::measurement::{Configuration, Signal};
+use runtime_control::HostControlHandler;
 use runtime_control::osc_contract::measurement::*;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
@@ -18,19 +19,25 @@ struct Session {
 
 pub(super) struct Service {
     control: Arc<RendererControl>,
+    host: Option<Arc<dyn HostControlHandler>>,
     instance_id: String,
     revision: u64,
     sequence: u64,
     signature: String,
     configuration: Option<Configuration>,
     session: Option<Session>,
-    ended_reason: &'static str,
+    ended_reason: String,
 }
 
 impl Service {
-    pub fn new(control: Arc<RendererControl>, instance_epoch: i32) -> Self {
+    pub fn new(
+        control: Arc<RendererControl>,
+        instance_epoch: i32,
+        host: Option<Arc<dyn HostControlHandler>>,
+    ) -> Self {
         Self {
             control,
+            host,
             instance_id: format!(
                 "{instance_epoch}:{}",
                 std::time::SystemTime::now()
@@ -43,7 +50,7 @@ impl Service {
             signature: String::new(),
             configuration: None,
             session: None,
-            ended_reason: "no active measurement session",
+            ended_reason: "no active measurement session".into(),
         }
     }
 
@@ -51,7 +58,7 @@ impl Service {
         self.session.is_some()
     }
 
-    fn snapshot(&mut self, host_generation: u64) -> Snapshot {
+    fn snapshot(&mut self) -> Snapshot {
         let control = &self.control;
         let layout = control.active_topology();
         let live = control.live.read();
@@ -113,6 +120,20 @@ impl Service {
         if outputs.is_empty() {
             reason = Some("no physical outputs are available");
         }
+        let stage_width = control.speaker_stage_width();
+        let host = self.host.as_ref().map(|host| host.measurement_state());
+        let reason = if stage_width != outputs.len() {
+            Some(format!(
+                "speaker layout has {} outputs but the renderer was opened with {stage_width}; \
+                 save the configuration in Studio and restart the renderer before measuring",
+                outputs.len()
+            ))
+        } else {
+            reason.map(str::to_owned).or_else(|| {
+                host.as_ref()
+                    .and_then(|host| host.unavailable_reason.clone())
+            })
+        };
         let master_gain_db = gain_db(live.master_gain);
         let configuration = Configuration {
             sample_rate,
@@ -133,8 +154,8 @@ impl Service {
             configuration.speaker_generation,
             configuration.geometry_generation,
             control.options_epoch.load(Ordering::Acquire),
-            host_generation,
-            reason,
+            host.as_ref().map(|host| &host.configuration),
+            &reason,
         ))
         .unwrap_or_default();
         if signature != self.signature {
@@ -148,15 +169,15 @@ impl Service {
             master_gain_db,
             max_delay_ms: MAX_DELAY_MS,
             outputs,
-            unavailable_reason: reason.map(str::to_owned),
+            unavailable_reason: reason,
         }
     }
 
-    pub fn poll(&mut self, now: Instant, host_generation: u64) {
+    pub fn poll(&mut self, now: Instant) {
         if self.session.is_none() {
             return;
         }
-        let snapshot = self.snapshot(host_generation);
+        let snapshot = self.snapshot();
         let session = self.session.as_ref().expect("checked");
         if let Some((_, signal)) = &session.signal {
             signal.poll(now);
@@ -165,6 +186,8 @@ impl Service {
             Some("measurement owner disconnected")
         } else if !self.control.measurement.active(now) {
             Some("measurement session lease expired")
+        } else if let Some(reason) = snapshot.unavailable_reason.as_deref() {
+            Some(reason)
         } else if snapshot.revision != session.snapshot.revision {
             Some("renderer configuration changed during measurement")
         } else {
@@ -175,20 +198,14 @@ impl Service {
         }
     }
 
-    fn close(&mut self, reason: &'static str) {
+    fn close(&mut self, reason: &str) {
         self.control.measurement.end();
         self.session = None;
-        self.ended_reason = reason;
+        self.ended_reason = reason.to_owned();
     }
 
-    pub fn handle(
-        &mut self,
-        request: Request,
-        owner: &Peer,
-        now: Instant,
-        host_generation: u64,
-    ) -> Response {
-        self.poll(now, host_generation);
+    pub fn handle(&mut self, request: Request, owner: &Peer, now: Instant) -> Response {
+        self.poll(now);
         let request_id = request.request_id;
         let reply = if request.version != VERSION {
             error(
@@ -203,7 +220,7 @@ impl Service {
                 "measurement requires the local TCP control connection",
             )
         } else {
-            self.command(request, owner, now, host_generation)
+            self.command(request, owner, now)
         };
         Response {
             version: VERSION,
@@ -212,23 +229,17 @@ impl Service {
         }
     }
 
-    fn command(
-        &mut self,
-        request: Request,
-        owner: &Peer,
-        now: Instant,
-        host_generation: u64,
-    ) -> Reply {
+    fn command(&mut self, request: Request, owner: &Peer, now: Instant) -> Reply {
         if let Command::Discover {} = request.command {
             return Reply::Snapshot {
-                snapshot: self.snapshot(host_generation),
+                snapshot: self.snapshot(),
             };
         }
         if let Command::Begin { expected_revision } = &request.command {
             if self.session.is_some() {
                 return error("busy", "another measurement session owns the renderer");
             }
-            let snapshot = self.snapshot(host_generation);
+            let snapshot = self.snapshot();
             if snapshot.revision != *expected_revision {
                 return error(
                     "stale_snapshot",
@@ -254,7 +265,7 @@ impl Service {
             return self.session_reply();
         }
         let Some(session) = self.session.as_mut() else {
-            return error("session_ended", self.ended_reason);
+            return error("session_ended", &self.ended_reason);
         };
         let session_id = match &request.command {
             Command::Start { session_id, .. }

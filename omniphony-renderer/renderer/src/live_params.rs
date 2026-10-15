@@ -2683,6 +2683,11 @@ impl RendererControl {
         self.speaker_stage_width.store(width, Ordering::Relaxed);
     }
 
+    /// Width of the running speaker stage; zero until a renderer reports it.
+    pub fn speaker_stage_width(&self) -> usize {
+        self.speaker_stage_width.load(Ordering::Relaxed)
+    }
+
     /// The layout a headphone render with a BRIR source pans onto, when one
     /// applies, and the room it pans in: the output is binaural, the source
     /// is a BRIR set, and that file's set is resident. The room is the

@@ -27,6 +27,14 @@ impl Default for HostCapabilities {
     }
 }
 
+/// Control-thread state relevant to a measurement. Normal stream startup,
+/// device enumeration and status telemetry must not invalidate its configuration.
+#[derive(Debug, Default, PartialEq)]
+pub struct MeasurementHostState {
+    pub configuration: serde_json::Value,
+    pub unavailable_reason: Option<String>,
+}
+
 pub trait HostControlHandler: Send + Sync {
     /// What the capabilities handshake says of this host
     /// (`/omniphony/state/capabilities`): clients show the controls that
@@ -55,6 +63,16 @@ pub trait HostControlHandler: Send + Sync {
     /// disables polling for hosts that don't need it (embedded).
     fn state_generation(&self) -> u64 {
         0
+    }
+
+    /// Settings and faults that can invalidate a measurement. Hosts that
+    /// distinguish settings from telemetry override this; the default retains
+    /// conservative invalidation on any host state change.
+    fn measurement_state(&self) -> MeasurementHostState {
+        MeasurementHostState {
+            configuration: self.state_generation().into(),
+            unavailable_reason: None,
+        }
     }
 
     // ── Host-declared options (`renderer::options::HostOptionSpec` rows) ──

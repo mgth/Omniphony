@@ -56,10 +56,17 @@ they are not permanent installation identifiers.
 
 The snapshot records the render sample rate, master gain and the 100 ms delay
 limit. Its revision includes layout, output settings, relevant renderer epochs
-and the host state generation. Asynchronous changes terminate the session at the
+and the host's measurement configuration. Normal output startup, device-list
+refreshes and held-latency telemetry do not change that configuration: beginning
+an idle measurement wakes the audio stream without invalidating its own session.
+Output setting changes and output faults still terminate the session. Hosts that
+do not distinguish settings from telemetry retain conservative invalidation on
+any host state change. Asynchronous changes terminate the session at the
 control poll; sample rate, width, gain and speaker/topology generation mismatches
 also cancel playback in the render path. Discovery reports unsupported conditions
-such as headphone mode, a pending layout rebuild or another active test.
+such as headphone mode, a pending layout rebuild or another active test. A speaker
+count that differs from the running output width is rejected before acquisition;
+save the layout in Studio and restart the renderer to reopen it at the new width.
 
 Names identify renderer outputs. Confirm the audio device's physical routing
 before interpreting them as measured loudspeakers.

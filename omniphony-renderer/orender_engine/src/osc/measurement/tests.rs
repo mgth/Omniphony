@@ -3,6 +3,65 @@ use super::*;
 use renderer::test_support::fixture_control;
 use std::net::{TcpListener, TcpStream};
 
+#[derive(Default)]
+struct TestHost {
+    status: std::sync::atomic::AtomicU64,
+    configuration: std::sync::atomic::AtomicU64,
+}
+
+impl HostControlHandler for TestHost {
+    fn handle(
+        &self,
+        _: &str,
+        _: &rosc::OscMessage,
+    ) -> Option<runtime_control::osc::ControlEffects> {
+        None
+    }
+    fn extend_snapshot(&self) -> Vec<rosc::OscPacket> {
+        Vec::new()
+    }
+    fn amend_saved_config(&self, _: &mut renderer::config::RenderConfig) {}
+    fn state_generation(&self) -> u64 {
+        self.status.load(Ordering::Relaxed)
+    }
+    fn measurement_state(&self) -> runtime_control::host_control::MeasurementHostState {
+        runtime_control::host_control::MeasurementHostState {
+            configuration: self.configuration.load(Ordering::Relaxed).into(),
+            unavailable_reason: None,
+        }
+    }
+}
+
+#[test]
+fn host_status_updates_keep_the_session_but_settings_changes_end_it() {
+    let control = fixture_control();
+    let host = Arc::new(TestHost::default());
+    let mut service = Service::new(control.clone(), 42, Some(host.clone()));
+    let (owner, _client) = peer();
+    let now = Instant::now();
+    let (session_id, before) = begin(&mut service, &owner, now);
+    host.status.fetch_add(1, Ordering::Relaxed);
+    assert_eq!(service.snapshot().revision, before.revision);
+    assert!(matches!(
+        command(
+            &mut service,
+            &owner,
+            2,
+            Command::Status {
+                session_id: session_id.clone(),
+            },
+            now
+        ),
+        Reply::Session { .. }
+    ));
+    host.configuration.fetch_add(1, Ordering::Relaxed);
+    assert_error(
+        command(&mut service, &owner, 3, Command::Status { session_id }, now),
+        "session_ended",
+    );
+    assert!(!control.measurement.active(now));
+}
+
 fn peer() -> (Peer, TcpStream) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -19,12 +78,11 @@ fn command(service: &mut Service, peer: &Peer, id: u64, command: Command, now: I
             },
             peer,
             now,
-            0,
         )
         .reply
 }
 fn begin(service: &mut Service, peer: &Peer, now: Instant) -> (String, Snapshot) {
-    let snapshot = service.snapshot(0);
+    let snapshot = service.snapshot();
     let reply = command(
         service,
         peer,
@@ -63,10 +121,10 @@ fn assert_error(reply: Reply, expected: &str) {
 #[test]
 fn sessions_preserve_settings_and_refuse_stale_snapshots() {
     let control = fixture_control();
-    let mut service = Service::new(control.clone(), 42);
+    let mut service = Service::new(control.clone(), 42, None);
     let (peer, _client) = peer();
     let now = Instant::now();
-    let before = service.snapshot(0);
+    let before = service.snapshot();
     control.live.write().master_gain = 0.5;
     assert_error(
         command(
@@ -114,9 +172,51 @@ fn sessions_preserve_settings_and_refuse_stale_snapshots() {
 }
 
 #[test]
+fn measurement_rejects_layouts_that_do_not_match_the_running_output() {
+    for width in [0, 10, 14] {
+        let control = fixture_control();
+        control.set_speaker_stage_width(width);
+        let mut service = Service::new(control, 42, None);
+        let (owner, _client) = peer();
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.outputs.len(), 12);
+        let reason = snapshot.unavailable_reason.unwrap();
+        assert!(reason.contains(&format!("opened with {width}")), "{reason}");
+        assert!(reason.contains("restart"), "{reason}");
+        assert_error(
+            command(
+                &mut service,
+                &owner,
+                1,
+                Command::Begin {
+                    expected_revision: snapshot.revision,
+                },
+                Instant::now(),
+            ),
+            "unavailable",
+        );
+        assert!(!service.active());
+    }
+}
+
+#[test]
+fn changed_output_width_ends_the_session_with_an_actionable_reason() {
+    let control = fixture_control();
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let now = Instant::now();
+    let (session_id, _) = begin(&mut service, &owner, now);
+    control.set_speaker_stage_width(10);
+    let reply = command(&mut service, &owner, 2, Command::Status { session_id }, now);
+    assert!(matches!(reply, Reply::Error { code, message }
+        if code == "session_ended" && message.contains("opened with 10")));
+    assert!(!control.measurement.active(now));
+}
+
+#[test]
 fn owner_and_request_ids_prevent_replayed_or_overlapping_signals() {
     let control = fixture_control();
-    let mut service = Service::new(control.clone(), 42);
+    let mut service = Service::new(control.clone(), 42, None);
     let (owner, _client) = peer();
     let (other, _other_client) = peer();
     let now = Instant::now();
@@ -177,7 +277,7 @@ fn owner_and_request_ids_prevent_replayed_or_overlapping_signals() {
 fn disconnect_timeout_and_external_configuration_change_release_ownership() {
     for case in 0..3 {
         let control = fixture_control();
-        let mut service = Service::new(control.clone(), 42);
+        let mut service = Service::new(control.clone(), 42, None);
         let (owner, _client) = peer();
         let now = Instant::now();
         let (id, snapshot) = begin(&mut service, &owner, now);
@@ -195,7 +295,7 @@ fn disconnect_timeout_and_external_configuration_change_release_ownership() {
                 now
             }
         };
-        service.poll(later, 0);
+        service.poll(later);
         assert!(!service.active());
         assert!(!control.measurement.active(later));
         assert_error(
@@ -214,7 +314,7 @@ fn disconnect_timeout_and_external_configuration_change_release_ownership() {
 #[test]
 fn a_host_that_does_not_render_cannot_report_completion() {
     let control = fixture_control();
-    let mut service = Service::new(control, 42);
+    let mut service = Service::new(control, 42, None);
     let (owner, _client) = peer();
     let now = Instant::now();
     let (id, snapshot) = begin(&mut service, &owner, now);
@@ -245,7 +345,7 @@ fn a_host_that_does_not_render_cannot_report_completion() {
 #[test]
 fn invalid_signal_levels_do_not_emit_audio() {
     let control = fixture_control();
-    let mut service = Service::new(control, 42);
+    let mut service = Service::new(control, 42, None);
     let (owner, _client) = peer();
     let now = Instant::now();
     let (id, snapshot) = begin(&mut service, &owner, now);
@@ -273,7 +373,7 @@ fn protocol_is_strict_and_udp_cannot_open_a_session() {
         )
         .is_err()
     );
-    let mut service = Service::new(fixture_control(), 42);
+    let mut service = Service::new(fixture_control(), 42, None);
     let udp = Peer::Udp("127.0.0.1:12345".parse().unwrap());
     assert_error(
         command(&mut service, &udp, 1, Command::Discover {}, Instant::now()),
@@ -290,7 +390,7 @@ fn referenced_start_validates_the_reference_and_reports_three_segments() {
         (3, "invalid_signal"),
     ] {
         let control = fixture_control();
-        let mut service = Service::new(control.clone(), 42);
+        let mut service = Service::new(control.clone(), 42, None);
         let (owner, _client) = peer();
         let now = Instant::now();
         let (id, snapshot) = begin(&mut service, &owner, now);
@@ -319,7 +419,7 @@ fn referenced_start_validates_the_reference_and_reports_three_segments() {
         assert_error(command(&mut service, &owner, 2, request, now), expected);
         assert!(service.session.as_ref().unwrap().signal.is_none());
     }
-    let mut service = Service::new(fixture_control(), 42);
+    let mut service = Service::new(fixture_control(), 42, None);
     let (owner, _client) = peer();
     let now = Instant::now();
     let (id, snapshot) = begin(&mut service, &owner, now);
