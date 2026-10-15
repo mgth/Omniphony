@@ -467,6 +467,7 @@ fn measurement_session_over_tcp_blocks_writes_and_releases_on_disconnect() {
     } = client.measurement(
         3,
         Command::Start {
+            reference_output_id: None,
             session_id: session_id.clone(),
             signal_id: 1,
             output_id: snapshot.outputs[0].id.clone(),

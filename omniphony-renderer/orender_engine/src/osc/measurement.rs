@@ -277,6 +277,7 @@ impl Service {
             Command::Start {
                 signal_id,
                 output_id,
+                reference_output_id,
                 signal,
                 ..
             } => {
@@ -321,9 +322,40 @@ impl Service {
                         "existing gains would exceed the -6 dBFS measurement output ceiling",
                     );
                 }
-                let prepared = match Signal::prepare(
+                let reference = if let Some(id) = &reference_output_id {
+                    let Some(reference) = session.snapshot.outputs.iter().find(|o| &o.id == id)
+                    else {
+                        return error(
+                            "unknown_output",
+                            "reference output is absent from the snapshot",
+                        );
+                    };
+                    if reference.muted {
+                        return error("muted_output", "reference output is muted");
+                    }
+                    if signal.start_hz < reference.freq_low_hz.unwrap_or(20.0)
+                        || signal.end_hz > reference.freq_high_hz.unwrap_or(f32::MAX)
+                    {
+                        return error(
+                            "invalid_signal",
+                            "sweep exceeds the reference output frequency range",
+                        );
+                    }
+                    if signal.peak_dbfs + reference.gain_db + session.snapshot.master_gain_db > -6.0
+                    {
+                        return error(
+                            "level_limit",
+                            "reference output would exceed the measurement ceiling",
+                        );
+                    }
+                    Some(reference.index as usize)
+                } else {
+                    None
+                };
+                let prepared = match Signal::prepare_referenced(
                     signal,
                     output.index as usize,
+                    reference,
                     session.configuration,
                     now,
                 ) {
@@ -334,6 +366,7 @@ impl Service {
                 let progress = Progress {
                     signal_id,
                     output_id,
+                    reference_output_id,
                     signal,
                     state: SignalState::Queued,
                     rendered_frames: 0,

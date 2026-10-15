@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const REQUEST_ADDRESS: &str = crate::CONTROL_MEASUREMENT;
 pub const REPLY_ADDRESS: &str = crate::STATE_MEASUREMENT;
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const MAX_PACKET_BYTES: usize = 64 * 1024;
 pub const LEASE_MS: u64 = 3_000;
 pub const MAX_DURATION_MS: u32 = 5_000;
@@ -31,6 +31,9 @@ pub enum Command {
         session_id: String,
         signal_id: u64,
         output_id: String,
+        /// When set, play reference, target, reference at fixed sample offsets.
+        #[serde(default)]
+        reference_output_id: Option<String>,
         signal: Sweep,
     },
     Status {
@@ -134,6 +137,32 @@ impl Sweep {
         Ok(())
     }
 
+    /// Prepare a mono segment off the audio thread. Both playback and analysis
+    /// use this definition, including the 5 ms raised-cosine fades.
+    pub fn samples(&self, sample_rate: u32) -> Result<Vec<f32>, &'static str> {
+        self.validate(sample_rate)?;
+        let frames = self.frames(sample_rate) as usize;
+        let padding = sample_rate as usize * SETTLE_MS as usize / 1_000;
+        let sweep_frames = frames - 2 * padding;
+        let duration = sweep_frames as f64 / sample_rate as f64;
+        let log_ratio = (self.end_hz as f64 / self.start_hz as f64).ln();
+        let phase_scale = std::f64::consts::TAU * self.start_hz as f64 * duration / log_ratio;
+        let peak = 10_f64.powf(self.peak_dbfs as f64 / 20.0);
+        let fade = (sample_rate as f64 * 0.005).round() as usize;
+        Ok((0..frames)
+            .map(|i| {
+                if i < padding || i >= padding + sweep_frames {
+                    return 0.0;
+                }
+                let i = i - padding;
+                let t = i as f64 / sample_rate as f64;
+                let edge = i.min(sweep_frames - 1 - i).min(fade) as f64 / fade as f64;
+                let envelope = 0.5 - 0.5 * (std::f64::consts::PI * edge).cos();
+                (peak * envelope * (phase_scale * (log_ratio * t / duration).exp_m1()).sin()) as f32
+            })
+            .collect())
+    }
+
     pub fn frames(&self, sample_rate: u32) -> u64 {
         u64::from(sample_rate) * u64::from(self.duration_ms) / 1_000
             + 2 * (u64::from(sample_rate) * u64::from(SETTLE_MS) / 1_000)
@@ -155,6 +184,7 @@ pub enum SignalState {
 pub struct Progress {
     pub signal_id: u64,
     pub output_id: String,
+    pub reference_output_id: Option<String>,
     pub signal: Sweep,
     pub state: SignalState,
     /// Frames submitted to the renderer output stage, not DAC timestamps.

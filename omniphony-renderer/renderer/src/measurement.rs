@@ -1,7 +1,7 @@
 //! Bounded measurement playback. Preparation and reclamation run on the
 //! control thread; the audio path only reads a buffer and atomics.
 use arc_swap::ArcSwapOption;
-use omniphony_osc_contract::measurement::{SETTLE_MS, SignalState, Sweep};
+use omniphony_osc_contract::measurement::{SignalState, Sweep};
 use parking_lot::Mutex;
 use std::sync::{
     Arc,
@@ -28,6 +28,8 @@ pub struct Signal {
     pub output_index: usize,
     pub configuration: Configuration,
     samples: Box<[f32]>,
+    reference_index: Option<usize>,
+    total_frames: usize,
     deadline: Instant,
     rendered: AtomicU64,
     state: AtomicU8,
@@ -41,40 +43,32 @@ impl Signal {
         configuration: Configuration,
         now: Instant,
     ) -> Result<Arc<Self>, &'static str> {
+        Self::prepare_referenced(spec, output_index, None, configuration, now)
+    }
+
+    pub fn prepare_referenced(
+        spec: Sweep,
+        output_index: usize,
+        reference_index: Option<usize>,
+        configuration: Configuration,
+        now: Instant,
+    ) -> Result<Arc<Self>, &'static str> {
         let Configuration {
             sample_rate, width, ..
         } = configuration;
         spec.validate(sample_rate)?;
-        if output_index >= width {
+        if output_index >= width || reference_index.is_some_and(|i| i >= width) {
             return Err("output index is outside the layout");
         }
-        let frames = spec.frames(sample_rate) as usize;
-        let padding = sample_rate as usize * SETTLE_MS as usize / 1_000;
-        let sweep_frames = frames - 2 * padding;
-        let duration = sweep_frames as f64 / sample_rate as f64;
-        let log_ratio = (spec.end_hz as f64 / spec.start_hz as f64).ln();
-        let phase_scale = std::f64::consts::TAU * spec.start_hz as f64 * duration / log_ratio;
-        let peak = 10_f64.powf(spec.peak_dbfs as f64 / 20.0);
-        let fade = (sample_rate as f64 * 0.005).round() as usize;
-        let samples = (0..frames)
-            .map(|i| {
-                if i < padding || i >= padding + sweep_frames {
-                    return 0.0;
-                }
-                let i = i - padding;
-                let t = i as f64 / sample_rate as f64;
-                let edge = i.min(sweep_frames - 1 - i).min(fade) as f64 / fade as f64;
-                let envelope = 0.5 - 0.5 * (std::f64::consts::PI * edge).cos();
-                (peak * envelope * (phase_scale * (log_ratio * t / duration).exp_m1()).sin()) as f32
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+        let samples = spec.samples(sample_rate)?.into_boxed_slice();
+        let total_frames = samples.len() * if reference_index.is_some() { 3 } else { 1 };
         Ok(Arc::new(Self {
             output_index,
             configuration,
             samples,
-            deadline: now
-                + Duration::from_millis(u64::from(spec.duration_ms + 2 * SETTLE_MS) + 2_000),
+            reference_index,
+            total_frames,
+            deadline: now + Duration::from_secs_f64(total_frames as f64 / sample_rate as f64 + 2.0),
             rendered: AtomicU64::new(0),
             state: AtomicU8::new(QUEUED),
         }))
@@ -84,7 +78,7 @@ impl Signal {
         self.rendered.load(Ordering::Acquire)
     }
     pub fn total_frames(&self) -> u64 {
-        self.samples.len() as u64
+        self.total_frames as u64
     }
     pub fn state(&self) -> SignalState {
         match self.state.load(Ordering::Acquire) {
@@ -209,18 +203,32 @@ impl MeasurementControl {
             return true;
         }
         let start = signal.rendered_frames() as usize;
-        let count = (output.len() / width).min(signal.samples.len().saturating_sub(start));
-        for (frame, sample) in output
-            .chunks_exact_mut(width)
-            .take(count)
-            .zip(&signal.samples[start..start + count])
-        {
-            frame[signal.output_index] = *sample;
+        let count = (output.len() / width).min(signal.total_frames.saturating_sub(start));
+        // Split at segment boundaries, so routing and division stay outside
+        // the per-sample loop. The same prepared mono buffer is reused.
+        let mut copied = 0;
+        while copied < count {
+            let cursor = start + copied;
+            let segment = cursor / signal.samples.len();
+            let offset = cursor % signal.samples.len();
+            let n = (count - copied).min(signal.samples.len() - offset);
+            let channel = if segment == 1 {
+                signal.output_index
+            } else {
+                signal.reference_index.unwrap_or(signal.output_index)
+            };
+            for (frame, sample) in output[copied * width..(copied + n) * width]
+                .chunks_exact_mut(width)
+                .zip(&signal.samples[offset..offset + n])
+            {
+                frame[channel] = *sample;
+            }
+            copied += n;
         }
         signal
             .rendered
             .store((start + count) as u64, Ordering::Release);
-        if start + count == signal.samples.len() {
+        if start + count == signal.total_frames {
             let _ = signal.state.compare_exchange(
                 RENDERING,
                 COMPLETED,
@@ -313,5 +321,32 @@ mod tests {
         assert_eq!(s.state(), SignalState::Cancelled);
         c.end();
         assert!(!c.active(now));
+    }
+    #[test]
+    fn referenced_sequence_keeps_sample_spacing_across_block_boundaries() {
+        let c = MeasurementControl::default();
+        let now = Instant::now();
+        c.renew(now, Duration::from_secs(30));
+        let s = Signal::prepare_referenced(spec(), 1, Some(0), config(), now).unwrap();
+        let segment = spec().samples(48000).unwrap();
+        assert_eq!(s.total_frames(), 3 * segment.len() as u64);
+        c.install(s.clone());
+        let mut collected = Vec::new();
+        let mut block = vec![1.0; 257 * 2];
+        while s.state() != SignalState::Completed {
+            c.render(&mut block, config(), now);
+            collected.extend_from_slice(&block);
+        }
+        for (i, frame) in collected.as_chunks::<2>().0.iter().enumerate() {
+            let part = i / segment.len();
+            let expected = if part < 3 {
+                segment[i % segment.len()]
+            } else {
+                0.0
+            };
+            let channel = usize::from(part == 1);
+            assert_eq!(frame[channel], expected, "frame {i}");
+            assert_eq!(frame[1 - channel], 0.0, "frame {i}");
+        }
     }
 }

@@ -41,6 +41,7 @@ fn begin(service: &mut Service, peer: &Peer, now: Instant) -> (String, Snapshot)
 }
 fn sweep(session_id: &str, snapshot: &Snapshot, id: u64) -> Command {
     Command::Start {
+        reference_output_id: None,
         session_id: session_id.into(),
         signal_id: id,
         output_id: snapshot.outputs[0].id.clone(),
@@ -278,4 +279,68 @@ fn protocol_is_strict_and_udp_cannot_open_a_session() {
         command(&mut service, &udp, 1, Command::Discover {}, Instant::now()),
         "transport_required",
     );
+}
+
+#[test]
+fn referenced_start_validates_the_reference_and_reports_three_segments() {
+    for (case, expected) in [
+        (0, "unknown_output"),
+        (1, "muted_output"),
+        (2, "level_limit"),
+        (3, "invalid_signal"),
+    ] {
+        let control = fixture_control();
+        let mut service = Service::new(control.clone(), 42);
+        let (owner, _client) = peer();
+        let now = Instant::now();
+        let (id, snapshot) = begin(&mut service, &owner, now);
+        // The captured session is the validation boundary. Mutate it directly
+        // to exercise each reference guard without triggering stale-state exit.
+        let reference_id = snapshot.outputs[1].id.clone();
+        let reference = &mut service.session.as_mut().unwrap().snapshot.outputs[1];
+        match case {
+            1 => reference.muted = true,
+            2 => reference.gain_db = 30.0,
+            3 => reference.freq_high_hz = Some(1000.0),
+            _ => {}
+        }
+        let mut request = sweep(&id, &snapshot, 1);
+        if let Command::Start {
+            reference_output_id,
+            ..
+        } = &mut request
+        {
+            *reference_output_id = Some(if case == 0 {
+                "missing".into()
+            } else {
+                reference_id
+            });
+        }
+        assert_error(command(&mut service, &owner, 2, request, now), expected);
+        assert!(service.session.as_ref().unwrap().signal.is_none());
+    }
+    let mut service = Service::new(fixture_control(), 42);
+    let (owner, _client) = peer();
+    let now = Instant::now();
+    let (id, snapshot) = begin(&mut service, &owner, now);
+    let mut request = sweep(&id, &snapshot, 1);
+    if let Command::Start {
+        reference_output_id,
+        ..
+    } = &mut request
+    {
+        *reference_output_id = Some(snapshot.outputs[1].id.clone());
+    }
+    let reply = command(&mut service, &owner, 2, request, now);
+    assert!(matches!(
+        reply,
+        Reply::Session {
+            signal: Some(Progress {
+                total_frames: 86400,
+                reference_output_id: Some(_),
+                ..
+            }),
+            ..
+        }
+    ));
 }

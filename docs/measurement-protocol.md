@@ -1,4 +1,4 @@
-# Measurement sessions, version 1
+# Measurement sessions, version 2
 
 The companion can discover renderer outputs and play an identified finite sweep
 under an exclusive, temporary session. This increment does not acquire microphones,
@@ -12,7 +12,7 @@ has the existing four-byte, big-endian length prefix. Send one JSON string to
 `/omniphony/state/measurement`. Registration is unnecessary.
 
 The optional `measurement` feature of `omniphony-osc-contract` provides the
-shared Rust schema. Requests contain `version: 1`, a positive `request_id`
+shared Rust schema. Requests contain `version: 2`, a positive `request_id`
 and a tagged `command`. Reply version and request ID must match. Unexpected
 replies, truncated frames or timeouts require closing the connection and
 discovering again. Do not blindly retry a signal start.
@@ -20,7 +20,7 @@ discovering again. Do not blindly retry a signal start.
 Example discovery request:
 
 ```json
-{"version":1,"request_id":1,"command":{"type":"discover"}}
+{"version":2,"request_id":1,"command":{"type":"discover"}}
 ```
 
 Commands:
@@ -29,7 +29,7 @@ Commands:
 | --- | --- | --- |
 | `discover` | none | Output snapshot and availability |
 | `begin` | `expected_revision` | New session ID, confirmed snapshot, lease |
-| `start` | `session_id`, increasing `signal_id`, `output_id`, `signal` | Accepted signal and render progress |
+| `start` | `session_id`, increasing `signal_id`, `output_id`, optional `reference_output_id`, `signal` | Accepted signal and render progress |
 | `status` | `session_id` | Current progress; renews lease |
 | `stop` | `session_id` | Cancels the current burst; keeps session isolation |
 | `end` | `session_id` | Cancels playback and releases the session |
@@ -67,7 +67,7 @@ before interpreting them as measured loudspeakers.
 ## Sweep and render progress
 
 `signal` has `duration_ms`, `peak_dbfs`, `start_hz` and `end_hz`.
-Version 1 defines a logarithmic sine sweep with 5 ms raised-cosine fades, prepared
+Version 2 defines a logarithmic sine sweep with 5 ms raised-cosine fades, prepared
 off the audio thread. Bounds:
 
 - Sample rate: 8000–192000 Hz; sweep: 100–5000 ms.
@@ -92,9 +92,35 @@ No rendering within the sweep duration plus settling silence plus two seconds
 expires the signal. Embedded hosts must keep rendering; the standalone CLI
 uses its existing idle feeder during the lease.
 
-The acquisition milestone must add a shared audio/acoustic timing reference,
-clock handling and recording metadata. OSC acknowledgement time is unsuitable
-for estimating propagation delay.
+## Repeated acoustic reference
+
+With a non-null `reference_output_id`, Start schedules three identical segments:
+reference, target, reference. Segment start offsets are exactly `0`, `N`, and
+`2N` renderer frames, where `N = Sweep::frames(sample_rate)` includes the silence.
+Progress echoes the reference ID and reports `3N` total frames. With null/omitted
+reference ID, Start still plays one target segment. The protocol version is 2;
+version-1 clients must use their pinned version-1 renderer.
+
+Both outputs are checked for mute, frequency and level limits before playback.
+The prepared mono buffer is shared by all segments. Routing is resolved once
+per block/segment boundary, with no allocation in the audio path. The signal
+deadline covers all three segments plus two seconds; the session still requires
+keepalives every 200–1000 ms.
+
+The companion records continuously and correlates the two repeated references.
+Their spacing estimates the capture/render clock ratio; the middle peak's
+difference from their midpoint retains the target's relative propagation and
+existing output delay. Use the same fixed reference output and microphone
+position across compared takes. Reference and target may be the same output
+for a timing sanity check.
+
+These are correlation-peak diagnostics, not a validated direct-arrival estimator.
+Nonlinear clock drift, hidden resampling, acoustic multipath and actual hardware
+repeatability still require validation. OSC acknowledgement time remains
+unsuitable for estimating propagation delay.
+
+Calibration changes are developed against `dev/calibration`. This experimental
+contract is not a change to the main renderer branch.
 
 ## Validation without audio hardware
 

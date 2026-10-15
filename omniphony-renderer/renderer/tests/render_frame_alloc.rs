@@ -396,7 +396,7 @@ fn measurement_burst_does_not_allocate_in_the_audio_path() {
     let r = renderer();
     let control: std::sync::Arc<RendererControl> = r.renderer_control();
     let now = Instant::now();
-    let signal = Signal::prepare(
+    let signal = Signal::prepare_referenced(
         omniphony_osc_contract::measurement::Sweep {
             duration_ms: 1000,
             peak_dbfs: -30.0,
@@ -404,6 +404,7 @@ fn measurement_burst_does_not_allocate_in_the_audio_path() {
             end_hz: 10000.0,
         },
         1,
+        Some(0),
         Configuration {
             sample_rate: 48000,
             width: control.active_topology().speaker_layout.speakers.len(),
@@ -416,6 +417,6 @@ fn measurement_burst_does_not_allocate_in_the_audio_path() {
     .unwrap();
     control.measurement.install(signal.clone());
     control.measurement.renew(now, Duration::from_secs(30));
-    assert_eq!(count_steady_state_of(r, false, 800, 700), 0);
-    assert!(signal.rendered_frames() >= 32000);
+    assert_eq!(count_steady_state_of(r, false, 5600, 5500), 0);
+    assert_eq!(signal.rendered_frames(), signal.total_frames());
 }

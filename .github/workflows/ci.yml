@@ -1,6 +1,6 @@
 name: CI
 
-# Integration gate for the `main` (integration) and `release` branches.
+# Integration gate for main, release, and the calibration development branch.
 # Linux x64 validates formatting and tests (build-and-test) and, in a job of
 # its own beside it, the native Studio (studio), skipped on a pull request
 # that touches nothing it builds. macOS (arm64) and Windows (x64) build and
@@ -17,9 +17,9 @@ name: CI
 # declared minimum Rust.
 on:
   push:
-    branches: [main, release]
+    branches: [main, release, dev/calibration]
   pull_request:
-    branches: [main, release]
+    branches: [main, release, dev/calibration]
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save Actions minutes.
