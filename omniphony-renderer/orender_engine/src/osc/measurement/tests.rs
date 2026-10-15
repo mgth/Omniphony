@@ -99,6 +99,7 @@ fn begin(service: &mut Service, peer: &Peer, now: Instant) -> (String, Snapshot)
 }
 fn sweep(session_id: &str, snapshot: &Snapshot, id: u64) -> Command {
     Command::Start {
+        sequence_outputs: Vec::new(),
         reference_output_id: None,
         session_id: session_id.into(),
         signal_id: id,
@@ -109,6 +110,52 @@ fn sweep(session_id: &str, snapshot: &Snapshot, id: u64) -> Command {
             start_hz: 200.0,
             end_hz: 10_000.0,
         },
+    }
+}
+
+#[test]
+fn sequence_acknowledges_order_and_rejects_duplicate_or_unsafe_later_outputs() {
+    for case in 0..4 {
+        let mut service = Service::new(fixture_control(), 42, None);
+        let (owner, _client) = peer();
+        let now = Instant::now();
+        let (id, snapshot) = begin(&mut service, &owner, now);
+        let mut request = sweep(&id, &snapshot, 1);
+        if let Command::Start {
+            reference_output_id,
+            sequence_outputs,
+            ..
+        } = &mut request
+        {
+            *reference_output_id = Some(snapshot.outputs[0].id.clone());
+            *sequence_outputs = vec![
+                snapshot.outputs[0].id.clone(),
+                snapshot.outputs[1].id.clone(),
+            ];
+            if case == 1 {
+                sequence_outputs[1] = sequence_outputs[0].clone();
+            }
+        }
+        if case == 2 {
+            service.session.as_mut().unwrap().snapshot.outputs[1].muted = true;
+        }
+        if case == 3 {
+            service.session.as_mut().unwrap().snapshot.outputs[1].gain_db = 40.0;
+        }
+        let reply = command(&mut service, &owner, 2, request, now);
+        if case == 0 {
+            let Reply::Session {
+                signal: Some(p), ..
+            } = reply
+            else {
+                panic!("{reply:?}")
+            };
+            assert_eq!(p.sequence_outputs.len(), 2);
+            assert_eq!(p.total_frames, p.signal.frames(snapshot.sample_rate) * 5);
+        } else {
+            assert_error(reply, "invalid_signal");
+            assert!(service.session.as_ref().unwrap().signal.is_none());
+        }
     }
 }
 fn assert_error(reply: Reply, expected: &str) {

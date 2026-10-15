@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 pub const REQUEST_ADDRESS: &str = crate::CONTROL_MEASUREMENT;
 pub const REPLY_ADDRESS: &str = crate::STATE_MEASUREMENT;
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
+pub const MAX_SEQUENCE_OUTPUTS: usize = 32;
+pub const MAX_SEQUENCE_MS: u64 = 120_000;
 pub const MAX_PACKET_BYTES: usize = 64 * 1024;
 pub const LEASE_MS: u64 = 3_000;
 pub const MAX_DURATION_MS: u32 = 5_000;
@@ -34,6 +36,9 @@ pub enum Command {
         /// When set, play reference, target, reference at fixed sample offsets.
         #[serde(default)]
         reference_output_id: Option<String>,
+        /// Ordered targets; nonempty means reference, target, reference, ... .
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sequence_outputs: Vec<String>,
         signal: Sweep,
     },
     Status {
@@ -185,9 +190,27 @@ pub struct Progress {
     pub signal_id: u64,
     pub output_id: String,
     pub reference_output_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sequence_outputs: Vec<String>,
     pub signal: Sweep,
     pub state: SignalState,
     /// Frames submitted to the renderer output stage, not DAC timestamps.
     pub rendered_frames: u64,
     pub total_frames: u64,
+}
+
+/// Validate a finite shared-reference sequence before allocating or playing it.
+pub fn sequence_frames(signal: Sweep, rate: u32, targets: usize) -> Result<u64, &'static str> {
+    signal.validate(rate)?;
+    if !(1..=MAX_SEQUENCE_OUTPUTS).contains(&targets) {
+        return Err("sequence needs 1..32 targets");
+    }
+    let frames = signal
+        .frames(rate)
+        .checked_mul(2 * targets as u64 + 1)
+        .ok_or("sequence is too long")?;
+    if frames > u64::from(rate) * MAX_SEQUENCE_MS / 1000 {
+        return Err("sequence exceeds 120 seconds; select fewer speakers or a shorter sweep");
+    }
+    Ok(frames)
 }

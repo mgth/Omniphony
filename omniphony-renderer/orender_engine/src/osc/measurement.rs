@@ -289,6 +289,7 @@ impl Service {
                 signal_id,
                 output_id,
                 reference_output_id,
+                sequence_outputs,
                 signal,
                 ..
             } => {
@@ -363,13 +364,65 @@ impl Service {
                 } else {
                     None
                 };
-                let prepared = match Signal::prepare_referenced(
-                    signal,
-                    output.index as usize,
-                    reference,
-                    session.configuration,
-                    now,
-                ) {
+                let prepared = if sequence_outputs.is_empty() {
+                    Signal::prepare_referenced(
+                        signal,
+                        output.index as usize,
+                        reference,
+                        session.configuration,
+                        now,
+                    )
+                } else {
+                    let Some(reference) = reference else {
+                        return error("invalid_signal", "a sequence requires a reference output");
+                    };
+                    if sequence_outputs.first() != Some(&output_id) {
+                        return error(
+                            "invalid_signal",
+                            "sequence first output must match output_id",
+                        );
+                    }
+                    if let Err(reason) = omniphony_osc_contract::measurement::sequence_frames(
+                        signal,
+                        session.snapshot.sample_rate,
+                        sequence_outputs.len(),
+                    ) {
+                        return error("invalid_signal", reason);
+                    }
+                    let mut indices = Vec::with_capacity(sequence_outputs.len());
+                    for id in &sequence_outputs {
+                        let Some(target) = session.snapshot.outputs.iter().find(|o| &o.id == id)
+                        else {
+                            return error(
+                                "unknown_output",
+                                "sequence output is absent from snapshot",
+                            );
+                        };
+                        if indices.contains(&(target.index as usize)) {
+                            return error("invalid_signal", "sequence outputs must be unique");
+                        }
+                        if target.muted
+                            || signal.start_hz < target.freq_low_hz.unwrap_or(20.0)
+                            || signal.end_hz > target.freq_high_hz.unwrap_or(f32::MAX)
+                            || signal.peak_dbfs + target.gain_db + session.snapshot.master_gain_db
+                                > -6.0
+                        {
+                            return error(
+                                "invalid_signal",
+                                "sequence output is muted or exceeds frequency/level limits",
+                            );
+                        }
+                        indices.push(target.index as usize);
+                    }
+                    Signal::prepare_sequence(
+                        signal,
+                        &indices,
+                        reference,
+                        session.configuration,
+                        now,
+                    )
+                };
+                let prepared = match prepared {
                     Ok(prepared) => prepared,
                     Err(reason) => return error("invalid_signal", reason),
                 };
@@ -378,6 +431,7 @@ impl Service {
                     signal_id,
                     output_id,
                     reference_output_id,
+                    sequence_outputs,
                     signal,
                     state: SignalState::Queued,
                     rendered_frames: 0,
