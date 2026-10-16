@@ -105,7 +105,7 @@ With a non-null `reference_output_id`, Start schedules three identical segments:
 reference, target, reference. Segment start offsets are exactly `0`, `N`, and
 `2N` renderer frames, where `N = Sweep::frames(sample_rate)` includes the silence.
 Progress echoes the reference ID and reports `3N` total frames. With null/omitted
-reference ID, Start still plays one target segment. The live protocol version is 3; clients and renderers must be upgraded together.
+reference ID, Start still plays one target segment. The live protocol version is 4; clients and renderers must be upgraded together.
 The sweep waveform is unchanged from version 2.
 
 Both outputs are checked for mute, frequency and level limits before playback.
