@@ -491,3 +491,88 @@ fn referenced_start_validates_the_reference_and_reports_three_segments() {
         }
     ));
 }
+
+#[test]
+fn profile_settings_are_absolute_atomic_and_revision_guarded() {
+    let control = fixture_control();
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let now = Instant::now();
+    let before = service.snapshot();
+    let settings: Vec<_> = before
+        .outputs
+        .iter()
+        .take(2)
+        .enumerate()
+        .map(|(i, o)| OutputSetting {
+            output_id: o.id.clone(),
+            gain_db: -3.0 - i as f32,
+            delay_ms: 2.25 + i as f32,
+        })
+        .collect();
+    let request = Command::SetOutputs {
+        expected_revision: before.revision.clone(),
+        settings: settings.clone(),
+    };
+    let mut invalid = settings.clone();
+    invalid[1].delay_ms = 101.0;
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            1,
+            Command::SetOutputs {
+                expected_revision: before.revision.clone(),
+                settings: invalid,
+            },
+            now,
+        ),
+        "invalid_settings",
+    );
+    assert_eq!(service.snapshot(), before, "no partial write");
+    let Reply::Snapshot { snapshot: after } =
+        command(&mut service, &owner, 2, request.clone(), now)
+    else {
+        panic!()
+    };
+    for (output, setting) in after.outputs.iter().zip(&settings) {
+        assert!((output.gain_db - setting.gain_db).abs() < 0.0001);
+        assert_eq!(output.delay_ms, setting.delay_ms);
+    }
+    assert_ne!(after.revision, before.revision);
+    assert_error(
+        command(&mut service, &owner, 3, request, now),
+        "stale_snapshot",
+    );
+    let Reply::Snapshot { snapshot: again } = command(
+        &mut service,
+        &owner,
+        4,
+        Command::SetOutputs {
+            expected_revision: after.revision,
+            settings,
+        },
+        now,
+    ) else {
+        panic!()
+    };
+    assert_eq!(again.outputs, after.outputs, "reapply is not additive");
+    let (_, active) = begin(&mut service, &owner, now);
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            5,
+            Command::SetOutputs {
+                expected_revision: active.revision,
+                settings: vec![OutputSetting {
+                    output_id: active.outputs[0].id.clone(),
+                    gain_db: 0.0,
+                    delay_ms: 0.0,
+                }],
+            },
+            now,
+        ),
+        "busy",
+    );
+}
