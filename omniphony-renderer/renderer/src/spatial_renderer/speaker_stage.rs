@@ -224,7 +224,7 @@ pub(super) struct SpeakerRenderStage {
     pub(super) interp_end_scratch: BandGains,
     /// Per-speaker gain scratch — pre-allocated once, reused every frame.
     pub(super) speaker_gains_buf: Vec<f32>,
-    /// Per-speaker delay lines — fixed 100 ms capacity, render-thread owned.
+    /// Per-speaker delay lines — fixed 250 ms capacity, render-thread owned.
     pub(super) delay_lines: Vec<crate::delay_line::DelayLine>,
     /// The metering lists a metered frame fills: lent to its
     /// [`SpeakerStageDiagnostics`] (then its `RenderedFrame`) and handed back
@@ -1372,7 +1372,10 @@ impl SpeakerRenderStage {
             speaker_gains_buf: vec![0.0f32; num_speakers],
             meter_buffers: MeterBuffers::default(),
             delay_lines: {
-                let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
+                let max_delay = (omniphony_osc_contract::measurement::MAX_DELAY_MS
+                    * sample_rate as f32
+                    / 1000.0)
+                    .ceil() as usize;
                 (0..num_speakers)
                     .map(|_| crate::delay_line::DelayLine::new(max_delay))
                     .collect()
@@ -2093,7 +2096,7 @@ impl SpeakerRenderStage {
         // speaker channel held the peak, for clip reporting).
         //
         // Speaker-major, not sample-major: a sample-major walk touches all N
-        // delay rings once per sample, so N × 100 ms of ring buffer is cycled
+        // delay rings once per sample, so N × 250 ms of ring buffer is cycled
         // through the cache every block. One speaker at a time keeps a single
         // ring hot, and lifts both the bypass test and the peak comparison out
         // of the per-sample loop.

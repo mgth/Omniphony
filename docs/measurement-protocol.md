@@ -54,7 +54,7 @@ Indices must never be reused from a different snapshot. Instance/revision values
 are opaque and must be rediscovered after reconnection or configuration changes;
 they are not permanent installation identifiers.
 
-The snapshot records the render sample rate, master gain and the 100 ms delay
+The snapshot records the render sample rate, master gain and the 250 ms delay
 limit. Its revision includes layout, output settings, relevant renderer epochs
 and the host's measurement configuration. Normal output startup, device-list
 refreshes and held-latency telemetry do not change that configuration: beginning
@@ -170,7 +170,7 @@ same recorded samples, not a replay or a recording from another session.
 
 Version 4 adds `set_outputs`, with `expected_revision` and a nonempty `settings`
 array of `{output_id, gain_db, delay_ms}`. Values are absolute, limited to
--60..24 dB and 0..100 ms. Duplicate/unknown outputs and nonfinite values reject
+-60..24 dB and 0..250 ms. Duplicate/unknown outputs and nonfinite values reject
 all changes. An active measurement session blocks application. The current
 revision is checked while holding the live-state writer lock; all selected outputs
 are published together, then a fresh snapshot is returned. Repeated application
@@ -185,3 +185,11 @@ snapshot/reacquisition detects a changed configuration.
 
 Saved protocol-2/3 sweep recordings retain their waveform and can be analyzed
 offline; live clients and renderers must both use version 4.
+
+The 250 ms limit is backed by the physical speaker delay rings, allocated when
+constructing the speaker stage. It fits the existing 250 ms sweep padding, so
+protocol version 4 and the saved waveform definition remain unchanged. Clients
+must use the advertised `max_delay_ms` for proposals; older version-4 builds
+advertise 100 ms. Long measured route latency is not itself invalid evidence.
+Delaying earlier outputs to match a slow device also adds playback latency and
+may require audio/video synchronization adjustments.
