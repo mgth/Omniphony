@@ -10,7 +10,8 @@ pub const MAX_SEQUENCE_MS: u64 = 120_000;
 pub const MAX_PACKET_BYTES: usize = 64 * 1024;
 pub const LEASE_MS: u64 = 3_000;
 pub const MAX_DURATION_MS: u32 = 5_000;
-pub const MAX_DELAY_MS: f32 = 100.0;
+/// Physical output delay capacity; bounded by the unchanged sweep settling time.
+pub const MAX_DELAY_MS: f32 = 250.0;
 /// Silence before/after the sweep flushes output delay lines between bursts.
 pub const SETTLE_MS: u32 = 250;
 

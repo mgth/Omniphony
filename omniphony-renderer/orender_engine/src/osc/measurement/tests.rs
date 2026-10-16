@@ -507,7 +507,7 @@ fn profile_settings_are_absolute_atomic_and_revision_guarded() {
         .map(|(i, o)| OutputSetting {
             output_id: o.id.clone(),
             gain_db: -3.0 - i as f32,
-            delay_ms: 2.25 + i as f32,
+            delay_ms: 160.25 + i as f32,
         })
         .collect();
     let request = Command::SetOutputs {
@@ -515,7 +515,7 @@ fn profile_settings_are_absolute_atomic_and_revision_guarded() {
         settings: settings.clone(),
     };
     let mut invalid = settings.clone();
-    invalid[1].delay_ms = 101.0;
+    invalid[1].delay_ms = MAX_DELAY_MS + 1.0;
     assert_error(
         command(
             &mut service,
