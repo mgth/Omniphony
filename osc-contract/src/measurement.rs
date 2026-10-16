@@ -48,6 +48,13 @@ pub enum Command {
         sequence_outputs: Vec<String>,
         signal: Sweep,
     },
+    /// Optional v4 extension: finite, band-limited pink noise for physical level matching.
+    StartNoise {
+        session_id: String,
+        signal_id: u64,
+        output_id: String,
+        signal: LevelNoise,
+    },
     Status {
         session_id: String,
     },
@@ -78,6 +85,12 @@ pub enum Reply {
         snapshot: Snapshot,
         lease_ms: u64,
         signal: Option<Progress>,
+    },
+    NoiseSession {
+        session_id: String,
+        snapshot: Snapshot,
+        lease_ms: u64,
+        signal: NoiseProgress,
     },
     Ended {},
     Error {
@@ -228,4 +241,40 @@ pub fn sequence_frames(signal: Sweep, rate: u32, targets: usize) -> Result<u64, 
         return Err("sequence exceeds 120 seconds; select fewer speakers or a shorter sweep");
     }
     Ok(frames)
+}
+
+/// A fixed common midrange band intentionally excludes subwoofer matching.
+/// Peak is before the existing renderer master and output gains.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LevelNoise {
+    pub duration_seconds: u32,
+    pub peak_dbfs: f32,
+}
+impl LevelNoise {
+    pub const LOW_HZ: f32 = 500.0;
+    pub const HIGH_HZ: f32 = 2000.0;
+    pub fn validate(self, rate: u32) -> Result<(), &'static str> {
+        if !(8000..=192000).contains(&rate)
+            || !(5..=60).contains(&self.duration_seconds)
+            || !self.peak_dbfs.is_finite()
+            || !(-60.0..=-12.0).contains(&self.peak_dbfs)
+        {
+            return Err("noise requires 5..60 seconds, -60..-12 dBFS, and a supported sample rate");
+        }
+        Ok(())
+    }
+    pub fn frames(self, rate: u32) -> u64 {
+        u64::from(rate) * u64::from(self.duration_seconds)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoiseProgress {
+    pub signal_id: u64,
+    pub output_id: String,
+    pub signal: LevelNoise,
+    pub state: SignalState,
+    pub rendered_frames: u64,
+    pub total_frames: u64,
 }

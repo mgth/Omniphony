@@ -193,3 +193,28 @@ must use the advertised `max_delay_ms` for proposals; older version-4 builds
 advertise 100 ms. Long measured route latency is not itself invalid evidence.
 Delaying earlier outputs to match a slow device also adds playback latency and
 may require audio/video synchronization adjustments.
+
+
+## Optional v4 physical-level noise extension
+
+`start_noise` takes the session ID, increasing signal ID, physical output ID and
+`signal: {duration_seconds, peak_dbfs}`. It prepares periodic 500–2000 Hz pink
+noise (1/f power), limited to 5–60 seconds and -60..-12 dBFS peak. Preparation,
+FFT and reclamation stay off the audio thread; one second of PCM is reused.
+Five-millisecond onset/offset fades do not interrupt the intervening noise.
+The output must cover the complete band and remain under the existing -6 dBFS
+ceiling after master/output gains. Subwoofer matching is outside this extension.
+
+Start and subsequent status/stop return `noise_session`, with the unchanged
+session ID/snapshot/lease and a `NoiseProgress` object containing the exact noise
+specification, output and signal IDs, state, submitted frames and total frames.
+Noise and sweeps are exclusive. The same owner, monotonic request/signal IDs,
+three-second lease, finite audio-thread deadline, Stop/End, disconnect and
+configuration-change rules apply. Existing digital settings are never changed.
+
+This is an additive v4 command/reply pair: existing sweep clients and saved
+sweep metadata keep their wire representation. Older v4 renderers reject the
+unknown command before playback. Clients must report that a compatible build is
+needed and must never fall back to the legacy unbounded speaker-test command.
+The protocol makes no SPL or acoustic level claim; the companion acquires and
+compares microphone power separately.

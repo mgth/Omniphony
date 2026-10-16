@@ -576,3 +576,123 @@ fn profile_settings_are_absolute_atomic_and_revision_guarded() {
         "busy",
     );
 }
+
+#[test]
+fn finite_level_noise_is_leased_exclusive_and_preserves_digital_settings() {
+    for stop_case in 0..4 {
+        let control = fixture_control();
+        let mut service = Service::new(control.clone(), 42, None);
+        let (owner, _client) = peer();
+        let (other, _other_client) = peer();
+        let now = Instant::now();
+        let (id, snapshot) = begin(&mut service, &owner, now);
+        let signal = LevelNoise {
+            duration_seconds: 60,
+            peak_dbfs: -30.0,
+        };
+        let start = Command::StartNoise {
+            session_id: id.clone(),
+            signal_id: 1,
+            output_id: snapshot.outputs[0].id.clone(),
+            signal,
+        };
+        assert_error(
+            command(&mut service, &other, 2, start.clone(), now),
+            "not_owner",
+        );
+        let reply = command(&mut service, &owner, 2, start, now);
+        assert!(
+            matches!(reply, Reply::NoiseSession { signal: NoiseProgress { total_frames, .. }, .. } if total_frames == signal.frames(snapshot.sample_rate))
+        );
+        assert_error(
+            command(&mut service, &owner, 3, sweep(&id, &snapshot, 2), now),
+            "signal_busy",
+        );
+        let prepared = service
+            .session
+            .as_ref()
+            .unwrap()
+            .noise
+            .as_ref()
+            .unwrap()
+            .1
+            .clone();
+        if stop_case == 0 {
+            assert!(matches!(
+                command(
+                    &mut service,
+                    &owner,
+                    4,
+                    Command::Stop {
+                        session_id: id.clone()
+                    },
+                    now
+                ),
+                Reply::NoiseSession {
+                    signal: NoiseProgress {
+                        state: SignalState::Cancelled,
+                        ..
+                    },
+                    ..
+                }
+            ));
+            assert_eq!(service.snapshot(), snapshot);
+            assert!(!control.config_dirty.load(Ordering::Acquire));
+        } else if stop_case == 1 {
+            service.poll(now + Duration::from_secs(4));
+            assert!(!control.measurement.active(now + Duration::from_secs(4)));
+        } else if stop_case == 2 {
+            control.live.write().master_gain = 0.5;
+            service.poll(now);
+            assert!(!control.measurement.active(now));
+        } else {
+            if let Peer::Tcp(stream) = &owner {
+                stream.close();
+            }
+            service.poll(now);
+            assert!(!control.measurement.active(now));
+        }
+        assert!(matches!(
+            prepared.state(),
+            SignalState::Cancelled | SignalState::Expired
+        ));
+    }
+}
+
+#[test]
+fn level_noise_rejects_invalid_duration_level_and_output_band_before_installing() {
+    for case in 0..5 {
+        let mut service = Service::new(fixture_control(), 42, None);
+        let (owner, _client) = peer();
+        let now = Instant::now();
+        let (id, snapshot) = begin(&mut service, &owner, now);
+        let session = service.session.as_mut().unwrap();
+        let mut signal = LevelNoise {
+            duration_seconds: 60,
+            peak_dbfs: -30.0,
+        };
+        match case {
+            0 => signal.duration_seconds = 61,
+            1 => signal.peak_dbfs = -5.0,
+            2 => session.snapshot.outputs[0].freq_high_hz = Some(200.0),
+            3 => session.snapshot.outputs[0].muted = true,
+            _ => session.snapshot.outputs[0].gain_db = 30.0,
+        }
+        assert!(matches!(
+            command(
+                &mut service,
+                &owner,
+                2,
+                Command::StartNoise {
+                    session_id: id,
+                    signal_id: 1,
+                    output_id: snapshot.outputs[0].id.clone(),
+                    signal
+                },
+                now
+            ),
+            Reply::Error { .. }
+        ));
+        assert!(service.session.as_ref().unwrap().noise.is_none());
+    }
+}
