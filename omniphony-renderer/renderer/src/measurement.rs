@@ -1,7 +1,7 @@
 //! Bounded measurement playback. Preparation and reclamation run on the
 //! control thread; the audio path only reads a buffer and atomics.
 use arc_swap::ArcSwapOption;
-use omniphony_osc_contract::measurement::{SignalState, Sweep};
+use omniphony_osc_contract::measurement::{LevelNoise, SignalState, Sweep};
 use parking_lot::Mutex;
 use std::sync::{
     Arc,
@@ -30,6 +30,7 @@ pub struct Signal {
     samples: Box<[f32]>,
     routing: Box<[usize]>,
     total_frames: usize,
+    fade_frames: usize,
     deadline: Instant,
     rendered: AtomicU64,
     state: AtomicU8,
@@ -106,7 +107,58 @@ impl Signal {
             samples,
             routing: routing.into_boxed_slice(),
             total_frames,
+            fade_frames: 0,
             deadline: now + Duration::from_secs_f64(total_frames as f64 / sample_rate as f64 + 2.0),
+            rendered: AtomicU64::new(0),
+            state: AtomicU8::new(QUEUED),
+        }))
+    }
+
+    /// Prepare one periodic second with 1/f power in the common band. All
+    /// transforms, allocations and peak normalization happen off the audio thread.
+    pub fn prepare_noise(
+        spec: LevelNoise,
+        output_index: usize,
+        configuration: Configuration,
+        now: Instant,
+    ) -> Result<Arc<Self>, &'static str> {
+        spec.validate(configuration.sample_rate)?;
+        if output_index >= configuration.width {
+            return Err("output index is outside the layout");
+        }
+        let rate = configuration.sample_rate as usize;
+        let mut planner = realfft::RealFftPlanner::<f32>::new();
+        let transform = planner.plan_fft_inverse(rate);
+        let mut spectrum = transform.make_input_vec();
+        let mut random = 0x6a09e667_u32;
+        for (hz, value) in spectrum.iter_mut().enumerate() {
+            if (LevelNoise::LOW_HZ as usize..=LevelNoise::HIGH_HZ as usize).contains(&hz) {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                let phase = std::f32::consts::TAU * (random as f64 / u32::MAX as f64) as f32;
+                *value =
+                    realfft::num_complex::Complex32::from_polar(1.0 / (hz as f32).sqrt(), phase);
+            }
+        }
+        let mut samples = transform.make_output_vec();
+        transform
+            .process(&mut spectrum, &mut samples)
+            .map_err(|_| "noise transform failed")?;
+        let peak = samples.iter().fold(0.0_f32, |a, x| a.max(x.abs()));
+        if !peak.is_finite() || peak <= 0.0 {
+            return Err("invalid prepared noise");
+        }
+        let scale = 10.0_f32.powf(spec.peak_dbfs / 20.0) / peak;
+        samples.iter_mut().for_each(|x| *x *= scale);
+        Ok(Arc::new(Self {
+            output_index,
+            configuration,
+            samples: samples.into_boxed_slice(),
+            routing: vec![output_index; spec.duration_seconds as usize].into_boxed_slice(),
+            total_frames: spec.frames(configuration.sample_rate) as usize,
+            fade_frames: rate / 200,
+            deadline: now + Duration::from_secs(u64::from(spec.duration_seconds) + 2),
             rendered: AtomicU64::new(0),
             state: AtomicU8::new(QUEUED),
         }))
@@ -251,11 +303,22 @@ impl MeasurementControl {
             let offset = cursor % signal.samples.len();
             let n = (count - copied).min(signal.samples.len() - offset);
             let channel = signal.routing[segment];
-            for (frame, sample) in output[copied * width..(copied + n) * width]
+            let frames = output[copied * width..(copied + n) * width]
                 .chunks_exact_mut(width)
-                .zip(&signal.samples[offset..offset + n])
+                .zip(&signal.samples[offset..offset + n]);
+            if signal.fade_frames > 0
+                && (cursor < signal.fade_frames
+                    || cursor + n > signal.total_frames - signal.fade_frames)
             {
-                frame[channel] = *sample;
+                for (i, (frame, sample)) in frames.enumerate() {
+                    let distance = (cursor + i).min(signal.total_frames - 1 - cursor - i);
+                    let envelope = (distance as f32 / signal.fade_frames as f32).min(1.0);
+                    frame[channel] = *sample * envelope;
+                }
+            } else {
+                for (frame, sample) in frames {
+                    frame[channel] = *sample;
+                }
             }
             copied += n;
         }
@@ -293,6 +356,82 @@ mod tests {
             start_hz: 100.0,
             end_hz: 10_000.0,
         }
+    }
+
+    #[test]
+    fn finite_pink_noise_reuses_a_periodic_buffer_and_stops_without_frontend_polling() {
+        let now = Instant::now();
+        let spec = LevelNoise {
+            duration_seconds: 5,
+            peak_dbfs: -30.0,
+        };
+        let signal = Signal::prepare_noise(spec, 1, config(), now).unwrap();
+        assert_eq!(signal.samples.len(), 48000);
+        assert_eq!(signal.total_frames(), 240000);
+        assert!(
+            signal
+                .samples
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= 10.0_f32.powf(-30.0 / 20.0) + 1e-7)
+        );
+        // The generated periodic second is zero outside the requested FFT bins;
+        // octave energies follow the pink-noise 1/f power distribution.
+        let mut planner = realfft::RealFftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(48000);
+        let mut input = signal.samples.to_vec();
+        let mut spectrum = fft.make_output_vec();
+        fft.process(&mut input, &mut spectrum).unwrap();
+        let energy = |lo, hi| {
+            spectrum[lo..hi]
+                .iter()
+                .map(|c| c.norm_sqr() as f64)
+                .sum::<f64>()
+        };
+        let in_band = energy(500, 2001);
+        assert!(energy(0, 500) + energy(2001, 24001) < in_band * 1e-10);
+        assert!((10.0 * (energy(500, 1000) / energy(1000, 2000)).log10()).abs() < 0.02);
+        let c = MeasurementControl::default();
+        c.renew(now, Duration::from_secs(20));
+        c.install(signal.clone());
+        let mut out = vec![0.8; 240017 * 2];
+        c.render(&mut out, config(), now);
+        assert_eq!(signal.state(), SignalState::Completed);
+        assert!(out.as_chunks::<2>().0.iter().all(|f| f[0] == 0.0));
+        assert!(out[480000..].iter().all(|v| *v == 0.0));
+        for changed in [false, true] {
+            let c = MeasurementControl::default();
+            let signal = Signal::prepare_noise(spec, 1, config(), now).unwrap();
+            c.install(signal.clone());
+            c.renew(now, Duration::from_secs(3));
+            let mut configuration = config();
+            if changed {
+                configuration.master_gain_bits = 2.0_f32.to_bits();
+            }
+            let mut out = [0.0; 256];
+            c.render(
+                &mut out,
+                configuration,
+                now + Duration::from_secs(if changed { 0 } else { 4 }),
+            );
+            assert!(out.iter().all(|v| *v == 0.0));
+            assert!(matches!(
+                signal.state(),
+                SignalState::Cancelled | SignalState::Expired
+            ));
+        }
+        assert!(Signal::prepare_noise(spec, 2, config(), now).is_err());
+        assert!(
+            Signal::prepare_noise(
+                LevelNoise {
+                    duration_seconds: 61,
+                    ..spec
+                },
+                0,
+                config(),
+                now
+            )
+            .is_err()
+        );
     }
 
     #[test]

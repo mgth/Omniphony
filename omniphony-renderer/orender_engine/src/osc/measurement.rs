@@ -15,6 +15,7 @@ struct Session {
     last_request: u64,
     last_signal: u64,
     signal: Option<(Progress, Arc<Signal>)>,
+    noise: Option<(NoiseProgress, Arc<Signal>)>,
 }
 
 pub(super) struct Service {
@@ -179,7 +180,12 @@ impl Service {
         }
         let snapshot = self.snapshot();
         let session = self.session.as_ref().expect("checked");
-        if let Some((_, signal)) = &session.signal {
+        if let Some(signal) = session
+            .signal
+            .as_ref()
+            .map(|(_, s)| s)
+            .or_else(|| session.noise.as_ref().map(|(_, s)| s))
+        {
             signal.poll(now);
         }
         let reason = if session.owner.is_closed() {
@@ -324,6 +330,7 @@ impl Service {
                 last_request: request.request_id,
                 last_signal: 0,
                 signal: None,
+                noise: None,
             });
             self.control
                 .measurement
@@ -335,6 +342,7 @@ impl Service {
         };
         let session_id = match &request.command {
             Command::Start { session_id, .. }
+            | Command::StartNoise { session_id, .. }
             | Command::Status { session_id }
             | Command::Stop { session_id }
             | Command::End { session_id } => session_id,
@@ -365,7 +373,9 @@ impl Service {
                         "signal IDs must increase; a completed signal cannot be replayed",
                     );
                 }
-                if session.signal.as_ref().is_some_and(|(_, s)| {
+                if session.noise.as_ref().is_some_and(|(_, s)| {
+                    matches!(s.state(), SignalState::Queued | SignalState::Rendering)
+                }) || session.signal.as_ref().is_some_and(|(_, s)| {
                     matches!(s.state(), SignalState::Queued | SignalState::Rendering)
                 }) {
                     return error("signal_busy", "stop or finish the running signal first");
@@ -504,10 +514,84 @@ impl Service {
                     total_frames: prepared.total_frames(),
                 };
                 self.control.measurement.install(prepared.clone());
+                session.noise = None;
                 session.signal = Some((progress, prepared));
             }
+            Command::StartNoise {
+                signal_id,
+                output_id,
+                signal,
+                ..
+            } => {
+                if signal_id <= session.last_signal {
+                    return error("stale_signal", "signal IDs must increase");
+                }
+                let active = session
+                    .signal
+                    .as_ref()
+                    .map(|(_, s)| s)
+                    .or_else(|| session.noise.as_ref().map(|(_, s)| s));
+                if active.is_some_and(|s| {
+                    matches!(s.state(), SignalState::Queued | SignalState::Rendering)
+                }) {
+                    return error("signal_busy", "stop or finish the running signal first");
+                }
+                let Some(output) = session.snapshot.outputs.iter().find(|o| o.id == output_id)
+                else {
+                    return error(
+                        "unknown_output",
+                        "output is absent from the session snapshot",
+                    );
+                };
+                if output.muted {
+                    return error("muted_output", "output is muted");
+                }
+                if let Err(reason) = signal.validate(session.snapshot.sample_rate) {
+                    return error("invalid_signal", reason);
+                }
+                if LevelNoise::LOW_HZ < output.freq_low_hz.unwrap_or(20.0)
+                    || LevelNoise::HIGH_HZ > output.freq_high_hz.unwrap_or(f32::MAX)
+                {
+                    return error(
+                        "invalid_signal",
+                        "manual level noise needs an output covering 500–2000 Hz",
+                    );
+                }
+                if signal.peak_dbfs + output.gain_db + session.snapshot.master_gain_db > -6.0 {
+                    return error(
+                        "level_limit",
+                        "existing gains exceed the measurement output ceiling",
+                    );
+                }
+                let prepared = match Signal::prepare_noise(
+                    signal,
+                    output.index as usize,
+                    session.configuration,
+                    now,
+                ) {
+                    Ok(s) => s,
+                    Err(reason) => return error("invalid_signal", reason),
+                };
+                let progress = NoiseProgress {
+                    signal_id,
+                    output_id,
+                    signal,
+                    state: SignalState::Queued,
+                    rendered_frames: 0,
+                    total_frames: prepared.total_frames(),
+                };
+                session.last_signal = signal_id;
+                session.signal = None;
+                self.control.measurement.install(prepared.clone());
+                session.noise = Some((progress, prepared));
+            }
             Command::Stop { .. } => {
-                if let Some((_, signal)) = &session.signal {
+                if let Some(signal) = session
+                    .signal
+                    .as_ref()
+                    .map(|(_, s)| s)
+                    .or_else(|| session.noise.as_ref().map(|(_, s)| s))
+                {
                     signal.cancel();
                 }
             }
@@ -526,6 +610,17 @@ impl Service {
 
     fn session_reply(&self) -> Reply {
         let session = self.session.as_ref().expect("active session");
+        if let Some((progress, signal)) = &session.noise {
+            let mut progress = progress.clone();
+            progress.state = signal.state();
+            progress.rendered_frames = signal.rendered_frames();
+            return Reply::NoiseSession {
+                session_id: session.id.clone(),
+                snapshot: session.snapshot.clone(),
+                lease_ms: LEASE_MS,
+                signal: progress,
+            };
+        }
         let signal = session.signal.as_ref().map(|(progress, signal)| {
             let mut progress = progress.clone();
             progress.state = signal.state();
