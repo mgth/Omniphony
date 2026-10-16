@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const REQUEST_ADDRESS: &str = crate::CONTROL_MEASUREMENT;
 pub const REPLY_ADDRESS: &str = crate::STATE_MEASUREMENT;
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const MAX_SEQUENCE_OUTPUTS: usize = 32;
 pub const MAX_SEQUENCE_MS: u64 = 120_000;
 pub const MAX_PACKET_BYTES: usize = 64 * 1024;
@@ -26,6 +26,12 @@ pub struct Request {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Discover {},
+    /// Compare and replace absolute output settings as one live-state publication.
+    /// This never writes the persistent configuration.
+    SetOutputs {
+        expected_revision: String,
+        settings: Vec<OutputSetting>,
+    },
     Begin {
         expected_revision: String,
     },
@@ -92,6 +98,14 @@ pub struct Snapshot {
     pub outputs: Vec<Output>,
     /// Discovery is still usable when calibration cannot start.
     pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputSetting {
+    pub output_id: String,
+    pub gain_db: f32,
+    pub delay_ms: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

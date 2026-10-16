@@ -1,8 +1,8 @@
-# Measurement sessions, version 3
+# Measurement sessions, version 4
 
 The companion can discover renderer outputs and play an identified finite sweep
 under an exclusive, temporary session. This increment does not acquire microphones,
-estimate acoustic delays, apply calibration profiles or save renderer settings.
+estimate acoustic delays or save renderer settings. It can apply absolute gain/delay targets after a revision check.
 
 ## Transport and ownership
 
@@ -12,7 +12,7 @@ has the existing four-byte, big-endian length prefix. Send one JSON string to
 `/omniphony/state/measurement`. Registration is unnecessary.
 
 The optional `measurement` feature of `omniphony-osc-contract` provides the
-shared Rust schema. Requests contain `version: 3`, a positive `request_id`
+shared Rust schema. Requests contain `version: 4`, a positive `request_id`
 and a tagged `command`. Reply version and request ID must match. Unexpected
 replies, truncated frames or timeouts require closing the connection and
 discovering again. Do not blindly retry a signal start.
@@ -20,7 +20,7 @@ discovering again. Do not blindly retry a signal start.
 Example discovery request:
 
 ```json
-{"version":3,"request_id":1,"command":{"type":"discover"}}
+{"version":4,"request_id":1,"command":{"type":"discover"}}
 ```
 
 Commands:
@@ -105,7 +105,7 @@ With a non-null `reference_output_id`, Start schedules three identical segments:
 reference, target, reference. Segment start offsets are exactly `0`, `N`, and
 `2N` renderer frames, where `N = Sweep::frames(sample_rate)` includes the silence.
 Progress echoes the reference ID and reports `3N` total frames. With null/omitted
-reference ID, Start still plays one target segment. The live protocol version is 3; clients and renderers must be upgraded together.
+reference ID, Start still plays one target segment. The live protocol version is 4; clients and renderers must be upgraded together.
 The sweep waveform is unchanged from version 2.
 
 Both outputs are checked for mute, frequency and level limits before playback.
@@ -165,3 +165,23 @@ sweep. The renderer changes the selected index only at segment boundaries, with
 no audio-thread allocation. Continuous acquisition can retain overlapping
 reference–target–reference windows for analysis: a shared reference must use the
 same recorded samples, not a replay or a recording from another session.
+
+## Temporary gain/delay settings
+
+Version 4 adds `set_outputs`, with `expected_revision` and a nonempty `settings`
+array of `{output_id, gain_db, delay_ms}`. Values are absolute, limited to
+-60..24 dB and 0..100 ms. Duplicate/unknown outputs and nonfinite values reject
+all changes. An active measurement session blocks application. The current
+revision is checked while holding the live-state writer lock; all selected outputs
+are published together, then a fresh snapshot is returned. Repeated application
+of the same values does not add offsets. Unselected outputs are preserved.
+
+The command does not save configuration to disk. Restoration uses the same
+command with the last confirmed revision and the original absolute values.
+A missing acknowledgement leaves application uncertain: discover and inspect
+state rather than blindly replaying or claiming success. Independent topology or
+host reconfiguration must still be excluded during calibration; a subsequent
+snapshot/reacquisition detects a changed configuration.
+
+Saved protocol-2/3 sweep recordings retain their waveform and can be analyzed
+offline; live clients and renderers must both use version 4.

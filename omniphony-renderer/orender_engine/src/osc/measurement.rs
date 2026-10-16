@@ -229,7 +229,73 @@ impl Service {
         }
     }
 
+    fn set_outputs(&mut self, expected_revision: &str, settings: &[OutputSetting]) -> Reply {
+        if self.session.is_some() {
+            return error(
+                "busy",
+                "end the measurement session before changing settings",
+            );
+        }
+        // Serialize with every live-parameter writer, including Studio and auto gain.
+        // Readers continue to see the complete previous state until publication.
+        let control = self.control.clone();
+        let mut live = control.live.write();
+        let snapshot = self.snapshot();
+        if snapshot.revision != expected_revision {
+            return error(
+                "stale_snapshot",
+                "renderer settings changed; discover again",
+            );
+        }
+        if let Some(reason) = &snapshot.unavailable_reason {
+            return error("unavailable", reason);
+        }
+        if settings.is_empty() || settings.len() > snapshot.outputs.len() {
+            return error(
+                "invalid_settings",
+                "expected a nonempty subset of physical outputs",
+            );
+        }
+        let mut indices = Vec::with_capacity(settings.len());
+        for setting in settings {
+            let Some(output) = snapshot.outputs.iter().find(|o| o.id == setting.output_id) else {
+                return error("unknown_output", "output is absent from this configuration");
+            };
+            if indices.contains(&output.index)
+                || !setting.gain_db.is_finite()
+                || !(-60.0..=24.0).contains(&setting.gain_db)
+                || !setting.delay_ms.is_finite()
+                || !(0.0..=MAX_DELAY_MS).contains(&setting.delay_ms)
+            {
+                return error(
+                    "invalid_settings",
+                    "duplicate output or gain/delay outside limits",
+                );
+            }
+            indices.push(output.index);
+        }
+        for (setting, index) in settings.iter().zip(indices) {
+            let params = live.speakers.entry(index as usize).or_default();
+            params.gain = renderer::live_params::speaker_gain_linear(setting.gain_db);
+            params.delay_ms = setting.delay_ms;
+        }
+        drop(live);
+        control.mark_speaker_params_dirty();
+        control.config_dirty.store(true, Ordering::Release);
+        control.bump_live_state();
+        Reply::Snapshot {
+            snapshot: self.snapshot(),
+        }
+    }
+
     fn command(&mut self, request: Request, owner: &Peer, now: Instant) -> Reply {
+        if let Command::SetOutputs {
+            expected_revision,
+            settings,
+        } = &request.command
+        {
+            return self.set_outputs(expected_revision, settings);
+        }
         if let Command::Discover {} = request.command {
             return Reply::Snapshot {
                 snapshot: self.snapshot(),
