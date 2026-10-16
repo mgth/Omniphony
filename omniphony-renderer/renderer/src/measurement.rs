@@ -28,7 +28,7 @@ pub struct Signal {
     pub output_index: usize,
     pub configuration: Configuration,
     samples: Box<[f32]>,
-    reference_index: Option<usize>,
+    routing: Box<[usize]>,
     total_frames: usize,
     deadline: Instant,
     rendered: AtomicU64,
@@ -53,20 +53,58 @@ impl Signal {
         configuration: Configuration,
         now: Instant,
     ) -> Result<Arc<Self>, &'static str> {
+        let routing = match reference_index {
+            Some(reference) => vec![reference, output_index, reference],
+            None => vec![output_index],
+        };
+        Self::prepare_routing(spec, output_index, routing, configuration, now)
+    }
+
+    pub fn prepare_sequence(
+        spec: Sweep,
+        outputs: &[usize],
+        reference: usize,
+        configuration: Configuration,
+        now: Instant,
+    ) -> Result<Arc<Self>, &'static str> {
+        omniphony_osc_contract::measurement::sequence_frames(
+            spec,
+            configuration.sample_rate,
+            outputs.len(),
+        )?;
+        let mut routing = Vec::with_capacity(outputs.len() * 2 + 1);
+        routing.push(reference);
+        for &output in outputs {
+            routing.push(output);
+            routing.push(reference);
+        }
+        Self::prepare_routing(spec, outputs[0], routing, configuration, now)
+    }
+
+    fn prepare_routing(
+        spec: Sweep,
+        output_index: usize,
+        routing: Vec<usize>,
+        configuration: Configuration,
+        now: Instant,
+    ) -> Result<Arc<Self>, &'static str> {
         let Configuration {
             sample_rate, width, ..
         } = configuration;
         spec.validate(sample_rate)?;
-        if output_index >= width || reference_index.is_some_and(|i| i >= width) {
+        if routing.iter().any(|&i| i >= width) {
             return Err("output index is outside the layout");
         }
         let samples = spec.samples(sample_rate)?.into_boxed_slice();
-        let total_frames = samples.len() * if reference_index.is_some() { 3 } else { 1 };
+        let total_frames = samples
+            .len()
+            .checked_mul(routing.len())
+            .ok_or("sequence is too long")?;
         Ok(Arc::new(Self {
             output_index,
             configuration,
             samples,
-            reference_index,
+            routing: routing.into_boxed_slice(),
             total_frames,
             deadline: now + Duration::from_secs_f64(total_frames as f64 / sample_rate as f64 + 2.0),
             rendered: AtomicU64::new(0),
@@ -212,11 +250,7 @@ impl MeasurementControl {
             let segment = cursor / signal.samples.len();
             let offset = cursor % signal.samples.len();
             let n = (count - copied).min(signal.samples.len() - offset);
-            let channel = if segment == 1 {
-                signal.output_index
-            } else {
-                signal.reference_index.unwrap_or(signal.output_index)
-            };
+            let channel = signal.routing[segment];
             for (frame, sample) in output[copied * width..(copied + n) * width]
                 .chunks_exact_mut(width)
                 .zip(&signal.samples[offset..offset + n])
@@ -348,5 +382,44 @@ mod tests {
             assert_eq!(frame[channel], expected, "frame {i}");
             assert_eq!(frame[1 - channel], 0.0, "frame {i}");
         }
+    }
+
+    #[test]
+    fn shared_reference_sequence_routes_all_outputs_with_one_reference_between_targets() {
+        let c = MeasurementControl::default();
+        let now = Instant::now();
+        let config = Configuration {
+            width: 14,
+            ..config()
+        };
+        let s = Signal::prepare_sequence(spec(), &[5, 9, 10], 0, config, now).unwrap();
+        let sample = spec().samples(48000).unwrap();
+        assert_eq!(s.total_frames(), sample.len() as u64 * 7);
+        c.install(s.clone());
+        c.renew(now, Duration::from_secs(3));
+        let mut block = vec![0.0; 257 * 14];
+        let mut cursor = 0;
+        while s.state() != SignalState::Completed {
+            c.render(&mut block, config, now);
+            for frame in block.as_chunks::<14>().0 {
+                let segment = cursor / sample.len();
+                for (channel, value) in frame.iter().enumerate() {
+                    let expected = if segment < 7 && channel == [0, 5, 0, 9, 0, 10, 0][segment] {
+                        sample[cursor % sample.len()]
+                    } else {
+                        0.0
+                    };
+                    assert_eq!(*value, expected, "frame {cursor}, channel {channel}");
+                }
+                cursor += 1;
+            }
+        }
+        assert!(Signal::prepare_sequence(spec(), &[], 0, config, now).is_err());
+        assert!(Signal::prepare_sequence(spec(), &[14], 0, config, now).is_err());
+        let s = Signal::prepare_sequence(spec(), &[5, 9], 0, config, now).unwrap();
+        c.install(s.clone());
+        c.render(&mut block, config, now + Duration::from_secs(4));
+        assert_eq!(s.state(), SignalState::Expired);
+        assert_eq!(s.rendered_frames(), 0);
     }
 }

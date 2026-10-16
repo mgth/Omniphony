@@ -467,6 +467,7 @@ fn measurement_session_over_tcp_blocks_writes_and_releases_on_disconnect() {
     } = client.measurement(
         3,
         Command::Start {
+            sequence_outputs: Vec::new(),
             reference_output_id: None,
             session_id: session_id.clone(),
             signal_id: 1,

@@ -1,4 +1,4 @@
-# Measurement sessions, version 2
+# Measurement sessions, version 3
 
 The companion can discover renderer outputs and play an identified finite sweep
 under an exclusive, temporary session. This increment does not acquire microphones,
@@ -12,7 +12,7 @@ has the existing four-byte, big-endian length prefix. Send one JSON string to
 `/omniphony/state/measurement`. Registration is unnecessary.
 
 The optional `measurement` feature of `omniphony-osc-contract` provides the
-shared Rust schema. Requests contain `version: 2`, a positive `request_id`
+shared Rust schema. Requests contain `version: 3`, a positive `request_id`
 and a tagged `command`. Reply version and request ID must match. Unexpected
 replies, truncated frames or timeouts require closing the connection and
 discovering again. Do not blindly retry a signal start.
@@ -20,7 +20,7 @@ discovering again. Do not blindly retry a signal start.
 Example discovery request:
 
 ```json
-{"version":2,"request_id":1,"command":{"type":"discover"}}
+{"version":3,"request_id":1,"command":{"type":"discover"}}
 ```
 
 Commands:
@@ -29,7 +29,7 @@ Commands:
 | --- | --- | --- |
 | `discover` | none | Output snapshot and availability |
 | `begin` | `expected_revision` | New session ID, confirmed snapshot, lease |
-| `start` | `session_id`, increasing `signal_id`, `output_id`, optional `reference_output_id`, `signal` | Accepted signal and render progress |
+| `start` | `session_id`, increasing `signal_id`, `output_id`, optional `reference_output_id`, optional `sequence_outputs`, `signal` | Accepted signal and render progress |
 | `status` | `session_id` | Current progress; renews lease |
 | `stop` | `session_id` | Cancels the current burst; keeps session isolation |
 | `end` | `session_id` | Cancels playback and releases the session |
@@ -74,7 +74,7 @@ before interpreting them as measured loudspeakers.
 ## Sweep and render progress
 
 `signal` has `duration_ms`, `peak_dbfs`, `start_hz` and `end_hz`.
-Version 2 defines a logarithmic sine sweep with 5 ms raised-cosine fades, prepared
+Versions 2 and 3 define a logarithmic sine sweep with 5 ms raised-cosine fades, prepared
 off the audio thread. Bounds:
 
 - Sample rate: 8000–192000 Hz; sweep: 100–5000 ms.
@@ -105,8 +105,8 @@ With a non-null `reference_output_id`, Start schedules three identical segments:
 reference, target, reference. Segment start offsets are exactly `0`, `N`, and
 `2N` renderer frames, where `N = Sweep::frames(sample_rate)` includes the silence.
 Progress echoes the reference ID and reports `3N` total frames. With null/omitted
-reference ID, Start still plays one target segment. The protocol version is 2;
-version-1 clients must use their pinned version-1 renderer.
+reference ID, Start still plays one target segment. The live protocol version is 3; clients and renderers must be upgraded together.
+The sweep waveform is unchanged from version 2.
 
 Both outputs are checked for mute, frequency and level limits before playback.
 The prepared mono buffer is shared by all segments. Routing is resolved once
@@ -144,3 +144,24 @@ output ID. This exercises both repositories without opening an audio device.
 Tests cover TCP ownership, stale configurations, malformed messages, replay,
 lease/disconnect handling, stalled rendering, output gain/delay, isolation and
 zero allocations during measurement rendering.
+
+## Continuous shared-reference sequences
+
+A nonempty `sequence_outputs` array in Start contains ordered, unique target IDs.
+`output_id` must equal its first entry, and `reference_output_id` is required.
+Playback is `reference, target[0], reference, target[1], ..., reference`: exactly
+`2 * targets + 1` equal-length segments. Progress echoes the full ordered list
+and reports the total frame count for the entire sequence. Empty/omitted lists
+retain single-target behavior. Protocol 3 makes this identity explicit.
+
+All target and reference mute, frequency and post-gain level checks happen before
+installing any signal. Sequences contain at most 32 targets and last at most
+120 seconds, including settling silence. The normal 3-second lease still requires
+keepalives and stops abandoned playback independently of the UI. The sequence's
+wall-clock deadline includes its complete duration plus two seconds.
+
+The control thread builds a bounded list of output indices and one reusable mono
+sweep. The renderer changes the selected index only at segment boundaries, with
+no audio-thread allocation. Continuous acquisition can retain overlapping
+reference–target–reference windows for analysis: a shared reference must use the
+same recorded samples, not a replay or a recording from another session.
