@@ -1,0 +1,146 @@
+# Measurement sessions, version 2
+
+The companion can discover renderer outputs and play an identified finite sweep
+under an exclusive, temporary session. This increment does not acquire microphones,
+estimate acoustic delays, apply calibration profiles or save renderer settings.
+
+## Transport and ownership
+
+Use the existing loopback TCP OSC listener, normally 127.0.0.1:9000. Each OSC packet
+has the existing four-byte, big-endian length prefix. Send one JSON string to
+`/omniphony/control/measurement`; replies use
+`/omniphony/state/measurement`. Registration is unnecessary.
+
+The optional `measurement` feature of `omniphony-osc-contract` provides the
+shared Rust schema. Requests contain `version: 2`, a positive `request_id`
+and a tagged `command`. Reply version and request ID must match. Unexpected
+replies, truncated frames or timeouts require closing the connection and
+discovering again. Do not blindly retry a signal start.
+
+Example discovery request:
+
+```json
+{"version":2,"request_id":1,"command":{"type":"discover"}}
+```
+
+Commands:
+
+| Command | Fields | Result |
+| --- | --- | --- |
+| `discover` | none | Output snapshot and availability |
+| `begin` | `expected_revision` | New session ID, confirmed snapshot, lease |
+| `start` | `session_id`, increasing `signal_id`, `output_id`, optional `reference_output_id`, `signal` | Accepted signal and render progress |
+| `status` | `session_id` | Current progress; renews lease |
+| `stop` | `session_id` | Cancels the current burst; keeps session isolation |
+| `end` | `session_id` | Cancels playback and releases the session |
+
+Only the owning connection can start, stop, renew or end its session. Other
+control writes are refused while it owns the renderer. Discovery remains
+available. Request IDs must increase within the session; completed/cancelled
+signal IDs cannot be reused. A second start while a signal is running is refused.
+
+The lease lasts 3000 ms. Clients should poll every 200–1000 ms. Disconnection,
+lease expiry, listener shutdown or an observed configuration change releases
+ownership. The audio thread independently checks the lease and a signal deadline:
+a stuck listener cannot leave an unbounded signal running. Stop/expiry takes effect
+at a render-block boundary; already queued host audio and output-delay tails are
+not retractable.
+
+## Snapshot identity
+
+Outputs use unique layout names as IDs and include their current output index,
+gain, delay, mute and declared frequency range. Renaming changes identity.
+Indices must never be reused from a different snapshot. Instance/revision values
+are opaque and must be rediscovered after reconnection or configuration changes;
+they are not permanent installation identifiers.
+
+The snapshot records the render sample rate, master gain and the 100 ms delay
+limit. Its revision includes layout, output settings, relevant renderer epochs
+and the host's measurement configuration. Normal output startup, device-list
+refreshes and held-latency telemetry do not change that configuration: beginning
+an idle measurement wakes the audio stream without invalidating its own session.
+Output setting changes and output faults still terminate the session. Hosts that
+do not distinguish settings from telemetry retain conservative invalidation on
+any host state change. Asynchronous changes terminate the session at the
+control poll; sample rate, width, gain and speaker/topology generation mismatches
+also cancel playback in the render path. Discovery reports unsupported conditions
+such as headphone mode, a pending layout rebuild or another active test. A speaker
+count that differs from the running output width is rejected before acquisition;
+save the layout in Studio and restart the renderer to reopen it at the new width.
+
+Names identify renderer outputs. Confirm the audio device's physical routing
+before interpreting them as measured loudspeakers.
+
+## Sweep and render progress
+
+`signal` has `duration_ms`, `peak_dbfs`, `start_hz` and `end_hz`.
+Version 2 defines a logarithmic sine sweep with 5 ms raised-cosine fades, prepared
+off the audio thread. Bounds:
+
+- Sample rate: 8000–192000 Hz; sweep: 100–5000 ms.
+- Injection peak: -60 to -12 dBFS; after current master/output gains: at most -6 dBFS.
+- Frequencies increase from at least 20 Hz, stay below 0.45 times the sample rate,
+  and remain within the selected output's declared band.
+- Muted outputs cannot start a sweep.
+
+Each burst includes 250 ms silence before and after the sweep to flush existing
+output delays. `total_frames` and `rendered_frames` include this silence.
+The sweep goes directly to the selected output before its existing gain, mute
+and delay. It bypasses spatial panning and crossover processing; programme
+loudness metadata does not scale it. Other programme/test contributions are
+silenced during the session. This signal path must be recorded by future
+acquisition code and must not be confused with a measurement through every
+programme-processing stage.
+
+Progress distinguishes `queued`, `rendering`, `completed`, `cancelled`
+and `expired`. Completion means samples reached the renderer's output stage;
+it does not establish a DAC timestamp, sound emission or microphone arrival.
+No rendering within the sweep duration plus settling silence plus two seconds
+expires the signal. Embedded hosts must keep rendering; the standalone CLI
+uses its existing idle feeder during the lease.
+
+## Repeated acoustic reference
+
+With a non-null `reference_output_id`, Start schedules three identical segments:
+reference, target, reference. Segment start offsets are exactly `0`, `N`, and
+`2N` renderer frames, where `N = Sweep::frames(sample_rate)` includes the silence.
+Progress echoes the reference ID and reports `3N` total frames. With null/omitted
+reference ID, Start still plays one target segment. The protocol version is 2;
+version-1 clients must use their pinned version-1 renderer.
+
+Both outputs are checked for mute, frequency and level limits before playback.
+The prepared mono buffer is shared by all segments. Routing is resolved once
+per block/segment boundary, with no allocation in the audio path. The signal
+deadline covers all three segments plus two seconds; the session still requires
+keepalives every 200–1000 ms.
+
+The companion records continuously and correlates the two repeated references.
+Their spacing estimates the capture/render clock ratio; the middle peak's
+difference from their midpoint retains the target's relative propagation and
+existing output delay. Use the same fixed reference output and microphone
+position across compared takes. Reference and target may be the same output
+for a timing sanity check.
+
+These are correlation-peak diagnostics, not a validated direct-arrival estimator.
+Nonlinear clock drift, hidden resampling, acoustic multipath and actual hardware
+repeatability still require validation. OSC acknowledgement time remains
+unsuitable for estimating propagation delay.
+
+Calibration changes are developed against `dev/calibration`. This experimental
+contract is not a change to the main renderer branch.
+
+## Validation without audio hardware
+
+The engine's `measurement_fixture` example opens a real OSC listener and renders
+into discarded memory:
+
+```sh
+cd omniphony-renderer
+cargo run -p orender_engine --example measurement_fixture -- 19003 30
+```
+
+Connect the companion to `127.0.0.1:19003`, discover, then sweep one returned
+output ID. This exercises both repositories without opening an audio device.
+Tests cover TCP ownership, stale configurations, malformed messages, replay,
+lease/disconnect handling, stalled rendering, output gain/delay, isolation and
+zero allocations during measurement rendering.

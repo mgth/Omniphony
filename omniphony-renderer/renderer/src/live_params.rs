@@ -1849,6 +1849,9 @@ pub struct BridgeStatus {
 }
 
 pub struct RendererControl {
+    /// Transient measurement lease and prepared signals; never persisted.
+    pub measurement: crate::measurement::MeasurementControl,
+
     /// Live-tunable parameters: read lock-free, written under a mutex that
     /// only writers take (see [`LiveCell`]).
     pub live: LiveCell<LiveParams>,
@@ -2105,6 +2108,7 @@ impl RendererControl {
         backend_rebuild_params: Option<BackendRebuildParams>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            measurement: crate::measurement::MeasurementControl::default(),
             live: LiveCell::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
@@ -2677,6 +2681,11 @@ impl RendererControl {
     /// Record the width the speaker stage was opened with (see the field).
     pub fn set_speaker_stage_width(&self, width: usize) {
         self.speaker_stage_width.store(width, Ordering::Relaxed);
+    }
+
+    /// Width of the running speaker stage; zero until a renderer reports it.
+    pub fn speaker_stage_width(&self) -> usize {
+        self.speaker_stage_width.load(Ordering::Relaxed)
     }
 
     /// The layout a headphone render with a BRIR source pans onto, when one

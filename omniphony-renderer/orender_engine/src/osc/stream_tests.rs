@@ -404,3 +404,102 @@ fn a_stream_client_gets_the_gain_table_in_large_chunks() {
     assert_eq!(table.len(), total, "the chunks make up the table");
     drop(sender);
 }
+
+impl Client {
+    fn measurement(
+        &mut self,
+        id: u64,
+        command: osc_contract::measurement::Command,
+    ) -> osc_contract::measurement::Reply {
+        use osc_contract::measurement as protocol;
+        let request = protocol::Request {
+            version: protocol::VERSION,
+            request_id: id,
+            command,
+        };
+        self.send(
+            protocol::REQUEST_ADDRESS,
+            vec![OscType::String(serde_json::to_string(&request).unwrap())],
+        );
+        let messages = self
+            .until(protocol::REPLY_ADDRESS)
+            .expect("measurement response");
+        let message = messages.last().unwrap();
+        let [OscType::String(json)] = message.args.as_slice() else {
+            panic!("JSON response")
+        };
+        let response: protocol::Response = serde_json::from_str(json).unwrap();
+        assert_eq!(response.request_id, id);
+        response.reply
+    }
+}
+
+#[test]
+fn measurement_session_over_tcp_blocks_writes_and_releases_on_disconnect() {
+    use osc_contract::measurement::{Command, Reply, SignalState, Sweep};
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let control = fixture_control();
+    let (_sender, port) = listening_sender(&control);
+    let mut client = Client::connect(port);
+    let Reply::Snapshot { snapshot } = client.measurement(1, Command::Discover {}) else {
+        panic!("snapshot")
+    };
+    let gain = control.live.read().master_gain;
+    let Reply::Session { session_id, .. } = client.measurement(
+        2,
+        Command::Begin {
+            expected_revision: snapshot.revision.clone(),
+        },
+    ) else {
+        panic!("session")
+    };
+    client.send(
+        osc_contract::CONTROL_REALTIME_MASTER_GAIN,
+        vec![OscType::Float(0.1)],
+    );
+    client
+        .until(osc_contract::STATE_CONTROL_ERROR)
+        .expect("exclusive ownership");
+    assert_eq!(control.live.read().master_gain, gain);
+    let Reply::Session {
+        signal: Some(signal),
+        ..
+    } = client.measurement(
+        3,
+        Command::Start {
+            reference_output_id: None,
+            session_id: session_id.clone(),
+            signal_id: 1,
+            output_id: snapshot.outputs[0].id.clone(),
+            signal: Sweep {
+                duration_ms: 100,
+                peak_dbfs: -30.0,
+                start_hz: 200.0,
+                end_hz: 10000.0,
+            },
+        },
+    )
+    else {
+        panic!("signal")
+    };
+    assert_eq!(signal.state, SignalState::Queued);
+    let Reply::Session {
+        signal: Some(signal),
+        ..
+    } = client.measurement(4, Command::Stop { session_id })
+    else {
+        panic!("stop")
+    };
+    assert_eq!(signal.state, SignalState::Cancelled);
+    drop(client);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while control.measurement.active(Instant::now()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!control.measurement.active(Instant::now()));
+    assert!(
+        !control
+            .config_dirty
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+}
