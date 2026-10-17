@@ -204,7 +204,10 @@ pipewire = []
 # reader stops at three dimensions, one B-tree level and 256 MiB — a
 # MultiSpeakerBRIR as netCDF4 writes it (issue #219, the BBC R&D set) needs
 # the fork's fix/chunked-nd-datasets. Its fix/no-debug-panics, on top, makes a
-# corrupt file an error in debug builds too (it panicked). Drop once upstream
-# carries all three.
+# corrupt file an error in debug builds too (it panicked). Its
+# feat/lazy-measurements (from v-lix's fork), on top, reads only the
+# measurements a caller picks (reader::LazySofa) instead of inflating the whole
+# Data.IR, and reads string attributes written as UTF-8 or padded, which it
+# refused (every IRCAM LISTEN set). Drop once upstream carries all of them.
 [patch.crates-io]
-sofar = { git = "https://github.com/mgth/sofar", rev = "26ca8670b09bd55febc19fbdd73be5af06825ddb" }
+sofar = { git = "https://github.com/mgth/sofar", rev = "01a08d71ca6e9576443aed1b68cd122efe0f010e" }
