@@ -258,6 +258,15 @@ impl ReflectionBank {
         }
     }
 
+    /// Zero the ring and every tap's wall/air filter in place, keeping the
+    /// taps' geometry.
+    pub fn clear_history(&mut self) {
+        self.ring.fill(0.0);
+        for tap in self.taps_l.iter_mut().chain(self.taps_r.iter_mut()) {
+            tap.lp = 0.0;
+        }
+    }
+
     /// Update one reflection's targets: per-ear relative delays (s), per-ear
     /// gains, and the high-frequency cutoff (Hz) of this reflection — the
     /// wall's absorption combined with the air along the image path. Called

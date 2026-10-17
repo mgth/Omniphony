@@ -148,6 +148,12 @@ impl EarConvolver {
         }
     }
 
+    /// Zero the input history in place, keeping the kernels (and a running
+    /// crossfade between them).
+    pub fn clear_history(&mut self) {
+        self.hist.fill(0.0);
+    }
+
     /// Taps currently run per sample.
     #[inline]
     pub fn len(&self) -> usize {
