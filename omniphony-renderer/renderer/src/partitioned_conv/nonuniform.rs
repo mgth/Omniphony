@@ -328,6 +328,34 @@ impl TailStreams {
         }
     }
 
+    /// Silence every segment in place, as [`NonUniformPlan::make_tails`]
+    /// leaves them: the ring, each segment's histories and the blocks it
+    /// reads and computes, and the period in flight. Nothing allocates.
+    pub fn reset(&mut self) {
+        for ring in &mut self.ring {
+            ring.fill(0.0);
+        }
+        self.write_block = 0;
+        for seg in &mut self.segments {
+            seg.slot = 0;
+            for input in &mut seg.inputs {
+                input.reset();
+            }
+            seg.scratch.clear();
+            for block in seg.front.iter_mut().chain(seg.back.iter_mut()) {
+                block.fill(0.0);
+            }
+            seg.fade.fill(0.0);
+            seg.source = 0;
+            seg.starting = false;
+            seg.blend = false;
+            seg.task = 0;
+            seg.tasks = 0;
+            seg.spent = 0;
+            seg.budget = 0;
+        }
+    }
+
     /// Tail segments (levels past the head); segment `s` is level `s + 1`.
     #[inline]
     pub fn segments(&self) -> usize {

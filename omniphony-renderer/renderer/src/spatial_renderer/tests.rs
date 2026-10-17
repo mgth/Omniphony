@@ -3671,6 +3671,45 @@ fn render_noise_object(r: &mut SpatialRenderer, frames: usize) -> (f32, f32) {
     (e_l, e_r)
 }
 
+/// `reset_runtime_state` erases the previous stream on the headphones too:
+/// after a seek, silence in is silence out, with nothing of the previous
+/// stream's early reflections, late reverb or measured room ringing on.
+#[test]
+fn a_reset_leaves_nothing_of_either_room() {
+    let synthetic_room = || {
+        let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+        r.set_synchronous_stage_builds(true);
+        {
+            let mut live = r.control.live.write();
+            live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+            live.binaural.mode = crate::live_params::BinauralMode::Direct;
+            live.binaural.hrir_source = crate::binaural::HrirSource::SafKemar;
+            live.binaural.reflections.enabled = true;
+            live.binaural.reverb.enabled = true;
+            live.binaural.reverb.level = 0.5;
+            live.binaural.reverb.rt60_s = 1.0;
+        }
+        r
+    };
+    for (what, mut r) in [
+        ("reflections and reverb", synthetic_room()),
+        ("a measured room", brir_layout_test_renderer(true)),
+    ] {
+        let (e_l, e_r) = render_noise_object(&mut r, 60);
+        assert!(e_l + e_r > 0.0, "{what}: the stream sounds");
+        r.reset_runtime_state();
+        let pcm = vec![0.0f32; 40];
+        // A quarter of a second: the 1 s reverb would still ring here.
+        for block in 0..300 {
+            let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+            assert!(
+                out.samples.iter().all(|&v| v == 0.0),
+                "{what}: block {block} after the reset still carries the previous stream"
+            );
+        }
+    }
+}
+
 /// With a BRIR source on the headphones, the render pans onto the set's own
 /// loudspeakers, not the editable layout: the topology is rebuilt on them
 /// (offline, on the frame that selects the set), bus `n` is emitter `n`, the
