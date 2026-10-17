@@ -45,8 +45,11 @@
 //!
 //! A set whose head orientations cover only an arc of 90° or more, leaving
 //! the rest of the circle out, is turned to face the middle of that arc
-//! instead (TU Berlin's Calypso set, measured from 0° to 180° about its
-//! centre loudspeaker).
+//! instead, but only when a loudspeaker stands there and none straight ahead
+//! of the file's frame (TU Berlin's Calypso set, measured from 0° to 180°
+//! about its centre loudspeaker). Without that evidence the file's `+x` stays
+//! the front: a set may well turn the head further to one side than the
+//! other.
 //!
 //! Every emitter must have been measured at every kept orientation. A room
 //! whose loudspeakers are the 24 of ITU-R BS.2051 Sound System H (22.2)
@@ -370,16 +373,31 @@ const ARC_GAP_DEG: f32 = 30.0;
 /// partial set of its front.
 const ARC_MIN_SPAN_DEG: f32 = 90.0;
 
+/// A loudspeaker within this many degrees of azimuth of a direction stands
+/// there, for the arc rule of [`front_azimuth`].
+const ARC_SPEAKER_DEG: f32 = 5.0;
+
+/// The highest a loudspeaker may stand, degrees, and still count for the
+/// arc rule of [`front_azimuth`]: the ear-level ring a front is set by.
+const ARC_SPEAKER_MAX_EL_DEG: f32 = 30.0;
+
 /// The SOFA azimuth, radians, of where a set's listener faces, from the head
-/// orientations `views` of its measurements. When they leave part of the
-/// circle out it is the middle of the arc they cover: a set is measured
-/// turning from one side to the other of where the listener faces, as TU
-/// Berlin's Calypso 5.0 set does from 0° to 180° about its centre
-/// loudspeaker at 90°. With the circle covered it is straight ahead (`+x`),
-/// or for views the ears gave (`derived`) where the head looked at the first
+/// orientations `views` of its measurements and the SOFA azimuths, degrees,
+/// of its ear-level loudspeakers (`speakers`, relative to the listener).
+///
+/// When the views leave part of the circle out, and a loudspeaker stands at
+/// the middle of the arc they cover while none stands straight ahead (`+x`),
+/// it is that middle: the set was measured turning from one side to the
+/// other of where the listener faces, as TU Berlin's Calypso 5.0 set does
+/// from 0° to 180° about its centre loudspeaker at 90°. The midpoint alone is
+/// no evidence - `ListenerView` is the head's orientation in the file's own
+/// frame, and a set may turn the head 120° one way and none the other - so
+/// without a loudspeaker to confirm it, or with one at `+x`, the front stays
+/// straight ahead. With the circle covered it is straight ahead too, or for
+/// views the ears gave (`derived`) where the head looked at the first
 /// measurement, the IoSR set's front loudspeaker. A set of one orientation
 /// faces it.
-fn front_azimuth(views: &[[f32; 3]], derived: bool) -> f32 {
+fn front_azimuth(views: &[[f32; 3]], derived: bool, speakers: &[f32]) -> f32 {
     let mut az: Vec<f32> = views
         .iter()
         .filter(|v| v[0].abs() + v[1].abs() > 1e-6)
@@ -417,7 +435,15 @@ fn front_azimuth(views: &[[f32; 3]], derived: bool) -> f32 {
         // The arc runs from the orientation after the gap round to the one
         // before it.
         let start = az[(widest + 1) % az.len()];
-        return facing(start + (360.0 - gap) / 2.0);
+        let middle = start + (360.0 - gap) / 2.0;
+        let stands_at = |deg: f32| {
+            speakers
+                .iter()
+                .any(|&s| wrap_deg(s - deg).abs() <= ARC_SPEAKER_DEG)
+        };
+        if stands_at(middle) && !stands_at(0.0) {
+            return facing(middle);
+        }
     }
     if derived {
         let v = views[0];
@@ -700,7 +726,35 @@ impl RoomPlan {
         // the frame a file is written in is the room's, not the listener's
         // (see `front_azimuth`).
         let views: Vec<[f32; 3]> = (0..m).map(view_at).collect();
-        let turn = -front_azimuth(&views, derived_views);
+        // The ear-level loudspeakers' SOFA azimuths, as the file places them
+        // around the listener: what confirms the middle of an arc as a front.
+        let mut speakers: Vec<f32> = Vec::new();
+        for mi in 0..m {
+            let listener = row3(raw.listener_position, mi);
+            let source = row3(raw.source_position, mi);
+            for k in 0..e {
+                let em = row3_at(raw.emitter_position, e, m, k, mi);
+                let p = [
+                    source[0] + em[0] - listener[0],
+                    source[1] + em[1] - listener[1],
+                    source[2] + em[2] - listener[2],
+                ];
+                let horiz = (p[0] * p[0] + p[1] * p[1]).sqrt();
+                if horiz < SAME_POINT_M
+                    || p[2].atan2(horiz).to_degrees().abs() > ARC_SPEAKER_MAX_EL_DEG
+                {
+                    continue;
+                }
+                let az = p[1].atan2(p[0]).to_degrees();
+                if !speakers
+                    .iter()
+                    .any(|&s| wrap_deg(s - az).abs() < SAME_ANGLE_DEG)
+                {
+                    speakers.push(az);
+                }
+            }
+        }
+        let turn = -front_azimuth(&views, derived_views, &speakers);
 
         // Per (measurement, emitter slot): emitter index, orientation index.
         let mut meas: Vec<(usize, usize)> = Vec::with_capacity(m * e);
@@ -2730,25 +2784,34 @@ mod tests {
         let views = |azs: &mut dyn Iterator<Item = f32>| -> Vec<[f32; 3]> {
             azs.map(|a| sph(a, 0.0, 1.0)).collect()
         };
-        // TU Berlin's Calypso: 0..180° in 1° steps about the centre at 90°.
+        // TU Berlin's Calypso: 0..180° in 1° steps about the centre at 90°,
+        // where a loudspeaker stands and none at the file's +x.
+        let calypso_speakers = [120.0, 90.0, 60.0, -160.0, -20.0];
         let calypso = views(&mut (0..=180).map(|a| a as f32));
-        assert!((front_azimuth(&calypso, false).to_degrees() - 90.0).abs() < 1e-3);
+        assert!(
+            (front_azimuth(&calypso, false, &calypso_speakers).to_degrees() - 90.0).abs() < 1e-3
+        );
+        // The same arc without that evidence keeps the file's front: no
+        // loudspeaker at its middle, or one straight ahead as well.
+        assert_eq!(front_azimuth(&calypso, false, &[30.0, -30.0]), 0.0);
+        assert_eq!(front_azimuth(&calypso, false, &[90.0, 0.0]), 0.0);
         // The BBC's: the circle in 2° steps.
         let bbc = views(&mut (0..180).map(|i| i as f32 * 2.0));
-        assert_eq!(front_azimuth(&bbc, false), 0.0);
+        assert_eq!(front_azimuth(&bbc, false, &[90.0]), 0.0);
         // TuBuRo's: ±80° in 2° steps.
         let tuburo = views(&mut (-40..=40).map(|i| i as f32 * 2.0));
-        assert_eq!(front_azimuth(&tuburo, false), 0.0);
+        assert_eq!(front_azimuth(&tuburo, false, &[]), 0.0);
         // A circle with one measurement missing is still the circle.
         let gap = views(&mut (0..72).filter(|&i| i != 9).map(|i| i as f32 * 5.0));
-        assert_eq!(front_azimuth(&gap, false), 0.0);
+        assert_eq!(front_azimuth(&gap, false, &[]), 0.0);
         // A narrow arc from straight ahead is a partial set of the front
         // (`rows_multispeaker_brir.sofa`: 0° to 60°).
         let partial = views(&mut (0..=6).map(|i| i as f32 * 10.0));
-        assert_eq!(front_azimuth(&partial, false), 0.0);
+        assert_eq!(front_azimuth(&partial, false, &[30.0]), 0.0);
         // One orientation is where the listener faced.
         assert!(
-            (front_azimuth(&views(&mut [30.0f32].into_iter()), false).to_degrees() - 30.0).abs()
+            (front_azimuth(&views(&mut [30.0f32].into_iter()), false, &[]).to_degrees() - 30.0)
+                .abs()
                 < 1e-3
         );
     }
@@ -2790,6 +2853,55 @@ mod tests {
                 "loudspeaker {k}: {peak}"
             );
         }
+    }
+
+    /// A set that turns the head further one way than the other keeps the
+    /// file's own front: views from 0° to 120° in 10° steps, a loudspeaker
+    /// straight ahead and two at ±30°. The middle of that range (60°) is no
+    /// front - no loudspeaker stands there - so the front-only selection is
+    /// the measurement made facing +x, the first, and the centre loudspeaker
+    /// stays in front.
+    #[test]
+    fn an_asymmetric_range_of_head_turns_keeps_the_files_front() {
+        let yaws: Vec<f32> = (0..=12).map(|i| i as f32 * 10.0).collect();
+        let s = multi_speaker(&[0.0, 30.0, -30.0], &yaws, 400, 48000.0, 0.0);
+        let raw = s.raw();
+        assert_eq!(
+            ExtractedRoom::measurements(&raw, OrientationSelection::FrontOnly).unwrap(),
+            0..1
+        );
+        let room = ExtractedRoom::extract(&raw, OrientationSelection::FrontOnly).unwrap();
+        assert_eq!(room.orientations.len(), 1);
+        assert!(
+            room.orientations[0].0.abs() < 1e-3,
+            "{:?}",
+            room.orientations
+        );
+        let c = room.emitters[0];
+        assert!(
+            c[0].abs() < 1e-4 && (c[1] - 2.0).abs() < 1e-4,
+            "centre loudspeaker: {c:?}"
+        );
+        // SOFA +30° (left) is the renderer's left.
+        assert!(room.emitters[1][0] < -0.9, "{:?}", room.emitters[1]);
+        for (k, pair) in room.pairs.iter().enumerate() {
+            let peak = pair
+                .left
+                .iter()
+                .fold(0.0f32, |m, &x| if x.abs() > m.abs() { x } else { m });
+            assert!(
+                (peak - marker(k, 0, 0)).abs() < 1e-6,
+                "loudspeaker {k}: {peak}"
+            );
+        }
+        // Every orientation keeps its own yaw, unturned: SOFA +120 (left)
+        // is the renderer's -120.
+        let all = ExtractedRoom::extract(&raw, OrientationSelection::All).unwrap();
+        assert!(
+            (all.orientations[0].0 + 120.0).abs() < 1e-3,
+            "{:?}",
+            all.orientations
+        );
     }
 
     /// Fewer loudspeakers than a sound can be placed between are no room:
