@@ -36,17 +36,31 @@
 //!   `SimpleFreeFieldHRIR` that carries room-length responses, the ASH
 //!   Toolset export): each measurement is one `(SourcePosition,
 //!   ListenerView)`; distinct source positions are the emitters, distinct
-//!   views the orientations.
+//!   views the orientations;
+//! * a `GeneralFIR` set that moves its one emitter from measurement to
+//!   measurement (`EmitterPosition` as `[E][C][M]`) and turns the head
+//!   without a `ListenerView`, its ears alone recording where it looked (the
+//!   IoSR listening room's 22.2 set): the head faces across its ears, and
+//!   the set is turned so that its first measurement looks straight ahead.
 //!
-//! Every emitter must have been measured at every kept orientation.
+//! A set whose head orientations cover only an arc of 90° or more, leaving
+//! the rest of the circle out, is turned to face the middle of that arc
+//! instead (TU Berlin's Calypso set, measured from 0° to 180° about its
+//! centre loudspeaker).
+//!
+//! Every emitter must have been measured at every kept orientation. A room
+//! whose loudspeakers are the 24 of ITU-R BS.2051 Sound System H (22.2)
+//! measures its two LFE loudspeakers too: those carry the LFE
+//! ([`lfe_emitters`]), and nothing is panned to them.
 //!
 //! # SOFA shape
 //!
 //! `sofar` assumes `Data.IR` is `[M][R][N]` and takes the third axis for
-//! `N`, so a `[M][R][E][N]` file reports `N = E` (issue #219). The shape is
-//! therefore read from the HDF dataspace directly, and the reader is opened
-//! at the file's own rate with normalisation off so its resampler and
-//! normaliser never touch the misread arrays.
+//! `N`, so a `[M][R][E][N]` file reports `N = E` (issue #219). The file is
+//! therefore opened without its responses (`LazySofa`, which neither
+//! resamples nor normalises), the shape is read from the HDF dataspace, and
+//! only the measurements the kept orientations come from are read: one head
+//! orientation of a 274 MB set when the listener is not tracked.
 
 use rayon::prelude::*;
 
@@ -131,16 +145,31 @@ pub struct RawRoomIr<'a> {
     pub n: usize,
     /// `[M][C]` or `[I][C]`.
     pub source_position: &'a [f32],
-    /// `[E][C][I]`, relative to the source.
+    /// `[E][C][I]`, or `[E][C][M]` where each measurement places its
+    /// emitters itself; relative to the source.
     pub emitter_position: &'a [f32],
     /// `[M][C]` or `[I][C]`.
     pub listener_position: &'a [f32],
-    /// `[M][C]` or `[I][C]`; a view vector.
+    /// `[M][C]` or `[I][C]`; a view vector. Empty when the file has none:
+    /// the ears then say where the head looked (see [`RoomPlan::new`]).
     pub listener_view: &'a [f32],
-    /// `[M][R][N]` (`E = 1`) or `[M][R][E][N]`.
+    /// `[I][C]` or `[M][C]`; empty = `z` is up.
+    pub listener_up: &'a [f32],
+    /// `[R][C][I]` or `[R][C][M]`, the left ear first.
+    pub receiver_position: &'a [f32],
+    /// `[M][R][N]` (`E = 1`) or `[M][R][E][N]`: every measurement, or the
+    /// run from `ir_first` that [`ExtractedRoom::measurements`] names for a
+    /// selection.
     pub data_ir: &'a [f32],
+    /// The measurement `data_ir` starts at: 0 for the whole set.
+    pub ir_first: usize,
     /// `[I][R]`, `[M][R]`, `[I][R][E]` or `[M][R][E]`; empty = none.
     pub data_delay: &'a [f32],
+    /// The file's `RoomType` attribute, when it states one.
+    pub room_type: Option<&'a str>,
+    /// The room's corners around the listener, renderer frame, metres
+    /// ([`room_corners_relative`]), when the file states them.
+    pub room_corners: Option<[[f32; 3]; 2]>,
 }
 
 /// A loaded BRIR set: emitters × orientations kernel pairs at the engine
@@ -151,6 +180,8 @@ pub struct BrirSet {
     /// Virtual loudspeakers relative to the listener, renderer frame,
     /// metres.
     emitters: Vec<[f32; 3]>,
+    /// Per emitter: one of the room's LFE loudspeakers ([`lfe_emitters`]).
+    lfe: Vec<bool>,
     /// `(yaw, pitch)` degrees, renderer convention, sorted by yaw then pitch.
     orientations: Vec<(f32, f32)>,
     /// `pairs[emitter * orientations.len() + orientation]`.
@@ -289,6 +320,145 @@ fn row3(arr: &[f32], i: usize) -> [f32; 3] {
     }
 }
 
+/// Row `i` of a `[X][C][M]` array at measurement `mi` when the file gives
+/// one per measurement (`m` of them), else of `[X][C]` (`[X][C][I]`) as
+/// [`row3`] reads it.
+fn row3_at(arr: &[f32], rows: usize, m: usize, i: usize, mi: usize) -> [f32; 3] {
+    if m > 1 && arr.len() == rows * 3 * m {
+        let at = |c: usize| arr[(i * 3 + c) * m + mi];
+        [at(0), at(1), at(2)]
+    } else {
+        row3(arr, i)
+    }
+}
+
+/// Where the head looked at measurement `mi` by its ears: ahead across the
+/// axis from the left ear to the right, about `ListenerUp` (`z` when the
+/// file has none). `None` when the file gives no two ears, or they do not
+/// stand across up.
+fn ears_view(raw: &RawRoomIr<'_>, mi: usize) -> Option<[f32; 3]> {
+    if raw.r < 2 || raw.receiver_position.len() < 6 {
+        return None;
+    }
+    let ear = |ri: usize| row3_at(raw.receiver_position, raw.r, raw.m, ri, mi);
+    let (left, right) = (ear(0), ear(1));
+    let across = [right[0] - left[0], right[1] - left[1], right[2] - left[2]];
+    let up = if raw.listener_up.len() >= 3 {
+        row3(raw.listener_up, mi)
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    // up × (left → right) is ahead: with x ahead and y to the left, the
+    // right ear lies along −y, and z × −y = +x.
+    let v = [
+        up[1] * across[2] - up[2] * across[1],
+        up[2] * across[0] - up[0] * across[2],
+        up[0] * across[1] - up[1] * across[0],
+    ];
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    (n.is_finite() && n > 1e-6).then(|| [v[0] / n, v[1] / n, v[2] / n])
+}
+
+/// A gap in a set's head orientations at least this wide, degrees, and
+/// several times its usual step, is the part of the circle it left out.
+const ARC_GAP_DEG: f32 = 30.0;
+
+/// The narrowest arc of head orientations, degrees, taken to be measured
+/// on both sides of where the listener faces: the sets that leave part of
+/// the circle out turn the head a quarter circle or more each way (TuBuRo
+/// ±80°, Calypso ±90°); a narrower one that starts straight ahead is a
+/// partial set of its front.
+const ARC_MIN_SPAN_DEG: f32 = 90.0;
+
+/// The SOFA azimuth, radians, of where a set's listener faces, from the head
+/// orientations `views` of its measurements. When they leave part of the
+/// circle out it is the middle of the arc they cover: a set is measured
+/// turning from one side to the other of where the listener faces, as TU
+/// Berlin's Calypso 5.0 set does from 0° to 180° about its centre
+/// loudspeaker at 90°. With the circle covered it is straight ahead (`+x`),
+/// or for views the ears gave (`derived`) where the head looked at the first
+/// measurement, the IoSR set's front loudspeaker. A set of one orientation
+/// faces it.
+fn front_azimuth(views: &[[f32; 3]], derived: bool) -> f32 {
+    let mut az: Vec<f32> = views
+        .iter()
+        .filter(|v| v[0].abs() + v[1].abs() > 1e-6)
+        .map(|v| v[1].atan2(v[0]).to_degrees().rem_euclid(360.0))
+        .collect();
+    az.sort_by(f32::total_cmp);
+    az.dedup_by(|a, b| (*a - *b).abs() < SAME_ANGLE_DEG);
+    // Straight ahead is exactly no turn, so that a set facing it is read
+    // to the bit as it was before this looked.
+    let facing = |deg: f32| {
+        let deg = wrap_deg(deg);
+        if deg.abs() < SAME_ANGLE_DEG {
+            0.0
+        } else {
+            deg.to_radians()
+        }
+    };
+    match az.len() {
+        0 => return 0.0,
+        1 => return facing(az[0]),
+        _ => {}
+    }
+    let gaps: Vec<f32> = (0..az.len())
+        .map(|i| az.get(i + 1).copied().unwrap_or(az[0] + 360.0) - az[i])
+        .collect();
+    let (widest, gap) = gaps
+        .iter()
+        .copied()
+        .enumerate()
+        .fold((0, f32::NEG_INFINITY), |a, x| if x.1 > a.1 { x } else { a });
+    let mut sorted = gaps.clone();
+    sorted.sort_by(f32::total_cmp);
+    let usual = sorted[sorted.len() / 2];
+    if gap >= ARC_GAP_DEG && gap > 3.0 * usual && 360.0 - gap >= ARC_MIN_SPAN_DEG {
+        // The arc runs from the orientation after the gap round to the one
+        // before it.
+        let start = az[(widest + 1) % az.len()];
+        return facing(start + (360.0 - gap) / 2.0);
+    }
+    if derived {
+        let v = views[0];
+        v[1].atan2(v[0])
+    } else {
+        0.0
+    }
+}
+
+/// `p` turned by `radians` about `z`, anticlockwise seen from above: the
+/// same turn in the SOFA frame and the renderer's, both right-handed with
+/// `z` up.
+fn turn_about_z(p: [f32; 3], radians: f32) -> [f32; 3] {
+    if radians == 0.0 {
+        return p;
+    }
+    let (s, c) = radians.sin_cos();
+    [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]]
+}
+
+/// The box `corners` (renderer frame, `[min, max]`) turned by `radians`
+/// about `z`: the box its four turned walls stand in.
+fn turn_box(corners: [[f32; 3]; 2], radians: f32) -> [[f32; 3]; 2] {
+    if radians == 0.0 {
+        return corners;
+    }
+    let [a, b] = corners;
+    let mut lo = [f32::INFINITY, f32::INFINITY, a[2].min(b[2])];
+    let mut hi = [f32::NEG_INFINITY, f32::NEG_INFINITY, a[2].max(b[2])];
+    for x in [a[0], b[0]] {
+        for y in [a[1], b[1]] {
+            let p = turn_about_z([x, y, 0.0], radians);
+            for axis in 0..2 {
+                lo[axis] = lo[axis].min(p[axis]);
+                hi[axis] = hi[axis].max(p[axis]);
+            }
+        }
+    }
+    [lo, hi]
+}
+
 /// `(yaw, pitch)` in degrees, renderer convention, of a SOFA view vector.
 /// A degenerate vector is straight ahead.
 fn view_to_yaw_pitch(v: [f32; 3]) -> (f32, f32) {
@@ -368,6 +538,27 @@ fn fade_out(ir: &mut [f32], fade: usize) {
 /// Longest `Data.Delay` a set may declare, in seconds.
 const MAX_DATA_DELAY_S: f32 = 1.0;
 
+/// A room's measured pairs at the kept head orientations, before anything is
+/// done to them: at the file's rate, `Data.Delay` applied, full length. What
+/// [`BrirSet::from_raw`] extracts from a file before [`BrirSet::finish`]
+/// trims, resamples and normalises it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtractedRoom {
+    conventions: String,
+    file_rate: u32,
+    /// Virtual loudspeakers relative to the listener, renderer frame, metres.
+    emitters: Vec<[f32; 3]>,
+    /// `(yaw, pitch)` degrees, renderer convention, sorted.
+    orientations: Vec<(f32, f32)>,
+    /// `pairs[emitter * orientations.len() + orientation]`.
+    pairs: Vec<BrirPair>,
+    /// The file's `RoomType`, when it states one (see [`BrirSet`]).
+    room_type: Option<String>,
+    /// The room's corners around the listener, renderer frame, metres, when
+    /// the file states them (see [`BrirSet`]).
+    room_corners: Option<[[f32; 3]; 2]>,
+}
+
 impl BrirSet {
     /// Build a set from raw SOFA arrays. Errors name the shape or geometry
     /// problem; a set that comes out silent is refused rather than rendered.
@@ -376,6 +567,60 @@ impl BrirSet {
         engine_rate: u32,
         opts: &BrirLoadOptions,
     ) -> anyhow::Result<Self> {
+        if engine_rate == 0 {
+            anyhow::bail!("engine rate is zero");
+        }
+        Self::finish(
+            ExtractedRoom::extract(raw, opts.orientations)?,
+            engine_rate,
+            opts,
+        )
+    }
+}
+
+impl ExtractedRoom {
+    /// The pairs of `raw` at the orientations `selection` keeps, untouched.
+    /// Errors name the shape or geometry problem, as [`BrirSet::from_raw`]'s.
+    pub fn extract(raw: &RawRoomIr<'_>, selection: OrientationSelection) -> anyhow::Result<Self> {
+        RoomPlan::new(raw, selection)?.fill(raw)
+    }
+
+    /// How many loudspeakers `raw`'s geometry places, its responses unread.
+    pub fn emitter_count(raw: &RawRoomIr<'_>) -> anyhow::Result<usize> {
+        Ok(RoomPlan::new(raw, OrientationSelection::FrontOnly)?
+            .emitters
+            .len())
+    }
+
+    /// The run of measurements the orientations `selection` keeps are read
+    /// from: what a reader needs of `Data.IR` (passed as `data_ir` from
+    /// `ir_first`) to extract them. Only `raw`'s geometry is consulted, so
+    /// its `data_ir` may be empty; the errors are [`Self::extract`]'s.
+    pub fn measurements(
+        raw: &RawRoomIr<'_>,
+        selection: OrientationSelection,
+    ) -> anyhow::Result<std::ops::Range<usize>> {
+        Ok(RoomPlan::new(raw, selection)?.measurements(raw.e))
+    }
+}
+
+/// What [`ExtractedRoom::extract`] decides from a file's geometry before it
+/// touches a response: the loudspeakers, the kept orientations, and the
+/// measurement each kept pair is read from.
+struct RoomPlan {
+    file_rate: u32,
+    emitters: Vec<[f32; 3]>,
+    /// The kept orientations, sorted.
+    orientations: Vec<(f32, f32)>,
+    /// Per pair (`emitter * orientations.len() + orientation`): the slot
+    /// `measurement * E + emitter slot` it is read from.
+    slots: Vec<usize>,
+    /// The file's room around the listener, turned as the set is.
+    room_corners: Option<[[f32; 3]; 2]>,
+}
+
+impl RoomPlan {
+    fn new(raw: &RawRoomIr<'_>, selection: OrientationSelection) -> anyhow::Result<Self> {
         let (m, r, e, n) = (raw.m, raw.r, raw.e, raw.n);
         if r < 2 {
             anyhow::bail!("{r} receiver(s); a binaural set needs the two ears");
@@ -384,11 +629,11 @@ impl BrirSet {
             anyhow::bail!("empty set (M = {m}, E = {e}, N = {n})");
         }
         // The dimensions come from the file: their product must not wrap.
-        let expected = m
+        let total = m
             .checked_mul(r)
             .and_then(|v| v.checked_mul(e))
             .and_then(|v| v.checked_mul(n));
-        if expected != Some(raw.data_ir.len()) {
+        if total.is_none() {
             anyhow::bail!(
                 "Data.IR holds {} values for M×R×E×N = {}×{}×{}×{}",
                 raw.data_ir.len(),
@@ -398,18 +643,10 @@ impl BrirSet {
                 n
             );
         }
-        // A NaN would pass the silence guard (max skips it) and reach the
-        // convolver, which would then output nothing but NaN.
-        if let Some(i) = raw.data_ir.iter().position(|v| !v.is_finite()) {
-            anyhow::bail!("Data.IR value {i} is not finite ({})", raw.data_ir[i]);
-        }
         if !raw.sample_rate.is_finite() || raw.sample_rate < 1.0 {
             anyhow::bail!("invalid sampling rate {}", raw.sample_rate);
         }
         let file_rate = raw.sample_rate.round() as u32;
-        if engine_rate == 0 {
-            anyhow::bail!("engine rate is zero");
-        }
         // Data.Delay pads each response with that many samples; a direct-path
         // delay is milliseconds. One past a second is a broken file, and
         // honouring it would allocate the padding for every response.
@@ -447,23 +684,44 @@ impl BrirSet {
                 orientations.len() - 1
             }
         };
+        // Without a ListenerView the file states no head direction. SOFA's
+        // default looks along +x, which is right for a set that never turned
+        // the head; one that did records it in the ears alone, and the head
+        // faced across them (the IoSR set).
+        let derived_views = raw.listener_view.len() < 3;
+        let view_at = |mi: usize| -> [f32; 3] {
+            if derived_views {
+                ears_view(raw, mi).unwrap_or([1.0, 0.0, 0.0])
+            } else {
+                row3(raw.listener_view, mi)
+            }
+        };
+        // The whole set turns to put the listener's front straight ahead:
+        // the frame a file is written in is the room's, not the listener's
+        // (see `front_azimuth`).
+        let views: Vec<[f32; 3]> = (0..m).map(view_at).collect();
+        let turn = -front_azimuth(&views, derived_views);
+
         // Per (measurement, emitter slot): emitter index, orientation index.
         let mut meas: Vec<(usize, usize)> = Vec::with_capacity(m * e);
         for mi in 0..m {
             let listener = row3(raw.listener_position, mi);
             let source = row3(raw.source_position, mi);
-            let view = row3(raw.listener_view, mi);
+            let view = turn_about_z(view_at(mi), turn);
             let o = find_or_push_orientation(view_to_yaw_pitch(view));
             for k in 0..e {
                 // The emitter is relative to the source; a one-emitter
                 // convention leaves it at the source (zero), so the same sum
                 // serves both.
-                let em = row3(raw.emitter_position, k);
-                let rel = [
-                    source[0] + em[0] - listener[0],
-                    source[1] + em[1] - listener[1],
-                    source[2] + em[2] - listener[2],
-                ];
+                let em = row3_at(raw.emitter_position, e, m, k, mi);
+                let rel = turn_about_z(
+                    [
+                        source[0] + em[0] - listener[0],
+                        source[1] + em[1] - listener[1],
+                        source[2] + em[2] - listener[2],
+                    ],
+                    turn,
+                );
                 let ei = find_or_push_emitter(omniphony_geometry::f32::sofa_to_adm(rel));
                 meas.push((ei, o));
             }
@@ -497,7 +755,7 @@ impl BrirSet {
             *o = remap[*o];
         }
         let orientations = sorted;
-        let kept = select_orientations(&orientations, opts.orientations);
+        let kept = select_orientations(&orientations, selection);
         if kept.is_empty() {
             anyhow::bail!("no head orientation selected");
         }
@@ -532,6 +790,58 @@ impl BrirSet {
                 orientations[kept[ki]].1
             );
         }
+        Ok(Self {
+            file_rate,
+            emitters,
+            orientations: kept.iter().map(|&k| orientations[k]).collect(),
+            slots: slot
+                .into_iter()
+                .map(|s| s.expect("checked complete above"))
+                .collect(),
+            room_corners: raw.room_corners.map(|c| turn_box(c, turn)),
+        })
+    }
+
+    /// The run of measurements the kept pairs are read from.
+    fn measurements(&self, e: usize) -> std::ops::Range<usize> {
+        let first = self.slots.iter().map(|s| s / e).min().unwrap_or(0);
+        let last = self.slots.iter().map(|s| s / e).max().unwrap_or(0);
+        first..last + 1
+    }
+
+    /// Read the kept pairs out of `raw.data_ir`, applying `Data.Delay`: the
+    /// whole set, or exactly the run [`Self::measurements`] names.
+    fn fill(self, raw: &RawRoomIr<'_>) -> anyhow::Result<ExtractedRoom> {
+        let (m, r, e, n) = (raw.m, raw.r, raw.e, raw.n);
+        // The product was checked in `new`.
+        let row = r * e * n;
+        let run = self.measurements(e);
+        let whole = raw.ir_first == 0 && raw.data_ir.len() == m * row;
+        let just_run = raw.ir_first == run.start && raw.data_ir.len() == run.len() * row;
+        if !whole && !just_run {
+            anyhow::bail!(
+                "Data.IR holds {} values{} for M×R×E×N = {}×{}×{}×{}",
+                raw.data_ir.len(),
+                if raw.ir_first > 0 {
+                    format!(" from measurement {}", raw.ir_first)
+                } else {
+                    String::new()
+                },
+                m,
+                r,
+                e,
+                n
+            );
+        }
+        // A NaN would pass the silence guard (max skips it) and reach the
+        // convolver, which would then output nothing but NaN.
+        if let Some(i) = raw.data_ir.iter().position(|v| !v.is_finite()) {
+            anyhow::bail!(
+                "Data.IR value {} is not finite ({})",
+                raw.ir_first * row + i,
+                raw.data_ir[i]
+            );
+        }
 
         // --- extract the pairs (file rate), applying Data.Delay
         let delay_of = |mi: usize, ri: usize, k: usize| -> usize {
@@ -554,21 +864,71 @@ impl BrirSet {
             }
         };
         let extract = |mi: usize, ri: usize, k: usize| -> Vec<f32> {
-            let base = ((mi * r + ri) * e + k) * n;
+            let base = (((mi - raw.ir_first) * r + ri) * e + k) * n;
             let d = delay_of(mi, ri, k);
             let mut ir = vec![0.0f32; d + n];
             ir[d..].copy_from_slice(&raw.data_ir[base..base + n]);
             ir
         };
-        let mut pairs: Vec<BrirPair> = Vec::with_capacity(ne * no);
-        for s in &slot {
-            let idx = s.expect("checked complete above");
-            let (mi, k) = (idx / e, idx % e);
-            pairs.push(BrirPair {
-                left: extract(mi, 0, k),
-                right: extract(mi, 1, k),
-            });
+        let pairs: Vec<BrirPair> = self
+            .slots
+            .iter()
+            .map(|&idx| {
+                let (mi, k) = (idx / e, idx % e);
+                BrirPair {
+                    left: extract(mi, 0, k),
+                    right: extract(mi, 1, k),
+                }
+            })
+            .collect();
+        Ok(ExtractedRoom {
+            conventions: raw.conventions.to_string(),
+            file_rate: self.file_rate,
+            emitters: self.emitters,
+            orientations: self.orientations,
+            pairs,
+            room_type: raw.room_type.map(str::to_string),
+            room_corners: self.room_corners,
+        })
+    }
+}
+
+/// Samples of silence every pair of a set starts with, less
+/// [`LEAD_GUARD`]: what [`BrirSet::finish`] drops so the relative delays
+/// between emitters and ears survive.
+fn common_lead(pairs: &[BrirPair]) -> usize {
+    pairs
+        .iter()
+        .map(|p| onset(&p.left).min(onset(&p.right)))
+        .min()
+        .unwrap_or(0)
+        .saturating_sub(LEAD_GUARD)
+}
+
+impl BrirSet {
+    /// Make an extracted room renderable at `engine_rate`: drop the silence
+    /// common to the set, cut each tail under `opts` with a short fade,
+    /// resample, and normalise to unit mean direct-sound energy (see the
+    /// module doc). `opts.orientations` is not consulted: the room holds the
+    /// orientations it was extracted with. A set that comes out silent is
+    /// refused rather than rendered.
+    pub fn finish(
+        room: ExtractedRoom,
+        engine_rate: u32,
+        opts: &BrirLoadOptions,
+    ) -> anyhow::Result<Self> {
+        if engine_rate == 0 {
+            anyhow::bail!("engine rate is zero");
         }
+        let ExtractedRoom {
+            conventions,
+            file_rate,
+            emitters,
+            orientations,
+            pairs,
+            room_type,
+            room_corners,
+        } = room;
 
         // --- silence guard
         let peak = pairs
@@ -580,12 +940,7 @@ impl BrirSet {
         }
 
         // --- common lead: keep the relative delays, drop the shared silence
-        let lead = pairs
-            .iter()
-            .map(|p| onset(&p.left).min(onset(&p.right)))
-            .min()
-            .unwrap_or(0)
-            .saturating_sub(LEAD_GUARD);
+        let lead = common_lead(&pairs);
 
         // --- tail cut + fade, then resample
         let fade = (TAIL_FADE_S * file_rate as f32).round() as usize;
@@ -625,11 +980,18 @@ impl BrirSet {
                 .collect()
         });
 
-        // --- normalise: unit mean direct-sound energy (the HRIR scale)
+        // --- normalise: unit mean direct-sound energy (the HRIR scale), over
+        // the loudspeakers the programme is panned to; the LFE loudspeakers
+        // keep their level relative to them.
+        let lfe = lfe_emitters(&emitters);
+        let per_emitter = orientations.len().max(1);
         let window = (HRIR_SPAN_S * engine_rate as f32).ceil() as usize;
         let mut acc = 0.0f64;
         let mut count = 0usize;
-        for p in &pairs {
+        for (i, p) in pairs.iter().enumerate() {
+            if lfe.get(i / per_emitter).copied().unwrap_or(false) {
+                continue;
+            }
             for ir in [&p.left, &p.right] {
                 let start = onset(ir);
                 let end = (start + window).min(ir.len());
@@ -652,23 +1014,30 @@ impl BrirSet {
         }
 
         let max_taps = pairs.iter().map(BrirPair::taps).max().unwrap_or(0);
-        let kept_orientations: Vec<(f32, f32)> = kept.iter().map(|&k| orientations[k]).collect();
+        let lfe_count = lfe.iter().filter(|&&l| l).count();
         let set = Self {
             sample_rate: engine_rate,
             emitters,
-            orientations: kept_orientations,
+            lfe,
+            orientations,
             pairs,
             max_taps,
-            conventions: raw.conventions.to_string(),
-            room_type: None,
-            room_corners: None,
+            conventions,
+            room_type,
+            room_corners,
         };
+        if lfe_count > 0 {
+            log::info!(
+                "BRIR: a 22.2 room (ITU-R BS.2051 System H): its {lfe_count} LFE loudspeakers \
+                 carry the LFE"
+            );
+        }
         log::info!(
             "BRIR: {} ({}): {} emitters × {} orientations, up to {} taps ({:.3} s) at {} Hz, {:.1} MiB",
-            if raw.conventions.is_empty() {
+            if set.conventions.is_empty() {
                 "unnamed convention"
             } else {
-                raw.conventions
+                set.conventions.as_str()
             },
             if file_rate == engine_rate {
                 "native rate".to_string()
@@ -699,6 +1068,7 @@ impl BrirSet {
         let max_taps = pairs.iter().map(BrirPair::taps).max().unwrap_or(0);
         Self {
             sample_rate: 48_000,
+            lfe: lfe_emitters(&emitters),
             emitters,
             orientations,
             pairs,
@@ -740,6 +1110,46 @@ impl BrirSet {
         &self.pairs[e * self.orientations.len() + o]
     }
 
+    /// Whether emitter `e` is one of the room's LFE loudspeakers
+    /// ([`lfe_emitters`]): it carries the LFE, and nothing is panned to it.
+    pub fn is_lfe(&self, e: usize) -> bool {
+        self.lfe.get(e).copied().unwrap_or(false)
+    }
+
+    /// The room's LFE at orientation `o`: its LFE loudspeakers' pairs played
+    /// together, each at `1/n`, so that the `n` of them - in phase at the
+    /// frequencies they reproduce - sum to one loudspeaker's level, the one
+    /// a single LFE channel is meant to have. `None` for a room without LFE
+    /// loudspeakers.
+    pub fn lfe_pair(&self, o: usize) -> Option<BrirPair> {
+        let subs: Vec<usize> = (0..self.emitters.len())
+            .filter(|&e| self.is_lfe(e))
+            .collect();
+        if subs.is_empty() {
+            return None;
+        }
+        let w = 1.0 / subs.len() as f32;
+        let taps = subs
+            .iter()
+            .map(|&e| self.pair(e, o).taps())
+            .max()
+            .unwrap_or(0);
+        let mut sum = BrirPair {
+            left: vec![0.0; taps],
+            right: vec![0.0; taps],
+        };
+        for &e in &subs {
+            let p = self.pair(e, o);
+            for (s, &x) in sum.left.iter_mut().zip(&p.left) {
+                *s += w * x;
+            }
+            for (s, &x) in sum.right.iter_mut().zip(&p.right) {
+                *s += w * x;
+            }
+        }
+        Some(sum)
+    }
+
     /// Longest kernel of the set, in samples.
     pub fn max_taps(&self) -> usize {
         self.max_taps
@@ -774,6 +1184,271 @@ impl BrirSet {
             .map(|p| (p.left.len() + p.right.len()) * std::mem::size_of::<f32>())
             .sum()
     }
+}
+
+impl ExtractedRoom {
+    /// The file's `SOFAConventions`.
+    pub fn conventions(&self) -> &str {
+        &self.conventions
+    }
+
+    /// Sampling rate of the pairs, Hz.
+    pub fn file_rate(&self) -> u32 {
+        self.file_rate
+    }
+
+    /// Virtual loudspeakers relative to the listener, renderer frame (`x`
+    /// right, `y` front, `z` up), metres.
+    pub fn emitters(&self) -> &[[f32; 3]] {
+        &self.emitters
+    }
+
+    /// Kept head orientations, `(yaw, pitch)` degrees, sorted.
+    pub fn orientations(&self) -> &[(f32, f32)] {
+        &self.orientations
+    }
+
+    /// The room's corners around the listener, renderer frame, metres, when
+    /// the file states them.
+    pub fn room_corners(&self) -> Option<[[f32; 3]; 2]> {
+        self.room_corners
+    }
+
+    /// Keep only the orientations `selection` picks of those held. Picking
+    /// again from what a selection kept picks the same.
+    pub fn select(self, selection: OrientationSelection) -> anyhow::Result<Self> {
+        let kept = select_orientations(&self.orientations, selection);
+        if kept.is_empty() {
+            anyhow::bail!("no head orientation selected");
+        }
+        if kept.len() == self.orientations.len() {
+            return Ok(self);
+        }
+        let no = self.orientations.len();
+        let pairs = (0..self.emitters.len())
+            .flat_map(|e| kept.iter().map(move |&k| e * no + k))
+            .map(|i| self.pairs[i].clone())
+            .collect();
+        Ok(Self {
+            orientations: kept.iter().map(|&k| self.orientations[k]).collect(),
+            pairs,
+            ..self
+        })
+    }
+}
+
+/// The IoSR listening room's 24 loudspeakers, a 22.2 room (Table 2 of its
+/// documentation), in System H's channel order: `(azimuth, elevation)` in
+/// degrees, the azimuth anticlockwise as BS.2051 counts it.
+#[cfg(test)]
+pub(crate) const IOSR_22_2: [(f32, f32); 24] = [
+    (60.0, 0.0),
+    (-60.0, 0.0),
+    (0.0, 0.0),
+    (39.0, -18.0),
+    (135.0, 0.0),
+    (-135.0, 0.0),
+    (30.0, 0.0),
+    (-30.0, 0.0),
+    (180.0, 0.0),
+    (-39.0, -18.0),
+    (90.0, 0.0),
+    (-90.0, 0.0),
+    (45.0, 30.0),
+    (-45.0, 30.0),
+    (0.0, 30.0),
+    (0.0, 90.0),
+    (135.0, 30.0),
+    (-135.0, 30.0),
+    (90.0, 30.0),
+    (-90.0, 30.0),
+    (180.0, 30.0),
+    (0.0, -30.0),
+    (45.0, -30.0),
+    (-45.0, -30.0),
+];
+
+/// [`IOSR_22_2`] `metres` from the listener, in the renderer's frame.
+#[cfg(test)]
+pub(crate) fn iosr_22_2_emitters(metres: f32) -> Vec<[f32; 3]> {
+    IOSR_22_2
+        .iter()
+        .map(|&(az, el)| {
+            let (az, el) = (az.to_radians(), el.to_radians());
+            [
+                -metres * az.sin() * el.cos(),
+                metres * az.cos() * el.cos(),
+                metres * el.sin(),
+            ]
+        })
+        .collect()
+}
+
+/// The buses a room's layout ([`measured_room_layout`]) takes: one per
+/// panned loudspeaker, and the LFE.
+pub fn measured_room_buses(emitters: &[[f32; 3]]) -> usize {
+    emitters.len() - lfe_emitters(emitters).iter().filter(|&&l| l).count() + 1
+}
+
+/// The layout a session renders a room on, as
+/// [`crate::live_params::RendererControl::brir_layout`] builds it once the
+/// room is resident: its loudspeakers placed in the room they were measured
+/// in ([`MeasuredRoom`]), with the user's front/rear `center_blend`. A host
+/// that builds its session on it before the room loads renders the same
+/// array throughout.
+pub fn measured_room_layout(
+    emitters: &[[f32; 3]],
+    corners: Option<[[f32; 3]; 2]>,
+    center_blend: f32,
+) -> anyhow::Result<crate::speaker_layout::SpeakerLayout> {
+    let measured = MeasuredRoom::of(emitters, corners);
+    crate::speaker_layout::SpeakerLayout::from_brir_emitters(
+        emitters,
+        &measured.ratios(center_blend),
+        measured.radius_m(),
+    )
+}
+
+/// The fewest loudspeakers a room renders on: the panner places a sound
+/// between three of them.
+#[cfg(feature = "sofa")]
+const ROOM_MIN_EMITTERS: usize = 3;
+
+/// Refuse fewer loudspeakers than a sound can be placed between (the WDR
+/// control rooms' files measure one monitor each), before a response is read.
+#[cfg(feature = "sofa")]
+fn check_room_size(emitters: usize) -> anyhow::Result<()> {
+    if emitters < ROOM_MIN_EMITTERS {
+        anyhow::bail!(
+            "{emitters} loudspeaker{} measured: a room needs at least {ROOM_MIN_EMITTERS} \
+             around the listener to place sound between",
+            if emitters == 1 { "" } else { "s" }
+        );
+    }
+    Ok(())
+}
+
+/// A channel of [`SYSTEM_H`]: its azimuth range and its elevation range in
+/// degrees, the azimuth anticlockwise (left positive) as BS.2051 counts it
+/// and `None` straight up, where it is undefined; and whether it is an LFE.
+type SystemHChannel = (Option<(f32, f32)>, (f32, f32), bool);
+
+/// ITU-R BS.2051-3 Sound System H (9+10+3, "22.2"), Table 10, in its
+/// channel order.
+const SYSTEM_H: [SystemHChannel; 24] = [
+    (Some((45.0, 60.0)), (0.0, 5.0), false),       // FL
+    (Some((-60.0, -45.0)), (0.0, 5.0), false),     // FR
+    (Some((0.0, 0.0)), (0.0, 5.0), false),         // FC
+    (Some((30.0, 90.0)), (-30.0, -15.0), true),    // LFE1
+    (Some((110.0, 135.0)), (0.0, 15.0), false),    // BL
+    (Some((-135.0, -110.0)), (0.0, 15.0), false),  // BR
+    (Some((22.5, 30.0)), (0.0, 5.0), false),       // FLc
+    (Some((-30.0, -22.5)), (0.0, 5.0), false),     // FRc
+    (Some((180.0, 180.0)), (0.0, 15.0), false),    // BC
+    (Some((-90.0, -30.0)), (-30.0, -15.0), true),  // LFE2
+    (Some((90.0, 90.0)), (0.0, 15.0), false),      // SiL
+    (Some((-90.0, -90.0)), (0.0, 15.0), false),    // SiR
+    (Some((45.0, 60.0)), (30.0, 45.0), false),     // TpFL
+    (Some((-60.0, -45.0)), (30.0, 45.0), false),   // TpFR
+    (Some((0.0, 0.0)), (30.0, 45.0), false),       // TpFC
+    (None, (90.0, 90.0), false),                   // TpC
+    (Some((110.0, 135.0)), (30.0, 45.0), false),   // TpBL
+    (Some((-135.0, -110.0)), (30.0, 45.0), false), // TpBR
+    (Some((90.0, 90.0)), (30.0, 45.0), false),     // TpSiL
+    (Some((-90.0, -90.0)), (30.0, 45.0), false),   // TpSiR
+    (Some((180.0, 180.0)), (30.0, 45.0), false),   // TpBC
+    (Some((0.0, 0.0)), (-30.0, -15.0), false),     // BtFC
+    (Some((45.0, 60.0)), (-30.0, -15.0), false),   // BtFL
+    (Some((-60.0, -45.0)), (-30.0, -15.0), false), // BtFR
+];
+
+/// Degrees a measured loudspeaker may stand outside its System H range:
+/// what a room's own coordinates, written to a few millimetres, round to.
+const SYSTEM_H_SLACK_DEG: f32 = 2.0;
+
+/// Whether a loudspeaker at `p` (renderer frame) stands where System H
+/// channel `ch` does.
+fn system_h_fits(p: [f32; 3], ch: &SystemHChannel) -> bool {
+    let (azimuths, (el_lo, el_hi), _) = *ch;
+    let el = p[2].atan2((p[0] * p[0] + p[1] * p[1]).sqrt()).to_degrees();
+    if el < el_lo - SYSTEM_H_SLACK_DEG || el > el_hi + SYSTEM_H_SLACK_DEG {
+        return false;
+    }
+    let Some((lo, hi)) = azimuths else {
+        return true;
+    };
+    // The renderer's x is to the right: anticlockwise azimuth is atan2(−x, y).
+    let az = (-p[0]).atan2(p[1]).to_degrees();
+    let inside = wrap_deg(az - lo) >= 0.0 && wrap_deg(hi - az) >= 0.0;
+    inside
+        || wrap_deg(az - lo).abs() <= SYSTEM_H_SLACK_DEG
+        || wrap_deg(az - hi).abs() <= SYSTEM_H_SLACK_DEG
+}
+
+/// A seating of every loudspeaker in a System H channel of its own that it
+/// fits (`fits[e][ch]`), as the channel of each; `off_lfe` is kept off the
+/// LFE channels. Kuhn's augmenting paths, on 24 × 24.
+fn seat_in_system_h(fits: &[[bool; 24]], off_lfe: Option<usize>) -> Option<Vec<usize>> {
+    fn seat(
+        e: usize,
+        fits: &[[bool; 24]],
+        off_lfe: Option<usize>,
+        owner: &mut [Option<usize>; 24],
+        tried: &mut [bool; 24],
+    ) -> bool {
+        for ch in 0..SYSTEM_H.len() {
+            if !fits[e][ch] || tried[ch] || (off_lfe == Some(e) && SYSTEM_H[ch].2) {
+                continue;
+            }
+            tried[ch] = true;
+            if owner[ch].is_none_or(|other| seat(other, fits, off_lfe, owner, tried)) {
+                owner[ch] = Some(e);
+                return true;
+            }
+        }
+        false
+    }
+    let mut owner = [None; 24];
+    for e in 0..fits.len() {
+        if !seat(e, fits, off_lfe, &mut owner, &mut [false; 24]) {
+            return None;
+        }
+    }
+    let mut channel = vec![0; fits.len()];
+    for (ch, e) in owner.iter().enumerate() {
+        if let Some(e) = *e {
+            channel[e] = ch;
+        }
+    }
+    Some(channel)
+}
+
+/// Which of a room's loudspeakers (renderer frame, the room's order) are its
+/// LFE loudspeakers: the two of a room that is ITU-R BS.2051 Sound System H
+/// (22.2) - exactly its 24 loudspeakers, each where its channel stands - and
+/// none otherwise. The LFE channels' ranges overlap the bottom front
+/// corners', so a loudspeaker is an LFE only when every seating of the room
+/// in System H's channels makes it one; a room that can be seated either way
+/// has none.
+pub fn lfe_emitters(emitters: &[[f32; 3]]) -> Vec<bool> {
+    let none = vec![false; emitters.len()];
+    if emitters.len() != SYSTEM_H.len() {
+        return none;
+    }
+    let fits: Vec<[bool; 24]> = emitters
+        .iter()
+        .map(|&p| std::array::from_fn(|ch| system_h_fits(p, &SYSTEM_H[ch])))
+        .collect();
+    let Some(channel) = seat_in_system_h(&fits, None) else {
+        return none;
+    };
+    let lfe: Vec<bool> = channel.iter().map(|&ch| SYSTEM_H[ch].2).collect();
+    let certain = lfe
+        .iter()
+        .enumerate()
+        .filter(|&(_, &is)| is)
+        .all(|(e, _)| seat_in_system_h(&fits, Some(e)).is_none());
+    if certain { lfe } else { none }
 }
 
 /// Indices (into the sorted orientation list) to keep under `sel`.
@@ -812,53 +1487,24 @@ fn select_orientations(orientations: &[(f32, f32)], sel: OrientationSelection) -
 
 #[cfg(feature = "sofa")]
 impl BrirSet {
-    /// Load a room-response SOFA file. The true `Data.IR` shape and the
-    /// file's rate are read from the HDF structure first (see the module
-    /// doc), then the arrays come from the reader opened at that rate with
-    /// normalisation off.
+    /// Load a room-response SOFA file: its geometry, then the responses of
+    /// the orientations `opts` keeps (see the module doc).
     pub fn from_sofa(path: &str, engine_rate: u32, opts: &BrirLoadOptions) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("read '{path}': {e}"))?;
-        let (file_rate, shape) =
-            sofa_ir_shape(&bytes).map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))?;
-        let mut open = sofar::reader::OpenOptions::new();
-        open.sample_rate(file_rate).normalized(false);
-        let sofa = open
-            .open_data(&bytes)
-            .map_err(|e| anyhow::anyhow!("open SOFA '{path}': {e:?}"))?;
-        let h = sofa.hrtf();
-        let conventions = h
-            .attributes
-            .get("SOFAConventions")
-            .map(String::as_str)
-            .unwrap_or("");
-        let [m, r, e, n] = shape;
-        let raw = RawRoomIr {
-            conventions,
-            sample_rate: file_rate,
-            m,
-            r,
-            e,
-            n,
-            source_position: &h.source_position.values,
-            emitter_position: &h.emitter_position.values,
-            listener_position: &h.listener_position.values,
-            listener_view: &h.listener_view.values,
-            data_ir: &h.data_ir.values,
-            data_delay: &h.data_delay.values,
-        };
-        let mut set = Self::from_raw(&raw, engine_rate, opts)
-            .map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))?;
-        // The room the loudspeakers stand in, when the file describes it:
-        // its type is an attribute, its corners are variables of their own,
-        // read from the HDF structure like the shape above.
-        set.room_type = h
-            .attributes
-            .get("RoomType")
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty());
-        set.room_corners = sofa_room_corners(&bytes, &h.attributes)
-            .map(|c| room_corners_relative(c, row3(raw.listener_position, 0)));
-        Ok(set)
+        Self::from_sofa_bytes(path, &bytes, engine_rate, opts)
+    }
+
+    /// [`Self::from_sofa`] on the file's bytes; `path` names it in errors.
+    fn from_sofa_bytes(
+        path: &str,
+        bytes: &[u8],
+        engine_rate: u32,
+        opts: &BrirLoadOptions,
+    ) -> anyhow::Result<Self> {
+        with_sofa_room(bytes, opts.orientations, |raw| {
+            Self::from_raw(raw, engine_rate, opts)
+        })
+        .map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))
     }
 }
 
@@ -867,11 +1513,10 @@ impl BrirSet {
 /// ([`room_corner_metadata`] says where the encoding is read from).
 #[cfg(feature = "sofa")]
 fn sofa_room_corners(
-    bytes: &[u8],
+    parsed: &sofar::hdf::ParsedHdf<'_>,
     globals: &std::collections::HashMap<String, String>,
 ) -> Option<[[f32; 3]; 2]> {
     use std::collections::HashMap;
-    let parsed = sofar::hdf::parse_with_children(bytes).ok()?;
     let attributes_of = |obj: &sofar::hdf::DataObject| -> HashMap<String, String> {
         obj.parsed_attributes
             .iter()
@@ -965,36 +1610,83 @@ pub fn room_corner_metres(
     }
 }
 
-/// The file's sampling rate and the true `[M, R, E, N]` shape of `Data.IR`
-/// (`E = 1` for a three-axis array), from the HDF structure.
+/// Hand `f` the raw arrays of the room-response SOFA file in `bytes`, with
+/// `Data.IR` holding only the measurements `selection` is extracted from
+/// ([`ExtractedRoom::measurements`]): the geometry is read first, then that
+/// run of responses, and nothing else of them is read or inflated.
 #[cfg(feature = "sofa")]
-fn sofa_ir_shape(bytes: &[u8]) -> anyhow::Result<(f32, [usize; 4])> {
-    let parsed = sofar::hdf::parse_with_children(bytes)
-        .map_err(|e| anyhow::anyhow!("not an HDF5/SOFA file: {e}"))?;
-    let ir = parsed
-        .get_child("Data.IR")
-        .ok_or_else(|| anyhow::anyhow!("no Data.IR"))?
-        .map_err(|e| anyhow::anyhow!("Data.IR: {e}"))?;
-    let dims: Vec<usize> = ir.ds.dimension_size.iter().map(|&d| d as usize).collect();
-    let shape = match dims.as_slice() {
-        [m, r, n] => [*m, *r, 1, *n],
-        [m, r, e, n] => [*m, *r, *e, *n],
-        other => anyhow::bail!("Data.IR has {} axes, expected 3 or 4", other.len()),
-    };
-    let sr = parsed
-        .get_child("Data.SamplingRate")
-        .ok_or_else(|| anyhow::anyhow!("no Data.SamplingRate"))?
-        .map_err(|e| anyhow::anyhow!("Data.SamplingRate: {e}"))?;
-    let rate =
-        hdf_first_float(&sr).ok_or_else(|| anyhow::anyhow!("unreadable Data.SamplingRate"))?;
-    Ok((rate, shape))
+fn with_sofa_room<T>(
+    bytes: &[u8],
+    selection: OrientationSelection,
+    f: impl FnOnce(&RawRoomIr<'_>) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let sofa = sofar::reader::LazySofa::open(bytes).map_err(|e| anyhow::anyhow!("open: {e}"))?;
+    with_sofa_geometry(&sofa, |raw| {
+        check_room_size(ExtractedRoom::emitter_count(&raw)?)?;
+        let run = ExtractedRoom::measurements(&raw, selection)?;
+        let data_ir = sofa
+            .read_ir(run.start, run.len())
+            .map_err(|e| anyhow::anyhow!("Data.IR: {e}"))?;
+        f(&RawRoomIr {
+            data_ir: &data_ir,
+            ir_first: run.start,
+            ..raw
+        })
+    })
 }
 
-/// First value of a floating-point HDF dataset (little-endian, as the SOFA
-/// reader assumes).
+/// `f` of an open SOFA file's room as its geometry describes it, with no
+/// responses read (`data_ir` empty): the loudspeakers and orientations, and
+/// the room they stand in where the file says - its `RoomType` attribute and
+/// its `RoomCornerA`/`RoomCornerB` variables, read from the file as parsed.
 #[cfg(feature = "sofa")]
-fn hdf_first_float(obj: &sofar::hdf::DataObject) -> Option<f32> {
-    hdf_floats(obj, 1).map(|v| v[0])
+fn with_sofa_geometry<T>(
+    sofa: &sofar::reader::LazySofa<'_>,
+    f: impl FnOnce(RawRoomIr<'_>) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let [m, r, e, n] = match sofa.ir_shape().as_slice() {
+        &[m, r, n] => [m, r, 1, n],
+        &[m, r, e, n] => [m, r, e, n],
+        other => anyhow::bail!("Data.IR has {} axes, expected 3 or 4", other.len()),
+    };
+    let h = sofa.hrtf();
+    let sample_rate = *h
+        .data_sampling_rate
+        .values
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no Data.SamplingRate"))?;
+    let conventions = h
+        .attributes
+        .get("SOFAConventions")
+        .map(String::as_str)
+        .unwrap_or("");
+    let room_type = h
+        .attributes
+        .get("RoomType")
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty());
+    let room_corners = sofa_room_corners(sofa.hdf(), &h.attributes)
+        .map(|c| room_corners_relative(c, row3(&h.listener_position.values, 0)));
+    let raw = RawRoomIr {
+        conventions,
+        sample_rate,
+        m,
+        r,
+        e,
+        n,
+        source_position: &h.source_position.values,
+        emitter_position: &h.emitter_position.values,
+        listener_position: &h.listener_position.values,
+        listener_view: &h.listener_view.values,
+        listener_up: &h.listener_up.values,
+        receiver_position: &h.receiver_position.values,
+        data_ir: &[],
+        ir_first: 0,
+        data_delay: &h.data_delay.values,
+        room_type,
+        room_corners,
+    };
+    f(raw)
 }
 
 /// The first `count` values of a floating-point HDF dataset (little-endian,
@@ -1192,8 +1884,13 @@ mod tests {
                 emitter_position: &self.emitter,
                 listener_position: &self.listener,
                 listener_view: &self.view,
+                listener_up: &[],
+                receiver_position: &[],
                 data_ir: &self.ir,
+                ir_first: 0,
                 data_delay: &self.delay,
+                room_type: None,
+                room_corners: None,
             }
         }
     }
@@ -1583,6 +2280,165 @@ mod tests {
         s.delay = vec![-5.0, 0.0];
         BrirSet::from_raw(&s.raw(), 48000, &BrirLoadOptions::default()).expect("negative");
     }
+    /// `raw` with `Data.IR` cut down to `run`, as a reader that read only
+    /// those measurements hands it over.
+    fn cut<'a>(raw: &RawRoomIr<'a>, run: std::ops::Range<usize>) -> RawRoomIr<'a> {
+        let row = raw.r * raw.e * raw.n;
+        RawRoomIr {
+            data_ir: &raw.data_ir[run.start * row..run.end * row],
+            ir_first: run.start,
+            ..*raw
+        }
+    }
+
+    /// One emitter per measurement, sources at three azimuths each measured
+    /// at two head orientations, interleaved: the front orientation's
+    /// measurements (0, 2, 4) are not a contiguous run.
+    fn interleaved() -> Synth {
+        let (m, r, n) = (6usize, 2usize, 200usize);
+        let mut ir = vec![0.0f32; m * r * n];
+        for mi in 0..m {
+            for ri in 0..r {
+                let resp = response(n, 100, marker(0, mi, ri), 0.0, (mi * 7 + ri) as u32);
+                ir[(mi * r + ri) * n..][..n].copy_from_slice(&resp);
+            }
+        }
+        Synth {
+            m,
+            r,
+            e: 1,
+            n,
+            source: (0..m)
+                .flat_map(|mi| sph([30.0, -30.0, 0.0][mi / 2], 0.0, 2.0))
+                .collect(),
+            emitter: vec![0.0; 3],
+            listener: vec![0.0; 3],
+            view: (0..m)
+                .flat_map(|mi| sph([0.0, 10.0][mi % 2], 0.0, 1.0))
+                .collect(),
+            ir,
+            delay: (0..m * r).map(|i| (i % 5) as f32).collect(),
+            rate: 48000.0,
+            conventions: "SingleRoomSRIR",
+        }
+    }
+
+    /// A reader that reads only the measurements a selection is extracted
+    /// from gets the room the whole set gives, `Data.Delay` included, for
+    /// every selection: one orientation of a multi-speaker set is one
+    /// measurement, and a run may hold measurements nothing keeps.
+    #[test]
+    fn the_measurements_a_selection_needs_extract_as_the_whole_set_does() {
+        let decimated = OrientationSelection::Decimated {
+            step_deg: 20.0,
+            max_yaw_deg: 20.0,
+        };
+        let mut multi = multi_speaker(
+            &[30.0, -30.0, 0.0],
+            &[-40.0, -20.0, 0.0, 20.0, 40.0],
+            200,
+            48000.0,
+            0.3,
+        );
+        // [M][R][E], so a run that starts past 0 must still find its own.
+        multi.delay = (0..5 * 2 * 3).map(|i| (i % 7) as f32).collect();
+        let cases = [
+            (&multi, OrientationSelection::FrontOnly, 2..3),
+            (&multi, decimated, 1..4),
+            (&multi, OrientationSelection::All, 0..5),
+        ];
+        let inter = interleaved();
+        for (s, selection, expected) in cases.into_iter().chain([
+            (&inter, OrientationSelection::FrontOnly, 0..5),
+            (&inter, OrientationSelection::All, 0..6),
+        ]) {
+            let raw = s.raw();
+            let run = ExtractedRoom::measurements(&raw, selection).expect("plans");
+            assert_eq!(run, expected, "{selection:?}");
+            let whole = ExtractedRoom::extract(&raw, selection).expect("extracts");
+            let part = ExtractedRoom::extract(&cut(&raw, run), selection).expect("extracts");
+            assert_eq!(part, whole, "{selection:?}");
+        }
+        // Only the geometry is consulted to plan.
+        let raw = RawRoomIr {
+            data_ir: &[],
+            ..multi.raw()
+        };
+        assert_eq!(
+            ExtractedRoom::measurements(&raw, OrientationSelection::FrontOnly).unwrap(),
+            2..3
+        );
+    }
+
+    /// Responses that are neither the whole set nor exactly the run the
+    /// selection needs are refused, not read out of place.
+    #[test]
+    fn measurements_other_than_the_run_needed_are_refused() {
+        let s = multi_speaker(&[30.0, -30.0], &[-20.0, 0.0, 20.0], 200, 48000.0, 0.0);
+        let raw = s.raw();
+        for run in [0..1, 2..3, 0..2, 1..3] {
+            let err =
+                ExtractedRoom::extract(&cut(&raw, run.clone()), OrientationSelection::FrontOnly)
+                    .expect_err("refused");
+            assert!(err.to_string().contains("Data.IR holds"), "{run:?}: {err}");
+        }
+        ExtractedRoom::extract(&cut(&raw, 1..2), OrientationSelection::FrontOnly).expect("the run");
+        ExtractedRoom::extract(&cut(&raw, 0..3), OrientationSelection::FrontOnly).expect("the set");
+    }
+
+    /// Through the SOFA reader: the front orientation of a file is read as
+    /// its one measurement, and comes out as the whole file's front.
+    /// `rows_multispeaker_brir.sofa` holds seven orientations, three in
+    /// each of its chunks, and an `[M][R][E]` `Data.Delay`.
+    #[cfg(feature = "sofa")]
+    #[test]
+    fn a_file_is_read_for_the_measurements_it_is_extracted_from() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/sofa/rows_multispeaker_brir.sofa"
+        );
+        let bytes = std::fs::read(path).expect("fixture");
+        let front = with_sofa_room(&bytes, OrientationSelection::FrontOnly, |raw| {
+            assert_eq!((raw.m, raw.r, raw.e, raw.n), (7, 2, 3, 50));
+            assert_eq!((raw.ir_first, raw.data_ir.len()), (0, 2 * 3 * 50));
+            ExtractedRoom::extract(raw, OrientationSelection::FrontOnly)
+        })
+        .expect("reads");
+        let whole = with_sofa_room(&bytes, OrientationSelection::All, |raw| {
+            assert_eq!(raw.data_ir.len(), 7 * 2 * 3 * 50);
+            ExtractedRoom::extract(raw, OrientationSelection::All)
+        })
+        .expect("reads");
+        assert_eq!(whole.orientations().len(), 7);
+        assert_eq!(
+            front,
+            whole
+                .clone()
+                .select(OrientationSelection::FrontOnly)
+                .unwrap()
+        );
+        // The fixture's Data.Delay is m·100 + r·10 + e samples; the front
+        // is measurement 0.
+        let lengths: Vec<(usize, usize)> = front
+            .pairs
+            .iter()
+            .map(|p| (p.left.len(), p.right.len()))
+            .collect();
+        assert_eq!(lengths, [(50, 60), (51, 61), (52, 62)]);
+
+        // Views turn 10° a measurement: ±20° keeps measurements 0 and 2.
+        let decimated = OrientationSelection::Decimated {
+            step_deg: 20.0,
+            max_yaw_deg: 20.0,
+        };
+        let some = with_sofa_room(&bytes, decimated, |raw| {
+            assert_eq!((raw.ir_first, raw.data_ir.len()), (0, 3 * 2 * 3 * 50));
+            ExtractedRoom::extract(raw, decimated)
+        })
+        .expect("reads");
+        assert_eq!(some.orientations().len(), 2);
+        assert_eq!(some, whole.select(decimated).unwrap());
+    }
 
     /// End-to-end through the SOFA reader on files generated outside the
     /// repo (see the loader's PR): `BRIR_SOFA_DIR` must point at a directory
@@ -1711,5 +2567,240 @@ mod tests {
         };
         let ratios = flat.ratios(0.5);
         assert!(ratios.rear > 0.0 && ratios.lower > 0.0 && ratios.ratio[2] > 0.0);
+    }
+
+    /// The IoSR listening room's set as its SOFA file has it: `GeneralFIR`,
+    /// one loudspeaker per measurement in `EmitterPosition` (`[E][C][M]`),
+    /// `SourcePosition` and `ListenerPosition` at the room's centre, no
+    /// `ListenerView`, the head's turn in the ears (`ReceiverPosition` as
+    /// `[R][C][M]`), and a room frame whose +y is where the listener faces
+    /// at the first head angle. Head angles `heads` (anticlockwise, degrees)
+    /// × the 24 loudspeakers, each response an impulse of `marker(k, h, ear)`
+    /// at `10 + k` samples. Returns (emitter, receiver, ir, M).
+    fn iosr_like(heads: &[f32], n: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>, usize) {
+        let m = heads.len() * IOSR_22_2.len();
+        let to_room = |p: [f32; 3]| turn_about_z(p, 90f32.to_radians());
+        let (mut emitter, mut receiver) = (vec![0.0; 3 * m], vec![0.0; 2 * 3 * m]);
+        let mut ir = vec![0.0f32; m * 2 * n];
+        for (h, &head) in heads.iter().enumerate() {
+            for (k, &(az, el)) in IOSR_22_2.iter().enumerate() {
+                let mi = h * IOSR_22_2.len() + k;
+                let speaker = to_room(sph(az, el, 2.4));
+                for c in 0..3 {
+                    emitter[c * m + mi] = speaker[c];
+                }
+                for (ri, side) in [(0, 0.095f32), (1, -0.095)] {
+                    let ear = to_room(turn_about_z([0.0, side, 0.0], head.to_radians()));
+                    for c in 0..3 {
+                        receiver[(ri * 3 + c) * m + mi] = ear[c];
+                    }
+                    ir[(mi * 2 + ri) * n + 10 + k] = marker(k, h, ri);
+                }
+            }
+        }
+        (emitter, receiver, ir, m)
+    }
+
+    /// A set that keeps its head's turn in its ears faces across them, and is
+    /// turned so that its first head angle looks straight ahead: the IoSR
+    /// room's front loudspeaker, at +y in the file, renders from the front,
+    /// its left ones from the left. As a 22.2 room its two LFE loudspeakers
+    /// carry the LFE, take no speaker of the layout and are named for their
+    /// channels; and its room turns with it.
+    #[test]
+    fn a_room_turned_in_its_ears_is_read_from_where_the_head_looked() {
+        let n = 64;
+        let heads = [0.0, 90.0];
+        let (emitter, receiver, ir, m) = iosr_like(&heads, n);
+        let zeros = vec![0.0; 3 * m];
+        let corners =
+            room_corners_relative([[-3.675, -2.85, -1.25], [3.675, 2.85, 1.25]], [0.0; 3]);
+        let raw = RawRoomIr {
+            conventions: "GeneralFIR",
+            sample_rate: 48000.0,
+            m,
+            r: 2,
+            e: 1,
+            n,
+            source_position: &zeros,
+            emitter_position: &emitter,
+            listener_position: &zeros,
+            listener_view: &[],
+            listener_up: &[],
+            receiver_position: &receiver,
+            data_ir: &ir,
+            ir_first: 0,
+            data_delay: &[],
+            room_type: None,
+            room_corners: Some(corners),
+        };
+
+        let front = ExtractedRoom::extract(&raw, OrientationSelection::FrontOnly).unwrap();
+        assert_eq!(front.emitters.len(), 24);
+        assert_eq!(front.orientations.len(), 1);
+        assert!(
+            front.orientations[0].0.abs() < 1e-3,
+            "{:?}",
+            front.orientations
+        );
+        let want = iosr_22_2_emitters(2.4);
+        for (k, (got, want)) in front.emitters.iter().zip(&want).enumerate() {
+            let d = (0..3)
+                .map(|c| (got[c] - want[c]).abs())
+                .fold(0.0f32, f32::max);
+            assert!(d < 1e-4, "loudspeaker {k}: {got:?}, want {want:?}");
+        }
+        // The pairs are the first head angle's.
+        for (k, pair) in front.pairs.iter().enumerate() {
+            assert_eq!(pair.left[10 + k], marker(k, 0, 0), "loudspeaker {k}");
+            assert_eq!(pair.right[10 + k], marker(k, 0, 1), "loudspeaker {k}");
+        }
+        // The head turned to the left at the second: yaw −90, ours.
+        let all = ExtractedRoom::extract(&raw, OrientationSelection::All).unwrap();
+        assert_eq!(all.orientations.len(), 2);
+        assert!(
+            all.orientations.iter().any(|o| (o.0 + 90.0).abs() < 1e-3),
+            "{:?}",
+            all.orientations
+        );
+        // The room is 7.35 m across the listener and 5.70 m deep.
+        let [lo, hi] = front.room_corners.unwrap();
+        for (got, want) in lo
+            .iter()
+            .chain(&hi)
+            .zip([-3.675, -2.85, -1.25, 3.675, 2.85, 1.25])
+        {
+            assert!((got - want).abs() < 1e-4, "{lo:?} {hi:?}");
+        }
+
+        let lfe = lfe_emitters(&front.emitters);
+        let at: Vec<usize> = (0..24).filter(|&e| lfe[e]).collect();
+        assert_eq!(at, [3, 9]);
+        assert_eq!(measured_room_buses(&front.emitters), 23);
+        let layout = measured_room_layout(&front.emitters, front.room_corners, 0.5).unwrap();
+        assert_eq!(layout.num_speakers(), 23);
+        assert!(
+            !layout
+                .speaker_names()
+                .iter()
+                .any(|n| n.starts_with("LFE") && *n != "LFE")
+        );
+
+        let set = BrirSet::finish(
+            front,
+            48000,
+            &BrirLoadOptions {
+                max_length_s: 0.0,
+                tail_floor_db: 120.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(set.is_lfe(3) && set.is_lfe(9) && !set.is_lfe(2));
+        // Each response is cut where its own tail ends: the sum is as long as
+        // the longer.
+        let sum = set.lfe_pair(0).unwrap();
+        let at = |e: usize, i: usize| set.pair(e, 0).left.get(i).copied().unwrap_or(0.0);
+        assert_eq!(sum.taps(), set.pair(3, 0).taps().max(set.pair(9, 0).taps()));
+        for (i, &x) in sum.left.iter().enumerate() {
+            assert!((x - 0.5 * (at(3, i) + at(9, i))).abs() < 1e-7);
+        }
+    }
+
+    /// A room is a 22.2 room only when all of its loudspeakers stand where
+    /// System H's do; one moved off its place, or one too few, and there are
+    /// no LFE loudspeakers to find.
+    #[test]
+    fn lfe_loudspeakers_are_found_only_in_a_whole_22_2_room() {
+        let room = iosr_22_2_emitters(2.0);
+        assert_eq!(lfe_emitters(&room).iter().filter(|&&l| l).count(), 2);
+        assert!(!lfe_emitters(&room[..23]).contains(&true));
+        let mut moved = room.clone();
+        moved[0] = [0.0, -2.0, 0.0];
+        assert!(!lfe_emitters(&moved).contains(&true));
+        // Every other room keeps its emitters' count and a layout bus each.
+        assert_eq!(measured_room_buses(&room[..5]), 6);
+    }
+
+    /// A set measured turning from one side to the other of where the
+    /// listener faces faces the middle of that arc; one covering the circle
+    /// keeps straight ahead, exactly, as does an arc centred on it.
+    #[test]
+    fn a_set_measured_over_an_arc_faces_its_middle() {
+        let views = |azs: &mut dyn Iterator<Item = f32>| -> Vec<[f32; 3]> {
+            azs.map(|a| sph(a, 0.0, 1.0)).collect()
+        };
+        // TU Berlin's Calypso: 0..180° in 1° steps about the centre at 90°.
+        let calypso = views(&mut (0..=180).map(|a| a as f32));
+        assert!((front_azimuth(&calypso, false).to_degrees() - 90.0).abs() < 1e-3);
+        // The BBC's: the circle in 2° steps.
+        let bbc = views(&mut (0..180).map(|i| i as f32 * 2.0));
+        assert_eq!(front_azimuth(&bbc, false), 0.0);
+        // TuBuRo's: ±80° in 2° steps.
+        let tuburo = views(&mut (-40..=40).map(|i| i as f32 * 2.0));
+        assert_eq!(front_azimuth(&tuburo, false), 0.0);
+        // A circle with one measurement missing is still the circle.
+        let gap = views(&mut (0..72).filter(|&i| i != 9).map(|i| i as f32 * 5.0));
+        assert_eq!(front_azimuth(&gap, false), 0.0);
+        // A narrow arc from straight ahead is a partial set of the front
+        // (`rows_multispeaker_brir.sofa`: 0° to 60°).
+        let partial = views(&mut (0..=6).map(|i| i as f32 * 10.0));
+        assert_eq!(front_azimuth(&partial, false), 0.0);
+        // One orientation is where the listener faced.
+        assert!(
+            (front_azimuth(&views(&mut [30.0f32].into_iter()), false).to_degrees() - 30.0).abs()
+                < 1e-3
+        );
+    }
+
+    /// The Calypso 5.0 set as its file has it - loudspeakers at SOFA
+    /// azimuths 120 (L), 90 (C), 60 (R), -160 (Ls) and -20 (Rs), the head
+    /// turned from 0° to 180° - is read facing its centre loudspeaker, from
+    /// the measurement made facing it.
+    #[test]
+    fn the_calypso_set_is_read_facing_its_centre_loudspeaker() {
+        let yaws: Vec<f32> = (0..=18).map(|i| i as f32 * 10.0).collect();
+        let s = multi_speaker(
+            &[120.0, 90.0, 60.0, -160.0, -20.0],
+            &yaws,
+            400,
+            48000.0,
+            0.0,
+        );
+        let room = ExtractedRoom::extract(&s.raw(), OrientationSelection::FrontOnly).unwrap();
+        assert_eq!(room.orientations.len(), 1);
+        assert!(
+            room.orientations[0].0.abs() < 1e-3,
+            "{:?}",
+            room.orientations
+        );
+        let az = |p: [f32; 3]| p[0].atan2(p[1]).to_degrees();
+        let got: Vec<f32> = room.emitters.iter().map(|&p| az(p)).collect();
+        for (g, want) in got.iter().zip([-30.0, 0.0, 30.0, -110.0, 110.0]) {
+            assert!((g - want).abs() < 0.5, "{got:?}");
+        }
+        // The pairs of the measurement facing the centre, the tenth.
+        for (k, pair) in room.pairs.iter().enumerate() {
+            let peak = pair
+                .left
+                .iter()
+                .fold(0.0f32, |m, &x| if x.abs() > m.abs() { x } else { m });
+            assert!(
+                (peak - marker(k, 9, 0)).abs() < 1e-6,
+                "loudspeaker {k}: {peak}"
+            );
+        }
+    }
+
+    /// Fewer loudspeakers than a sound can be placed between are no room:
+    /// the WDR control rooms' files measure one monitor each.
+    #[cfg(feature = "sofa")]
+    #[test]
+    fn a_room_needs_three_loudspeakers() {
+        for n in [1, 2] {
+            let e = check_room_size(n).unwrap_err().to_string();
+            assert!(e.contains("a room needs at least 3"), "{e}");
+        }
+        assert!(check_room_size(3).is_ok());
     }
 }
