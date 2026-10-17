@@ -313,6 +313,20 @@ impl ChannelDsp {
         }
     }
 
+    /// Zero every history this state holds in place (ITD lines, convolver
+    /// windows, reflection ring, air filter), keeping its kernels: nothing
+    /// is left to drain.
+    fn clear_history(&mut self) {
+        self.delay_l.clear();
+        self.delay_r.clear();
+        self.conv_l.clear_history();
+        self.conv_r.clear_history();
+        self.refl.clear_history();
+        self.refl_live = false;
+        self.air_state = 0.0;
+        self.flush = 0;
+    }
+
     /// Silence needed to drain every history this state holds: the longest
     /// ring in it (the reflection bank's, when present, otherwise the ITD
     /// line's) plus the convolver window.
@@ -615,6 +629,20 @@ impl BinauralRenderer {
     /// first frame: a build already handed to the worker still lands late.
     pub fn set_synchronous_builds(&mut self, on: bool) {
         self.synchronous_builds = on;
+    }
+
+    /// Silence every history in place: each channel's ITD lines, convolver
+    /// windows, reflection ring and air filter, the extra source's, and the
+    /// late-reverb network. Kernels and parameters stay. What a seek needs:
+    /// the room of what played before must not ring on into what plays next.
+    /// Nothing allocates.
+    pub fn clear_history(&mut self) {
+        for dsp in self.channels.iter_mut().flatten() {
+            dsp.clear_history();
+        }
+        self.extra_dsp.clear_history();
+        self.fdn.clear();
+        self.fdn_live = false;
     }
 
     /// Identity of the active HRIR grid (tests observe the async swap with it).
