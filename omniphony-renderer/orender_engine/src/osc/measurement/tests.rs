@@ -589,6 +589,7 @@ fn finite_level_noise_is_leased_exclusive_and_preserves_digital_settings() {
         let signal = LevelNoise {
             duration_seconds: 60,
             peak_dbfs: -30.0,
+            bypass_output_gain: false,
         };
         let start = Command::StartNoise {
             session_id: id.clone(),
@@ -670,6 +671,7 @@ fn level_noise_rejects_invalid_duration_level_and_output_band_before_installing(
         let mut signal = LevelNoise {
             duration_seconds: 60,
             peak_dbfs: -30.0,
+            bypass_output_gain: false,
         };
         match case {
             0 => signal.duration_seconds = 61,
@@ -694,6 +696,69 @@ fn level_noise_rejects_invalid_duration_level_and_output_band_before_installing(
             Reply::Error { .. }
         ));
         assert!(service.session.as_ref().unwrap().noise.is_none());
+    }
+}
+
+#[test]
+fn level_noise_can_skip_the_output_gain_but_keeps_the_master() {
+    // Without the flag the wire form stays the one version-4/5 renderers accept.
+    let plain = LevelNoise {
+        duration_seconds: 60,
+        peak_dbfs: -30.0,
+        bypass_output_gain: false,
+    };
+    assert!(!serde_json::to_string(&plain).unwrap().contains("bypass"));
+    let bypass = LevelNoise {
+        bypass_output_gain: true,
+        ..plain
+    };
+    // An output gain of +27 dB puts the noise over the ceiling, unless skipped;
+    // -70 dB cannot be compensated.
+    for (gain_db, signal, started) in [
+        (27.0, plain, false),
+        (27.0, bypass, true),
+        (-10.0, bypass, true),
+        (-70.0, bypass, false),
+    ] {
+        let control = fixture_control();
+        let mut service = Service::new(control.clone(), 42, None);
+        let (owner, _client) = peer();
+        let now = Instant::now();
+        let (id, snapshot) = begin(&mut service, &owner, now);
+        let session = service.session.as_mut().unwrap();
+        session.snapshot.outputs[0].gain_db = gain_db;
+        let configuration = session.configuration;
+        let reply = command(
+            &mut service,
+            &owner,
+            2,
+            Command::StartNoise {
+                session_id: id,
+                signal_id: 1,
+                output_id: snapshot.outputs[0].id.clone(),
+                signal,
+            },
+            now,
+        );
+        if !started {
+            assert!(matches!(reply, Reply::Error { .. }), "{gain_db} dB");
+            continue;
+        }
+        assert!(matches!(reply, Reply::NoiseSession { .. }), "{gain_db} dB");
+        // The prepared noise is divided by the output gain the output stage
+        // multiplies it by: its peak leaves the output at the requested level.
+        let width = configuration.width;
+        let mut out = vec![0.0_f32; width * configuration.sample_rate as usize];
+        assert!(control.measurement.render(&mut out, configuration, now));
+        let peak = out
+            .chunks(width)
+            .map(|frame| frame[snapshot.outputs[0].index as usize].abs())
+            .fold(0.0_f32, f32::max);
+        let at_output_db = 20.0 * peak.log10() + gain_db;
+        assert!(
+            (at_output_db - signal.peak_dbfs).abs() < 0.01,
+            "{at_output_db}"
+        );
     }
 }
 
@@ -797,8 +862,11 @@ fn version_4_clients_get_their_own_reply_shape_without_positions() {
     let (owner, _client) = peer();
 
     let current = request(&mut service, &owner, VERSION, Command::Discover {});
-    assert_eq!(current.version, 5);
+    assert_eq!(current.version, 6);
     assert!(!version_4_shaped(&current), "version 5 adds fields");
+    let five = request(&mut service, &owner, 5, Command::Discover {});
+    assert_eq!(five.version, 5);
+    assert!(!version_4_shaped(&five), "version 5 keeps its positions");
 
     let older = request(&mut service, &owner, 4, Command::Discover {});
     assert_eq!(older.version, 4);
@@ -835,10 +903,10 @@ fn version_4_clients_get_their_own_reply_shape_without_positions() {
 }
 
 #[test]
-fn versions_outside_4_to_5_are_refused_in_the_current_version() {
+fn versions_outside_4_to_6_are_refused_in_the_current_version() {
     let mut service = Service::new(fixture_control(), 42, None);
     let (owner, _client) = peer();
-    for version in [3, 6] {
+    for version in [3, 7] {
         let response = request(&mut service, &owner, version, Command::Discover {});
         assert_eq!(response.version, VERSION);
         assert_error(response.reply, "unsupported_version");

@@ -562,7 +562,20 @@ impl Service {
                         "manual level noise needs an output covering 500–2000 Hz",
                     );
                 }
-                if signal.peak_dbfs + output.gain_db + session.snapshot.master_gain_db > -6.0 {
+                // Without its output gain, the noise is divided by that gain here
+                // and multiplied back by it at the output: only the master applies.
+                let applied_gain_db = if signal.bypass_output_gain {
+                    if output.gain_db < MIN_BYPASS_GAIN_DB {
+                        return error(
+                            "level_limit",
+                            "output gain is too low to play the noise without it",
+                        );
+                    }
+                    0.0
+                } else {
+                    output.gain_db
+                };
+                if signal.peak_dbfs + applied_gain_db + session.snapshot.master_gain_db > -6.0 {
                     return error(
                         "level_limit",
                         "existing gains exceed the measurement output ceiling",
@@ -571,6 +584,7 @@ impl Service {
                 let prepared = match Signal::prepare_noise(
                     signal,
                     output.index as usize,
+                    applied_gain_db - output.gain_db,
                     session.configuration,
                     now,
                 ) {
@@ -661,6 +675,10 @@ fn position(
     (azimuth.is_finite() && elevation.is_finite() && distance.is_finite())
         .then_some((azimuth, elevation, distance))
 }
+
+/// Below this output gain, noise without it would need more than 60 dB of
+/// compensation: the lowest gain `set_outputs` accepts.
+const MIN_BYPASS_GAIN_DB: f32 = -60.0;
 
 fn gain_db(gain: f32) -> f32 {
     if gain.is_finite() && gain > 0.0 {

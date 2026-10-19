@@ -1,4 +1,4 @@
-# Measurement sessions, version 5
+# Measurement sessions, version 6
 
 The companion can discover renderer outputs and play an identified finite sweep
 under an exclusive, temporary session. This increment does not acquire microphones,
@@ -251,3 +251,21 @@ client receives positions, and treats every field as optional: version-4 data,
 saved snapshots and hosts that cannot place an output leave them absent. An
 older renderer answers a version-5 request with `unsupported_version` in a
 version-4 reply; the client may then continue in version 4 without positions.
+
+## Level noise without the output gain, version 6
+
+Version 6 adds one optional field to the `start_noise` signal:
+`bypass_output_gain: true` plays the noise as if the output's own gain (its level
+correction) were 0 dB. The master gain still applies, and so do the output's delay
+and mute. The renderer divides the prepared noise by that gain on the control
+thread, so the audio path is unchanged; a change of the output's gain changes the
+speaker generation and cancels the noise as before. The -6 dBFS ceiling then
+counts the master gain only, and an output whose gain is below -60 dB is refused
+with `level_limit`.
+
+A client matching physical volume controls uses it so the speakers play at the
+same level whatever their trims; playing with the gain shows the corrected result.
+The field is omitted when false, so a request without it keeps the version-4 wire
+form. An older renderer refuses the field (and a version-6 request with
+`unsupported_version`); a client that negotiated an older version can only play
+the noise through the output's gain.
