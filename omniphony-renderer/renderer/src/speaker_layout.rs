@@ -69,6 +69,71 @@ pub fn legacy_bed_id(label: bridge_api::RChannelLabel) -> Option<usize> {
     }
 }
 
+/// The nominal direction of a label on the listener's sphere, `(azimuth,
+/// elevation)` in degrees: where the engine's sphere placement puts a
+/// channel whose format declares none, and what tells the panner's listener
+/// layer from the heights ([`on_listener_layer`]). ITU-R BS.2051 where it names the position (`M±030`, `M±110`, `U±045`,
+/// `T+000`…), the tier's convention otherwise: the top tier at 45° of
+/// elevation, the height tier at 30°, the wide pair at ±60°, the front
+/// centre pair halfway to the centre. A 7.x source's side pair is `M±090`;
+/// a 4.x/5.x source's surround pair is `M±110`. `None` for the labels that
+/// are not a direction (`Object`, `Unknown`).
+pub fn nominal_angle(label: bridge_api::RChannelLabel, use_7_1: bool) -> Option<(f32, f32)> {
+    use bridge_api::RChannelLabel::*;
+    Some(match label {
+        L => (-30.0, 0.0),
+        R => (30.0, 0.0),
+        C | LFE | LFE2 => (0.0, 0.0),
+        Ls => (if use_7_1 { -90.0 } else { -110.0 }, 0.0),
+        Rs => (if use_7_1 { 90.0 } else { 110.0 }, 0.0),
+        Lb => (-135.0, 0.0),
+        Rb => (135.0, 0.0),
+        Cb => (180.0, 0.0),
+        Lsc => (-15.0, 0.0),
+        Rsc => (15.0, 0.0),
+        Lw => (-60.0, 0.0),
+        Rw => (60.0, 0.0),
+        Lsd => (-120.0, 0.0),
+        Rsd => (120.0, 0.0),
+        Tfl => (-45.0, 45.0),
+        Tfr => (45.0, 45.0),
+        Tsl => (-90.0, 45.0),
+        Tsr => (90.0, 45.0),
+        Tbl => (-135.0, 45.0),
+        Tbr => (135.0, 45.0),
+        Tfc => (0.0, 45.0),
+        Tc => (0.0, 90.0),
+        Lh => (-30.0, 30.0),
+        Rh => (30.0, 30.0),
+        Ch => (0.0, 30.0),
+        Lhs => (-110.0, 30.0),
+        Rhs => (110.0, 30.0),
+        Object | Unknown => return None,
+    })
+}
+
+/// Whether a loudspeaker named `name`, panned at `elevation_deg`, is on the
+/// listener layer: the ear-height ring a film's bed channels name
+/// (`spatial_vbap::ListenerLayerMode`). A recognised name decides by its
+/// label's nominal elevation ([`nominal_angle`]) — L, C, R, the surrounds,
+/// backs and wides are, the heights and tops are not, wherever the room put
+/// them — and the LFE never is. An unrecognised name decides by where it is:
+/// between the bottom layer ([`crate::spatial_vbap::SHADOW_ELEVATION_DEG`],
+/// BS.2051's −30°) and the height tier at 30°, exclusive.
+pub fn on_listener_layer(name: &str, elevation_deg: f32) -> bool {
+    use bridge_api::RChannelLabel as Label;
+    let label = bridge_api::labels::label_for_name(name);
+    match label {
+        Label::LFE | Label::LFE2 => false,
+        _ => match nominal_angle(label, false) {
+            Some((_, nominal_elevation)) => nominal_elevation == 0.0,
+            None => {
+                elevation_deg > crate::spatial_vbap::SHADOW_ELEVATION_DEG && elevation_deg < 30.0
+            }
+        },
+    }
+}
+
 /// A single speaker in the layout
 #[derive(Debug, Clone, PartialEq)]
 pub struct Speaker {
@@ -560,6 +625,20 @@ impl SpeakerLayout {
         }
 
         (positions, mapping)
+    }
+
+    /// Per spatializable speaker, in the order of
+    /// [`Self::spatializable_positions`], whether it is on the listener layer
+    /// ([`on_listener_layer`]). `directions` are the directions the panner is
+    /// given, in that order: an unrecognised name is judged by its
+    /// elevation there.
+    pub fn spatializable_listener_layer(&self, directions: &[[f32; 2]]) -> Vec<bool> {
+        self.speakers
+            .iter()
+            .filter(|speaker| speaker.spatialize)
+            .zip(directions)
+            .map(|(speaker, direction)| on_listener_layer(&speaker.name, direction[1]))
+            .collect()
     }
 
     /// Get positions for speakers that participate in spatialization, with
@@ -1189,6 +1268,53 @@ mod tests {
         assert_eq!(names[0], "L");
         assert_eq!(names[1], "R");
         assert_eq!(names[2], "Top");
+    }
+
+    /// The listener layer is named by label wherever the room put the
+    /// loudspeaker, by position for a name no label knows, and never takes
+    /// the LFE or a height.
+    #[test]
+    fn the_listener_layer_is_named_by_label_then_by_position() {
+        for (name, elevation, on) in [
+            ("L", 0.0, true),
+            ("FL", 25.0, true),
+            ("C", -12.0, true),
+            ("SR", 15.0, true),
+            ("BC", 0.0, true),
+            ("Lw", 40.0, true),
+            ("TFL", 10.0, false),
+            ("Lh", 20.0, false),
+            ("LFE", 0.0, false),
+            ("spk-12", 10.0, true),
+            ("spk-12", -20.0, true),
+            ("spk-12", 30.0, false),
+            ("spk-12", -30.0, false),
+        ] {
+            assert_eq!(
+                on_listener_layer(name, elevation),
+                on,
+                "{name} at {elevation}°"
+            );
+        }
+    }
+
+    /// One flag per spatializable speaker, in panner order: a speaker left
+    /// out of the panning is left out here too.
+    #[test]
+    fn the_listener_layer_follows_the_spatializable_order() {
+        let layout = SpeakerLayout::from_speakers(vec![
+            Speaker::new("FL", -30.0, 20.0),
+            Speaker::new_with_spatialize("LFE", 0.0, 0.0, false),
+            Speaker::new("TFL", -45.0, 45.0),
+            Speaker::new("C", 0.0, -10.0),
+            Speaker::new("LFE2", 0.0, -90.0),
+        ])
+        .unwrap();
+        let (positions, _) = layout.spatializable_positions();
+        assert_eq!(
+            layout.spatializable_listener_layer(&positions),
+            [true, false, true, false]
+        );
     }
 }
 #[cfg(test)]
