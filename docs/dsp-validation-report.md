@@ -631,3 +631,113 @@ The three speaker goldens (`speaker_714_32obj`, `partial_metadata`,
 rms residual −30.7 / −31.8 / −30.8 dBFS, all of it on the 7.1.4's backs and
 heights as objects cross its rear quad and ceiling. The binaural golden is
 unchanged.
+
+# The listener layer: flattened, or shadows below
+
+Home layouts rarely put the ear-height loudspeakers at ear height: L and R
+stand beside or above the screen, higher than C, a centre sits under the
+screen, surrounds hang high on the side walls. The panner option
+`listener_layer_mode` (backend param of `vbap` and `volumetric`, Save only
+like every render setting) picks how the native VBAP triangulates them:
+`as_placed` (the default, classic VBAP), `flatten` or `shadow`
+(`ListenerLayerMode` in `spatial_vbap/vbap_native.rs`). The listener layer
+is named by label — L, C, R, the surrounds, backs, wides, at nominal
+elevation 0 — whatever the room did to them, an unlabelled loudspeaker by
+position (between −30° and 30°), never the LFE
+(`speaker_layout::on_listener_layer`). Nothing below was listened to; the
+numbers are gains measured by the unit tests
+(`spatial_vbap/panner/listener_layer_tests.rs`) on a home 5.1.4: L and R at
+±30°, 20° up, C at 0°, the surrounds at ±110° on the horizon, the tops at
+±45° and ±135°, 45° up. Azimuths are the layout's, negative to the left.
+
+## The hole
+
+On the real positions the hull draws an edge from C to the left surround
+that passes *under* L, and the film's L channel (−30°, 0°) lands on it. With
+the face blend: C 0.892, Ls 0.453, L silent. With the virtual poles (the
+default) the nadir pole reaches up to L instead: L 0.967 and 0.128 on each of
+R, C, Ls and Rs. Lower C by 10° and the hole is back in every mode (C 0.814,
+L 0.413, Ls 0.407), and the dialogue at (0°, 0°) leaks 0.239 into L and R.
+
+## Flattening is a warp
+
+The workaround was to type every listener-layer loudspeaker at elevation 0
+in the layout; `flatten` does it in the panner, so the layout can say where
+the loudspeakers really are (the Studio draws them there, and its perceived
+position marker sums their real directions). Each channel lands on its
+loudspeaker again — bit for bit the hand-flattened layout
+(`flatten_is_the_layout_flattened_by_hand`).
+
+But it is a warp of the space, not a fix. In a face, VBAP's gains are
+`g = M⁻¹·u`, `M` the face's loudspeaker directions. Flattened, that is
+`g = M_flat⁻¹·u = M_real⁻¹·(M_real·M_flat⁻¹·u)`: classic VBAP on the real
+positions of a direction moved by `W = M_real·M_flat⁻¹`, a map that is linear
+per face, takes the flattened L to the real one and squeezes everything
+between the horizon and the tops upwards. An object at (−30°, 10°), 10° from
+the real L and 37° from TFL, plays 0.313 on TFL; at (−30°, 30°), 10° from L,
+TFL leads at 0.919 against L 0.207. The image is where `W` sends the object,
+above where it was meant to be.
+
+## What the shadows change
+
+`shadow` keeps the real elevations and makes the listener layer a band the
+hull cannot cut across:
+
+- Under every listener-layer loudspeaker **above the horizon** hangs a
+  virtual one, its shadow, at −30° and the same azimuth, folded 1:1 onto it
+  through the `DummyRing` downmix of the virtual poles and centres
+  (`Triangulation::listener_folds`). No edge runs below a raised loudspeaker
+  any more. The shadows are in place before the pole coverage is checked, so
+  the virtual poles close the hull around them.
+- A listener-layer loudspeaker below the horizon pans at 0°: the centre
+  under the screen keeps the dialogue at (0°, 0°) to itself.
+- Where the hull still skips an edge of the listener ring — two listener-layer
+  loudspeakers next to each other in azimuth, less than 180° apart, that no
+  face joins — a virtual loudspeaker on the ring between them (halfway in
+  azimuth, at their mean elevation) closes it, folded onto both at `1/√2`.
+
+On the home 5.1.4: L alone at (−30°, 0°) and at (−30°, 10°); L 0.740, C
+0.673 at (−15°, 0°); L 0.860, Ls 0.511 at (−60°, 0°), nothing on C; at
+(−30°, 30°) L 0.878 and TFL 0.463 (0.088 on R and TFR, from the virtual
+centre of the planar front quad, as placed too); with C 10° down, C alone at
+(0°, 0°). Below the ring no height ever plays, every direction keeps unit
+power, and the field has no seam in the pole and blend modes
+(`below_the_ring_only_the_listener_layer_plays`,
+`shadow_gains_keep_unit_power_and_have_no_seam`).
+
+**Why only the raised ones.** A shadow under every listener-layer
+loudspeaker was tried first, as the virtual lower layer of ITU-R BS.2127's
+point source panner does on a layout without a bottom layer. Under
+surrounds at ±110° on the horizon it leans the hull out: the plane from the
+top backs (±135°, 45°) down to the surrounds' shadows passes outside the
+surrounds' own edge, and a source behind the listener at (180°, 0°) played
+0.392 on each top back. A loudspeaker on the horizon has no edge below it to
+hide it, so it gets no shadow; on a listener layer at 0° whose ring the hull
+keeps, `shadow` is classic VBAP bit for bit
+(`as_placed_and_a_flat_layer_are_classic_vbap`).
+
+**Why the ring closers.** Surrounds raised 15° and 140° apart, with no back
+pair, open the ring with or without shadows: the plane from the top backs to
+the floor passes outside their edge. As placed, (180°, 0°) plays 0.619 on each
+top back and 0.216 on every listener-layer loudspeaker; with the shadows
+alone, 0.392 on each top back. The ring closer at (180°, 15°) puts it back on
+the surrounds, 0.707 each, at 0° and at 15° (`a_wide_raised_pair_keeps_its_ring_edge`).
+
+Not parity with EAR: BS.2127 copies the whole mid layer below and
+triangulates the nominal positions; this triangulates the real ones and adds
+only what the real hull needs.
+
+## Cost
+
+Build time only. The listener layer moves directions and adds virtual
+loudspeakers before the triangulation, and their downmix rings are
+precomputed with the poles' and centres'; `vbap3d_into` is unchanged and
+allocates nothing. The realtime evaluation sweeps more faces, 26 instead of 22
+on the home 5.1.4: one direction costs 79 ns instead of 77 (+3 %), a spread
+one 346 ns instead of 317 (+9 %); with the raised surrounds and their ring
+closer, 30 faces, +10 % and +26 %; on a 7.1.4 with only L and R raised, +1 %
+and +3 % (release build, one pinned core, best of seven sweeps of 4096
+positions). The precomputed evaluations do not see them. The
+volumetric backend measures depth against the loudspeakers as placed, whatever
+the mode: the mode moves where the panner believes the listener layer is, not
+where the loudspeakers stand.
