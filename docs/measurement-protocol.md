@@ -1,4 +1,4 @@
-# Measurement sessions, version 4
+# Measurement sessions, version 5
 
 The companion can discover renderer outputs and play an identified finite sweep
 under an exclusive, temporary session. This increment does not acquire microphones,
@@ -12,15 +12,18 @@ has the existing four-byte, big-endian length prefix. Send one JSON string to
 `/omniphony/state/measurement`. Registration is unnecessary.
 
 The optional `measurement` feature of `omniphony-osc-contract` provides the
-shared Rust schema. Requests contain `version: 4`, a positive `request_id`
-and a tagged `command`. Reply version and request ID must match. Unexpected
+shared Rust schema. Requests contain `version: 5`, a positive `request_id`
+and a tagged `command`. Reply version and request ID must match. Renderers
+also answer `version: 4` requests in the version-4 shape (see
+[Output positions](#output-positions-version-5)); any other version is refused
+with `unsupported_version` in a version-5 reply. Unexpected
 replies, truncated frames or timeouts require closing the connection and
 discovering again. Do not blindly retry a signal start.
 
 Example discovery request:
 
 ```json
-{"version":4,"request_id":1,"command":{"type":"discover"}}
+{"version":5,"request_id":1,"command":{"type":"discover"}}
 ```
 
 Commands:
@@ -49,7 +52,8 @@ not retractable.
 ## Snapshot identity
 
 Outputs use unique layout names as IDs and include their current output index,
-gain, delay, mute and declared frequency range. Renaming changes identity.
+gain, delay, mute, declared frequency range and, from version 5, their layout
+position. Renaming changes identity.
 Indices must never be reused from a different snapshot. Instance/revision values
 are opaque and must be rediscovered after reconnection or configuration changes;
 they are not permanent installation identifiers.
@@ -105,7 +109,8 @@ With a non-null `reference_output_id`, Start schedules three identical segments:
 reference, target, reference. Segment start offsets are exactly `0`, `N`, and
 `2N` renderer frames, where `N = Sweep::frames(sample_rate)` includes the silence.
 Progress echoes the reference ID and reports `3N` total frames. With null/omitted
-reference ID, Start still plays one target segment. The live protocol version is 4; clients and renderers must be upgraded together.
+reference ID, Start still plays one target segment. The live protocol versions are 4 and 5;
+a version-5 client talking to an older renderer must fall back to version 4.
 The sweep waveform is unchanged from version 2.
 
 Both outputs are checked for mute, frequency and level limits before playback.
@@ -218,3 +223,31 @@ unknown command before playback. Clients must report that a compatible build is
 needed and must never fall back to the legacy unbounded speaker-test command.
 The protocol makes no SPL or acoustic level claim; the companion acquires and
 compares microphone power separately.
+
+## Output positions, version 5
+
+Version 5 adds three optional fields to each snapshot output, for display only:
+
+| Field | Meaning |
+| --- | --- |
+| `azimuth_deg` | 0° front, negative to the left, positive to the right, ±180° behind |
+| `elevation_deg` | 0° at ear level, positive up |
+| `distance_m` | Distance from the listening position in metres |
+
+They are the active layout's declared geometry, computed as Studio shows it:
+the speaker's normalized coordinates through the room warp the topology pans
+in, at the layout's room scale (`radius_m`, half the room width). A polar
+speaker without a stated distance therefore sits on the layout's unit radius.
+They are not measured or acoustic positions, and they never qualify a delay or
+level correction. A field is omitted when the renderer cannot place the output.
+Positions are part of the layout, so a moved speaker already changes the
+snapshot revision. The snapshot is built on the control thread when a client
+asks for it (and at each session poll); the audio path never computes it.
+
+Version-4 clients parse outputs strictly and would refuse these fields. A
+renderer therefore answers a `version: 4` request with a `version: 4` reply whose
+snapshots omit them; commands and every other field are unchanged. A version-5
+client receives positions, and treats every field as optional: version-4 data,
+saved snapshots and hosts that cannot place an output leave them absent. An
+older renderer answers a version-5 request with `unsupported_version` in a
+version-4 reply; the client may then continue in version 4 without positions.
