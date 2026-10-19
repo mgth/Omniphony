@@ -4,13 +4,16 @@ use serde::{Deserialize, Serialize};
 
 pub const REQUEST_ADDRESS: &str = crate::CONTROL_MEASUREMENT;
 pub const REPLY_ADDRESS: &str = crate::STATE_MEASUREMENT;
-/// The version this schema writes. Version 5 adds output positions.
-pub const VERSION: u32 = 5;
+/// The version this schema writes. Version 5 adds output positions, version 6
+/// level noise that skips the output's gain.
+pub const VERSION: u32 = 6;
 /// The oldest request version a renderer still answers, in that version's
 /// shape ([`Response::for_version`]); older clients reject unknown fields.
 pub const MIN_VERSION: u32 = 4;
 /// First version whose snapshots carry [`Output`] positions.
 pub const POSITIONS_VERSION: u32 = 5;
+/// First version whose renderers accept [`LevelNoise::bypass_output_gain`].
+pub const NOISE_GAINS_VERSION: u32 = 6;
 
 /// Whether a renderer built from this schema answers `version` requests.
 pub fn supported(version: u32) -> bool {
@@ -302,12 +305,18 @@ pub fn sequence_frames(signal: Sweep, rate: u32, targets: usize) -> Result<u64, 
 }
 
 /// A fixed common midrange band intentionally excludes subwoofer matching.
-/// Peak is before the existing renderer master and output gains.
+/// Peak is before the existing renderer master gain, and before the output's
+/// gain unless [`Self::bypass_output_gain`] is set.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LevelNoise {
     pub duration_seconds: u32,
     pub peak_dbfs: f32,
+    /// Version 6: play the noise without the output's own gain (its level
+    /// correction); the master gain still applies. Omitted when false, so a
+    /// request without it keeps the version-4 wire form older renderers accept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypass_output_gain: bool,
 }
 impl LevelNoise {
     pub const LOW_HZ: f32 = 500.0;

@@ -116,9 +116,13 @@ impl Signal {
 
     /// Prepare one periodic second with 1/f power in the common band. All
     /// transforms, allocations and peak normalization happen off the audio thread.
+    /// `compensation_db` is baked into the samples, after the peak normalization:
+    /// minus the output's gain plays the noise as if that gain were 0 dB. A
+    /// change of that gain changes the speaker generation, which cancels it.
     pub fn prepare_noise(
         spec: LevelNoise,
         output_index: usize,
+        compensation_db: f32,
         configuration: Configuration,
         now: Instant,
     ) -> Result<Arc<Self>, &'static str> {
@@ -149,7 +153,10 @@ impl Signal {
         if !peak.is_finite() || peak <= 0.0 {
             return Err("invalid prepared noise");
         }
-        let scale = 10.0_f32.powf(spec.peak_dbfs / 20.0) / peak;
+        if !compensation_db.is_finite() {
+            return Err("invalid noise gain compensation");
+        }
+        let scale = 10.0_f32.powf((spec.peak_dbfs + compensation_db) / 20.0) / peak;
         samples.iter_mut().for_each(|x| *x *= scale);
         Ok(Arc::new(Self {
             output_index,
@@ -364,8 +371,9 @@ mod tests {
         let spec = LevelNoise {
             duration_seconds: 5,
             peak_dbfs: -30.0,
+            bypass_output_gain: false,
         };
-        let signal = Signal::prepare_noise(spec, 1, config(), now).unwrap();
+        let signal = Signal::prepare_noise(spec, 1, 0.0, config(), now).unwrap();
         assert_eq!(signal.samples.len(), 48000);
         assert_eq!(signal.total_frames(), 240000);
         assert!(
@@ -400,7 +408,7 @@ mod tests {
         assert!(out[480000..].iter().all(|v| *v == 0.0));
         for changed in [false, true] {
             let c = MeasurementControl::default();
-            let signal = Signal::prepare_noise(spec, 1, config(), now).unwrap();
+            let signal = Signal::prepare_noise(spec, 1, 0.0, config(), now).unwrap();
             c.install(signal.clone());
             c.renew(now, Duration::from_secs(3));
             let mut configuration = config();
@@ -419,7 +427,18 @@ mod tests {
                 SignalState::Cancelled | SignalState::Expired
             ));
         }
-        assert!(Signal::prepare_noise(spec, 2, config(), now).is_err());
+        assert!(Signal::prepare_noise(spec, 2, 0.0, config(), now).is_err());
+        assert!(Signal::prepare_noise(spec, 1, f32::NAN, config(), now).is_err());
+        // A compensation scales the prepared noise and nothing else.
+        let compensated = Signal::prepare_noise(spec, 1, 6.0, config(), now).unwrap();
+        let ratio = 10.0_f32.powf(6.0 / 20.0);
+        assert!(
+            compensated
+                .samples
+                .iter()
+                .zip(signal.samples.iter())
+                .all(|(c, s)| (c - s * ratio).abs() <= 1e-6)
+        );
         assert!(
             Signal::prepare_noise(
                 LevelNoise {
@@ -427,6 +446,7 @@ mod tests {
                     ..spec
                 },
                 0,
+                0.0,
                 config(),
                 now
             )
