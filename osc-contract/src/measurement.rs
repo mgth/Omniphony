@@ -4,7 +4,28 @@ use serde::{Deserialize, Serialize};
 
 pub const REQUEST_ADDRESS: &str = crate::CONTROL_MEASUREMENT;
 pub const REPLY_ADDRESS: &str = crate::STATE_MEASUREMENT;
-pub const VERSION: u32 = 4;
+/// The version this schema writes. Version 5 adds output positions.
+pub const VERSION: u32 = 5;
+/// The oldest request version a renderer still answers, in that version's
+/// shape ([`Response::for_version`]); older clients reject unknown fields.
+pub const MIN_VERSION: u32 = 4;
+/// First version whose snapshots carry [`Output`] positions.
+pub const POSITIONS_VERSION: u32 = 5;
+
+/// Whether a renderer built from this schema answers `version` requests.
+pub fn supported(version: u32) -> bool {
+    (MIN_VERSION..=VERSION).contains(&version)
+}
+
+/// The version a reply to a `requested` request carries: the request's own
+/// when supported, so an older client can match it, otherwise [`VERSION`].
+pub fn reply_version(requested: u32) -> u32 {
+    if supported(requested) {
+        requested
+    } else {
+        VERSION
+    }
+}
 pub const MAX_SEQUENCE_OUTPUTS: usize = 32;
 pub const MAX_SEQUENCE_MS: u64 = 120_000;
 pub const MAX_PACKET_BYTES: usize = 64 * 1024;
@@ -74,6 +95,32 @@ pub struct Response {
     pub reply: Reply,
 }
 
+impl Response {
+    /// A reply in the shape `version` clients parse: before
+    /// [`POSITIONS_VERSION`] every snapshot drops its output positions.
+    pub fn for_version(version: u32, request_id: u64, mut reply: Reply) -> Self {
+        if version < POSITIONS_VERSION {
+            match &mut reply {
+                Reply::Snapshot { snapshot }
+                | Reply::Session { snapshot, .. }
+                | Reply::NoiseSession { snapshot, .. } => {
+                    for output in &mut snapshot.outputs {
+                        output.azimuth_deg = None;
+                        output.elevation_deg = None;
+                        output.distance_m = None;
+                    }
+                }
+                Reply::Ended {} | Reply::Error { .. } => {}
+            }
+        }
+        Self {
+            version,
+            request_id,
+            reply,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
@@ -134,6 +181,17 @@ pub struct Output {
     pub muted: bool,
     pub freq_low_hz: Option<f32>,
     pub freq_high_hz: Option<f32>,
+    /// Version 5: where the active layout places the output, seen from the
+    /// listening position (0° front, negative to the left, positive up).
+    /// Absent when unknown and in replies to older versions. Declared
+    /// geometry for display, not a measured or acoustic position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azimuth_deg: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_deg: Option<f32>,
+    /// Distance in metres at the layout's room scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

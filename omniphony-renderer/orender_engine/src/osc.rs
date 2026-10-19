@@ -915,7 +915,7 @@ impl OscSender {
                                             match serde_json::from_str::<protocol::Request>(json) {
                                                 Ok(request) => match measurement.as_mut() {
                                                     Some(service) => service.handle(request, src, std::time::Instant::now()),
-                                                    None => protocol::Response { version: protocol::VERSION, request_id: request.request_id,
+                                                    None => protocol::Response { version: protocol::reply_version(request.version), request_id: request.request_id,
                                                         reply: measurement::error("unavailable", "renderer control is unavailable") },
                                                 },
                                                 Err(_) => protocol::Response { version: protocol::VERSION, request_id: 0,

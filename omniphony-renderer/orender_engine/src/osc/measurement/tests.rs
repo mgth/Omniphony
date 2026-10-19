@@ -696,3 +696,151 @@ fn level_noise_rejects_invalid_duration_level_and_output_band_before_installing(
         assert!(service.session.as_ref().unwrap().noise.is_none());
     }
 }
+
+fn request(service: &mut Service, peer: &Peer, version: u32, command: Command) -> Response {
+    service.handle(
+        Request {
+            version,
+            request_id: 1,
+            command,
+        },
+        peer,
+        Instant::now(),
+    )
+}
+
+#[test]
+fn discovery_places_each_output_where_the_layout_does() {
+    let mut service = Service::new(fixture_control(), 42, None);
+    let (owner, _client) = peer();
+    let Reply::Snapshot { snapshot } =
+        request(&mut service, &owner, VERSION, Command::Discover {}).reply
+    else {
+        panic!("expected a snapshot")
+    };
+    let position = |id: &str| {
+        let output = snapshot.outputs.iter().find(|o| o.id == id).unwrap();
+        (
+            output.azimuth_deg.unwrap(),
+            output.elevation_deg.unwrap(),
+            output.distance_m.unwrap(),
+        )
+    };
+    // The fixture's 7.1.4 corners in a unit room at a 1 m scale.
+    let height = 0.5_f32.sqrt().atan().to_degrees();
+    for (id, expected) in [
+        ("C", (0.0, 0.0, 1.0)),
+        ("FL", (-45.0, 0.0, 2_f32.sqrt())),
+        ("SR", (90.0, 0.0, 1.0)),
+        ("BL", (-135.0, 0.0, 2_f32.sqrt())),
+        ("TFR", (45.0, height, 3_f32.sqrt())),
+        ("LFE", (45.0, -height, 3_f32.sqrt())),
+    ] {
+        let actual = position(id);
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-3
+                && (actual.1 - expected.1).abs() < 1e-3
+                && (actual.2 - expected.2).abs() < 1e-4,
+            "{id}: {actual:?} != {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn positions_follow_the_room_warp_at_the_layout_scale() {
+    let room = renderer::live_params::RoomRatios {
+        ratio: [1.0, 2.0, 0.5],
+        rear: 2.0,
+        lower: 0.5,
+        center_blend: 0.0,
+    };
+    let speaker = renderer::speaker_layout::Speaker::from_cartesian("X", 0.5, 0.5, 0.5, true, 0.0);
+    // Warped to (0.5, 1.0, 0.25) units, then 2 m per unit.
+    let (azimuth, elevation, distance) = position(&room, 2.0, &speaker).unwrap();
+    assert!((azimuth - 0.5_f32.atan2(1.0).to_degrees()).abs() < 1e-3);
+    assert!((elevation - 0.25_f32.atan2(1.25_f32.sqrt()).to_degrees()).abs() < 1e-3);
+    assert!((distance - 2.0 * 1.3125_f32.sqrt()).abs() < 1e-4);
+    let mut broken = speaker.clone();
+    broken.x = f32::NAN;
+    assert_eq!(position(&room, 2.0, &broken), None);
+}
+
+#[test]
+fn version_4_clients_get_their_own_reply_shape_without_positions() {
+    // A version-4 client refuses any output field outside this set.
+    const VERSION_4_FIELDS: [&str; 8] = [
+        "id",
+        "index",
+        "name",
+        "gain_db",
+        "delay_ms",
+        "muted",
+        "freq_low_hz",
+        "freq_high_hz",
+    ];
+    let version_4_shaped = |response: &Response| {
+        let json = serde_json::to_value(response).unwrap();
+        let outputs = json["reply"]["snapshot"]["outputs"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(outputs.len(), 12);
+        outputs.iter().all(|output| {
+            output
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| VERSION_4_FIELDS.contains(&key.as_str()))
+        })
+    };
+    let mut service = Service::new(fixture_control(), 42, None);
+    let (owner, _client) = peer();
+
+    let current = request(&mut service, &owner, VERSION, Command::Discover {});
+    assert_eq!(current.version, 5);
+    assert!(!version_4_shaped(&current), "version 5 adds fields");
+
+    let older = request(&mut service, &owner, 4, Command::Discover {});
+    assert_eq!(older.version, 4);
+    assert!(version_4_shaped(&older));
+    let Reply::Snapshot { snapshot } = &older.reply else {
+        panic!("{older:?}")
+    };
+    let revision = snapshot.revision.clone();
+    // A session's snapshot takes the same shape.
+    let session = request(
+        &mut service,
+        &owner,
+        4,
+        Command::Begin {
+            expected_revision: revision,
+        },
+    );
+    assert!(
+        matches!(session.reply, Reply::Session { .. }),
+        "{session:?}"
+    );
+    assert!(version_4_shaped(&session));
+
+    // A version-5 client still parses a version-4 reply: positions are absent.
+    let parsed: Response = serde_json::from_str(&serde_json::to_string(&older).unwrap()).unwrap();
+    let Reply::Snapshot { snapshot } = parsed.reply else {
+        panic!("expected a snapshot")
+    };
+    assert!(
+        snapshot.outputs.iter().all(|o| o.azimuth_deg.is_none()
+            && o.elevation_deg.is_none()
+            && o.distance_m.is_none())
+    );
+}
+
+#[test]
+fn versions_outside_4_to_5_are_refused_in_the_current_version() {
+    let mut service = Service::new(fixture_control(), 42, None);
+    let (owner, _client) = peer();
+    for version in [3, 6] {
+        let response = request(&mut service, &owner, version, Command::Discover {});
+        assert_eq!(response.version, VERSION);
+        assert_error(response.reply, "unsupported_version");
+    }
+}

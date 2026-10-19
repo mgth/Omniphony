@@ -77,6 +77,7 @@ impl Service {
             reason = Some("master gain must be finite and positive");
         }
         let mut names = std::collections::HashSet::new();
+        let radius_m = layout.speaker_layout.radius_m;
         let outputs: Vec<_> = layout
             .speaker_layout
             .speakers
@@ -106,6 +107,7 @@ impl Service {
                     || speaker.freq_high.is_some_and(|v| !v.is_finite() || v <= 0.0)
                     || matches!((speaker.freq_low, speaker.freq_high), (Some(lo), Some(hi)) if lo >= hi)
                 { reason = Some("invalid output frequency range"); }
+                let position = position(&layout.room, radius_m, speaker);
                 Output {
                     id: speaker.name.clone(),
                     index: index as u32,
@@ -115,6 +117,9 @@ impl Service {
                     muted: state.is_some_and(|s| s.muted),
                     freq_low_hz: speaker.freq_low,
                     freq_high_hz: speaker.freq_high,
+                    azimuth_deg: position.map(|p| p.0),
+                    elevation_deg: position.map(|p| p.1),
+                    distance_m: position.map(|p| p.2),
                 }
             })
             .collect();
@@ -213,10 +218,14 @@ impl Service {
     pub fn handle(&mut self, request: Request, owner: &Peer, now: Instant) -> Response {
         self.poll(now);
         let request_id = request.request_id;
-        let reply = if request.version != VERSION {
+        let version = reply_version(request.version);
+        let reply = if !supported(request.version) {
             error(
                 "unsupported_version",
-                "unsupported measurement protocol version",
+                &format!(
+                    "unsupported measurement protocol version; this renderer answers \
+                     versions {MIN_VERSION} to {VERSION}"
+                ),
             )
         } else if request_id == 0 {
             error("invalid_request", "request_id must be positive")
@@ -228,11 +237,7 @@ impl Service {
         } else {
             self.command(request, owner, now)
         };
-        Response {
-            version: VERSION,
-            request_id,
-            reply,
-        }
+        Response::for_version(version, request_id, reply)
     }
 
     fn set_outputs(&mut self, expected_revision: &str, settings: &[OutputSetting]) -> Reply {
@@ -640,6 +645,21 @@ impl Drop for Service {
     fn drop(&mut self) {
         self.control.measurement.end();
     }
+}
+
+/// The layout position in metres, as Studio shows it: the normalized
+/// coordinates through the topology's room warp, at the layout's room scale.
+/// `None` when the declared geometry is not finite.
+fn position(
+    room: &renderer::live_params::RoomRatios,
+    radius_m: f32,
+    speaker: &renderer::speaker_layout::Speaker,
+) -> Option<(f32, f32, f32)> {
+    let [x, y, z] = room.scale([speaker.x, speaker.y, speaker.z]);
+    let (azimuth, elevation, distance) = omniphony_geometry::f32::to_spherical(x, y, z);
+    let distance = distance * radius_m;
+    (azimuth.is_finite() && elevation.is_finite() && distance.is_finite())
+        .then_some((azimuth, elevation, distance))
 }
 
 fn gain_db(gain: f32) -> f32 {
