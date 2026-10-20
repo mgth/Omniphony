@@ -424,6 +424,7 @@ fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> 
     // Actions can include an interactive elevation prompt; timing out its
     // parent does not cancel the elevated action. Short limits apply only to
     // non-interactive discovery/status queries below.
+    crate::host::process::hide_console(&mut cmd);
     let output = cmd.output().map_err(|e| format!("{action}: {e}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
