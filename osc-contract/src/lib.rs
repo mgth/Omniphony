@@ -61,12 +61,17 @@ pub mod stream;
 /// a change to arguments only is for the author to remember.
 ///
 /// An engine that predates this advertises none, which a client reads as 0.
-pub const CONTRACT_REVISION: u32 = 9;
+pub const CONTRACT_REVISION: u32 = 10;
 
 /// Versioned local TCP measurement requests; one JSON string. See docs/measurement-protocol.md.
 pub const CONTROL_MEASUREMENT: &str = "/omniphony/control/measurement";
 /// Point-to-point measurement replies, only to the requesting companion; one JSON string.
 pub const STATE_MEASUREMENT: &str = "/omniphony/state/measurement";
+/// The output a measurement companion plays level noise on, broadcast to every
+/// client while a session runs: the output's index (`-1` when none plays), then
+/// `1` when the noise skips that output's gain — it then plays at 0 dB whatever
+/// the gain shows — or `0` when it plays through it.
+pub const STATE_MEASUREMENT_NOISE: &str = "/omniphony/state/measurement/noise";
 
 /// The port the engine's stream transport listens on is the OSC/UDP control
 /// port's number, on loopback (TCP and UDP ports are separate spaces). A
@@ -860,6 +865,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_CLIP,
     STATE_CONTROL_ERROR,
     STATE_MEASUREMENT,
+    STATE_MEASUREMENT_NOISE,
     STATE_OBJECT_TEST_CLIP,
     STATE_OVERLAY,
     STATE_CONFIG_SAVED,
@@ -1134,7 +1140,7 @@ mod tests {
     /// `(revision, fingerprint)`. Change both together, and only together with
     /// a bump: a new fingerprint under the old revision tells clients nothing
     /// changed when it did.
-    const PINNED_ADDRESS_SET: (u32, u64) = (9, 0x2b349924759e75fd);
+    const PINNED_ADDRESS_SET: (u32, u64) = (10, 0xacf1dc3deedb5625);
 
     /// FNV-1a over the sorted catalogue, so the fingerprint follows the set
     /// and not the order the lists happen to be written in.

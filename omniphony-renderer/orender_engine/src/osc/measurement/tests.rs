@@ -763,6 +763,63 @@ fn level_noise_can_skip_the_output_gain_but_keeps_the_master() {
 }
 
 #[test]
+fn clients_are_told_which_output_plays_noise_and_whether_its_gain_is_skipped() {
+    assert_eq!(
+        noise_args(None),
+        vec![rosc::OscType::Int(-1), rosc::OscType::Int(0)]
+    );
+    for bypass_output_gain in [false, true] {
+        let mut service = Service::new(fixture_control(), 42, None);
+        let (owner, _client) = peer();
+        let now = Instant::now();
+        assert_eq!(service.noise_output(), None);
+        let (id, snapshot) = begin(&mut service, &owner, now);
+        assert_eq!(service.noise_output(), None);
+        let output = &snapshot.outputs[1];
+        let reply = command(
+            &mut service,
+            &owner,
+            2,
+            Command::StartNoise {
+                session_id: id.clone(),
+                signal_id: 1,
+                output_id: output.id.clone(),
+                signal: LevelNoise {
+                    duration_seconds: 60,
+                    peak_dbfs: -30.0,
+                    bypass_output_gain,
+                },
+            },
+            now,
+        );
+        assert!(matches!(reply, Reply::NoiseSession { .. }));
+        let noise = service.noise_output();
+        assert_eq!(
+            noise,
+            Some(NoiseOutput {
+                index: output.index,
+                gain_bypassed: bypass_output_gain,
+            })
+        );
+        assert_eq!(
+            noise_args(noise),
+            vec![
+                rosc::OscType::Int(output.index as i32),
+                rosc::OscType::Int(bypass_output_gain as i32),
+            ]
+        );
+        command(
+            &mut service,
+            &owner,
+            3,
+            Command::Stop { session_id: id },
+            now,
+        );
+        assert_eq!(service.noise_output(), None);
+    }
+}
+
+#[test]
 fn headphone_output_is_named_and_can_be_switched_to_the_speakers() {
     let control = fixture_control();
     control.live.write().binaural.output_mode = renderer::live_params::OutputMode::Binaural;

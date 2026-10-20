@@ -7,6 +7,37 @@ use runtime_control::osc_contract::measurement::*;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
+/// See [`Service::noise_output`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct NoiseOutput {
+    pub index: u32,
+    pub gain_bypassed: bool,
+}
+
+/// The `/state/measurement/noise` arguments: the output index, `-1` when no
+/// noise plays, then whether its gain is skipped.
+pub(super) fn noise_args(noise: Option<NoiseOutput>) -> Vec<rosc::OscType> {
+    vec![
+        rosc::OscType::Int(noise.map_or(-1, |n| n.index as i32)),
+        rosc::OscType::Int(noise.is_some_and(|n| n.gain_bypassed) as i32),
+    ]
+}
+
+/// The noise state to one client that registers or asks for its state again:
+/// sent even when none plays, so a client that missed the end learns it.
+pub(super) fn send_noise_to(
+    socket: &std::net::UdpSocket,
+    client: &Peer,
+    noise: Option<NoiseOutput>,
+) {
+    super::transport::send_message_to_client(
+        socket,
+        client,
+        runtime_control::osc_contract::STATE_MEASUREMENT_NOISE,
+        noise_args(noise),
+    );
+}
+
 struct Session {
     id: String,
     owner: Peer,
@@ -57,6 +88,26 @@ impl Service {
 
     pub fn active(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// The output level noise is queued or rendering on, and whether it skips
+    /// that output's gain. Clients are told on
+    /// [`runtime_control::osc_contract::STATE_MEASUREMENT_NOISE`].
+    pub fn noise_output(&self) -> Option<NoiseOutput> {
+        let session = self.session.as_ref()?;
+        let (progress, signal) = session.noise.as_ref()?;
+        if !matches!(signal.state(), SignalState::Queued | SignalState::Rendering) {
+            return None;
+        }
+        let output = session
+            .snapshot
+            .outputs
+            .iter()
+            .find(|o| o.id == progress.output_id)?;
+        Some(NoiseOutput {
+            index: output.index,
+            gain_bypassed: progress.signal.bypass_output_gain,
+        })
     }
 
     fn snapshot(&mut self) -> Snapshot {

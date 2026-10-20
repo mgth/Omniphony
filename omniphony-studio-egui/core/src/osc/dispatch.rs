@@ -43,6 +43,16 @@ pub enum Change {
     Snapshot,
 }
 
+/// Level noise a measurement companion is playing on one speaker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasurementNoise {
+    /// The speaker's index in the layout.
+    pub speaker: usize,
+    /// The noise skips this speaker's gain: it plays at 0 dB whatever the
+    /// gain shows, which then acts on nothing the speaker plays.
+    pub gain_bypassed: bool,
+}
+
 /// One recorded trail sample (`trails.js` point record).
 #[derive(Clone, Debug)]
 pub struct TrailPoint {
@@ -113,6 +123,9 @@ pub struct Live {
     pub ear_levels: HashMap<String, Meter>,
     /// Last clip report: speaker index and when it arrived.
     pub clip: Option<(i32, Instant)>,
+    /// The speaker a measurement companion plays level noise on, from
+    /// `/state/measurement/noise`; `None` once none does.
+    pub measurement_noise: Option<MeasurementNoise>,
     pub last_frame_reset: Option<Instant>,
     /// Bumped on every `Change::Snapshot`; the UI compares it to rebuild caches.
     pub snapshot_epoch: u64,
@@ -600,6 +613,7 @@ impl Live {
             drc_gain: None,
             ear_levels: HashMap::new(),
             clip: None,
+            measurement_noise: None,
             last_frame_reset: None,
             snapshot_epoch: 0,
             layout_context_generation: 0,
@@ -981,6 +995,20 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         OscEvent::StateSession { value } => {
             live.app.producer_session = serde_json::from_str(&value).ok();
             Change::None
+        }
+        OscEvent::StateMeasurementNoise {
+            output,
+            gain_bypassed,
+        } => {
+            let noise = usize::try_from(output)
+                .ok()
+                .map(|speaker| MeasurementNoise {
+                    speaker,
+                    gain_bypassed,
+                });
+            let changed = live.measurement_noise != noise;
+            live.measurement_noise = noise;
+            snapshot_if(changed)
         }
         OscEvent::StateClip { speaker } => {
             live.clip = Some((speaker, Instant::now()));
@@ -1473,6 +1501,45 @@ mod panel_event_tests {
     /// the schema decides whether its control is offered: a value in the
     /// snapshot is not enough (an older standalone renderer publishes
     /// `decode_thread` there and still refuses it).
+    /// A measurement companion's level noise names its speaker and whether it
+    /// skips that speaker's gain; `-1` clears it.
+    #[test]
+    fn measurement_noise_follows_the_renderer() {
+        use crate::osc::parser::{CoordinateFormat, parse_osc_message};
+        use rosc::OscType;
+        let mut live = live();
+        let noise = |output: i32, bypassed: i32| {
+            parse_osc_message(
+                crate::osc_contract::STATE_MEASUREMENT_NOISE,
+                &[OscType::Int(output), OscType::Int(bypassed)],
+                CoordinateFormat::Cartesian,
+            )
+            .expect("parsed")
+        };
+        assert!(matches!(
+            apply_event(&mut live, noise(3, 1)),
+            Change::Snapshot
+        ));
+        assert_eq!(
+            live.measurement_noise,
+            Some(MeasurementNoise {
+                speaker: 3,
+                gain_bypassed: true
+            })
+        );
+        assert!(matches!(apply_event(&mut live, noise(3, 1)), Change::None));
+        apply_event(&mut live, noise(3, 0));
+        assert_eq!(
+            live.measurement_noise,
+            Some(MeasurementNoise {
+                speaker: 3,
+                gain_bypassed: false
+            })
+        );
+        apply_event(&mut live, noise(-1, 0));
+        assert_eq!(live.measurement_noise, None);
+    }
+
     #[test]
     fn an_option_is_declared_by_the_schema_not_by_the_snapshot() {
         let mut live = live();
