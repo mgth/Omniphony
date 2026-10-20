@@ -39,6 +39,10 @@ ureq = { version = "2", default-features = false, features = ["tls", "json", "gz
 # no DSP (we read three strings, never convolve).
 sofar = { git = "https://github.com/mgth/sofar", rev = "26ca8670b09bd55febc19fbdd73be5af06825ddb", default-features = false }
 
+# The system's preferred UI languages, for the `auto` language on Windows
+# and macOS, where the POSIX locale variables are not set.
+sys-locale = "0.3"
+
 # The stats panel sums the process tree's working set on Windows, which needs
 # ToolHelp to walk the children and ProcessStatus to read each one. Declared
 # here because this crate uses it: the Tauri host had its own copy of the same
