@@ -509,7 +509,7 @@ pub fn value_slider(
     step: f64,
     format: impl Fn(f32) -> String,
 ) -> bool {
-    slider_row(ui, label, None, value, range, step, format)
+    slider_row(ui, label, None, value, range, step, format, None)
 }
 
 /// `value_slider` whose label opens `help`.
@@ -522,6 +522,23 @@ pub fn value_slider_help<'h>(
     step: f64,
     format: impl Fn(f32) -> String,
 ) -> bool {
+    value_slider_help_inactive(ui, label, help, value, range, step, format, None)
+}
+
+/// `value_slider_help` whose value, while `inactive` gives a reason, acts on
+/// nothing: the readout is struck through and its hover says why. The slider
+/// still moves the value, which takes effect once the reason is gone.
+#[allow(clippy::too_many_arguments)]
+pub fn value_slider_help_inactive<'h>(
+    ui: &mut Ui,
+    label: &str,
+    help: impl Into<Help<'h>>,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+    format: impl Fn(f32) -> String,
+    inactive: Option<&str>,
+) -> bool {
     let help = help.into();
     let changed = slider_row(
         ui,
@@ -531,11 +548,13 @@ pub fn value_slider_help<'h>(
         range,
         step,
         format,
+        inactive,
     );
     super::help::card(ui, help);
     changed
 }
 
+#[allow(clippy::too_many_arguments)]
 fn slider_row(
     ui: &mut Ui,
     label: &str,
@@ -544,6 +563,7 @@ fn slider_row(
     range: std::ops::RangeInclusive<f32>,
     step: f64,
     format: impl Fn(f32) -> String,
+    inactive: Option<&str>,
 ) -> bool {
     let label_width = egui::WidgetText::from(label)
         .into_galley(
@@ -556,14 +576,19 @@ fn slider_row(
         .x;
     let full_track = ui.spacing().slider_width;
     labelled(ui, label.into(), None, help, |ui| {
-        ui.add_sized(
+        let mut readout = egui::RichText::new(format(*value)).monospace();
+        readout = if inactive.is_some() {
+            readout.strikethrough().color(theme::TEXT_MUTED)
+        } else {
+            readout.color(theme::TEXT_STRONG)
+        };
+        let readout = ui.add_sized(
             vec2(64.0, ui.spacing().interact_size.y),
-            egui::Label::new(
-                egui::RichText::new(format(*value))
-                    .monospace()
-                    .color(theme::TEXT_STRONG),
-            ),
+            egui::Label::new(readout),
         );
+        if let Some(reason) = inactive {
+            readout.on_hover_text(reason);
+        }
         let room = ui.available_width() - label_width - ui.spacing().item_spacing.x;
         ui.spacing_mut().slider_width = room.clamp(MIN_TRACK, full_track.max(MIN_TRACK));
         let response = stepped(egui::Slider::new(value, range), step)
@@ -1931,5 +1956,54 @@ mod tests {
             ButtonProgress::Busy,
             centre
         ));
+    }
+}
+
+#[cfg(test)]
+mod inactive_slider_tests {
+    use super::value_slider_help_inactive;
+
+    /// Whether the readout `text` was painted struck through, `None` when it
+    /// was not painted at all.
+    fn struck(inactive: Option<&str>, text: &str) -> Option<bool> {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let mut value = 0.5;
+            value_slider_help_inactive(
+                ui,
+                "Gain",
+                "help.speaker.gain",
+                &mut value,
+                0.0..=2.0,
+                0.01,
+                |_| text.to_owned(),
+                inactive,
+            );
+        });
+        output.textures_delta.clear();
+        fn find(shape: &egui::Shape, text: &str) -> Option<bool> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == text => Some(
+                    t.galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|s| s.format.strikethrough.width > 0.0),
+                ),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
+                _ => None,
+            }
+        }
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| find(&clipped.shape, text))
+    }
+
+    /// A gain that acts on nothing is struck through; an active one is not.
+    #[test]
+    fn an_inactive_readout_is_struck_through() {
+        assert_eq!(struck(None, "-6.0 dB"), Some(false));
+        assert_eq!(struck(Some("skipped"), "-6.0 dB"), Some(true));
     }
 }

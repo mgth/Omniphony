@@ -309,6 +309,13 @@ pub enum OscEvent {
     StateClip {
         speaker: i32,
     },
+    /// The output a measurement companion plays level noise on (`-1`: none)
+    /// and whether that noise skips the output's gain.
+    #[serde(rename = "state:measurement_noise")]
+    StateMeasurementNoise {
+        output: i32,
+        gain_bypassed: bool,
+    },
     /// Overlay display preferences (JSON), republished by the engine whenever
     /// they change — including from an mpv keybind, which Studio cannot see.
     StateOverlay {
@@ -1066,6 +1073,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         },
         (4, "vbap") if parts[3] == "allow_negative_z" => Some(OscEvent::StateVbapAllowNegativeZ {
             enabled: to_number(*args.first()?)? != 0.0,
+        }),
+        (4, "measurement") if parts[3] == "noise" => Some(OscEvent::StateMeasurementNoise {
+            output: to_number(*args.first()?)? as i32,
+            gain_bypassed: to_number(*args.get(1)?)? != 0.0,
         }),
         (4, "speakers") if parts[3] == "recomputing" => Some(OscEvent::StateSpeakersRecomputing {
             enabled: to_number(*args.first()?)? != 0.0,

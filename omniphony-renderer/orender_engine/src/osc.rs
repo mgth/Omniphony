@@ -681,6 +681,9 @@ impl OscSender {
                 // mpv shim flips them through the FFI toggles, so a client that
                 // only ever hears its own OSC pushes would drift.
                 let mut last_overlay_generation: Option<u64> = None;
+                // The output a companion's level noise plays on, as last told
+                // to the clients: Studio strikes through a gain it skips.
+                let mut last_noise: Option<measurement::NoiseOutput> = None;
 
                 // Resuming from standby: take over the live state the departing
                 // host left in the sidecar. Deliberately *after* the generation
@@ -724,6 +727,16 @@ impl OscSender {
                     }
                     if let Some(service) = measurement.as_mut() {
                         service.poll(std::time::Instant::now());
+                        let noise = service.noise_output();
+                        if noise != last_noise {
+                            last_noise = noise;
+                            transport::publish_state(&socket, &clients, || {
+                                vec![OscMessage {
+                                    addr: osc_contract::STATE_MEASUREMENT_NOISE.to_string(),
+                                    args: measurement::noise_args(noise),
+                                }]
+                            });
+                        }
                     }
                     decode_errors.flush("undecodable datagram(s) dropped");
                     control_errors.flush("control message(s) not applied");
@@ -836,6 +849,7 @@ impl OscSender {
                                     }
                                     send_buffered_logs_to_client(&socket, &client, 0);
                                     send_metering_state(&socket, &client, metering_enabled);
+                                    measurement::send_noise_to(&socket, &client, last_noise);
                                 }
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::HEARTBEAT =>
@@ -887,6 +901,7 @@ impl OscSender {
                                         log::debug!("OSC state refresh → {client}");
                                         send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, &client);
                                     }
+                                    measurement::send_noise_to(&socket, &client, last_noise);
                                 }
 
                                 // A barrier: everything this client sent before

@@ -504,3 +504,60 @@ fn measurement_session_over_tcp_blocks_writes_and_releases_on_disconnect() {
             .load(std::sync::atomic::Ordering::Acquire)
     );
 }
+
+#[test]
+fn registered_clients_are_told_which_output_plays_level_noise() {
+    use osc_contract::measurement::{Command, LevelNoise, Reply};
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let control = fixture_control();
+    let (_sender, port) = listening_sender(&control);
+    let noise = |client: &mut Client| -> Vec<OscType> {
+        let messages = client
+            .until(osc_contract::STATE_MEASUREMENT_NOISE)
+            .expect("the noise state");
+        messages
+            .iter()
+            .rfind(|m| m.addr == osc_contract::STATE_MEASUREMENT_NOISE)
+            .unwrap()
+            .args
+            .clone()
+    };
+    // A client registering learns that no noise plays.
+    let mut studio = Client::connect(port);
+    studio.send(osc_contract::REGISTER, vec![]);
+    assert_eq!(noise(&mut studio), [OscType::Int(-1), OscType::Int(0)]);
+
+    let mut companion = Client::connect(port);
+    let Reply::Snapshot { snapshot } = companion.measurement(1, Command::Discover {}) else {
+        panic!("snapshot")
+    };
+    let Reply::Session { session_id, .. } = companion.measurement(
+        2,
+        Command::Begin {
+            expected_revision: snapshot.revision.clone(),
+        },
+    ) else {
+        panic!("session")
+    };
+    let output = &snapshot.outputs[1];
+    let reply = companion.measurement(
+        3,
+        Command::StartNoise {
+            session_id: session_id.clone(),
+            signal_id: 1,
+            output_id: output.id.clone(),
+            signal: LevelNoise {
+                duration_seconds: 60,
+                peak_dbfs: -30.0,
+                bypass_output_gain: true,
+            },
+        },
+    );
+    assert!(matches!(reply, Reply::NoiseSession { .. }), "{reply:?}");
+    assert_eq!(
+        noise(&mut studio),
+        [OscType::Int(output.index as i32), OscType::Int(1)]
+    );
+    companion.measurement(4, Command::Stop { session_id });
+    assert_eq!(noise(&mut studio), [OscType::Int(-1), OscType::Int(0)]);
+}

@@ -843,6 +843,14 @@ not to Studio subscribers. See [measurement sessions](measurement-protocol.md)
 for the versioned schema, ownership, finite signals and render-progress semantics.
 Rust clients opt into the contract crate's `measurement` feature for its serde types.
 
+Contract revision 10 adds `/omniphony/state/measurement/noise` (int, int),
+broadcast to every client: the index of the output a companion plays level noise
+on, or `-1` once none does, then `1` when that noise skips the output's gain
+(measurement protocol 6, `bypass_output_gain`), `0` when it plays through it.
+It is sent when either changes and to a client when it registers. While the
+second is `1` the output's gain does not act on what that speaker plays: Studio
+strikes it through.
+
 ## Address index
 
 Every address the contract catalogues, generated from `ALL_CONTROL`,
@@ -1034,6 +1042,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/layout`
 - `/omniphony/state/log_level`
 - `/omniphony/state/loudness`
+- `/omniphony/state/measurement/noise`
 - `/omniphony/state/monitoring`
 - `/omniphony/state/object_generators`
 - `/omniphony/state/object_test/clip`
