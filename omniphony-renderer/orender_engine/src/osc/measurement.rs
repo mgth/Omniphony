@@ -66,7 +66,7 @@ impl Service {
         let sample_rate = control.sample_rate.load(Ordering::Acquire);
         let mut reason = None;
         if live.binaural.output_mode != OutputMode::SpeakerArray {
-            reason = Some("measurement requires speaker output mode");
+            reason = Some(SPEAKER_OUTPUT_REQUIRED);
         } else if control.recomputing.load(Ordering::Acquire) || control.render_layout_outdated() {
             reason = Some("wait for the speaker layout rebuild to finish");
         } else if live.speaker_test.is_some() || live.object_test.is_some() {
@@ -299,6 +299,30 @@ impl Service {
         }
     }
 
+    /// Switch the live output from headphones to the speakers, as the Studio's
+    /// output mode does: through the option registry, then a live-state bump for
+    /// the other clients. The listener rebuilds the layout if a BRIR set was in use.
+    fn use_speaker_output(&mut self) -> Reply {
+        if self.session.is_some() {
+            return error("busy", "a measurement session owns the renderer");
+        }
+        let Some(spec) = renderer::options::find("output_mode") else {
+            return error("unavailable", "the renderer has no output mode option");
+        };
+        let raw = renderer::options::RawOptionValue::Str("speaker");
+        match renderer::options::apply_to_control(&self.control, spec, &raw) {
+            Some(applied) => {
+                if applied.changed {
+                    self.control.bump_live_state();
+                }
+                Reply::Snapshot {
+                    snapshot: self.snapshot(),
+                }
+            }
+            None => error("invalid_request", "the renderer refused speaker output"),
+        }
+    }
+
     fn command(&mut self, request: Request, owner: &Peer, now: Instant) -> Reply {
         if let Command::SetOutputs {
             expected_revision,
@@ -311,6 +335,9 @@ impl Service {
             return Reply::Snapshot {
                 snapshot: self.snapshot(),
             };
+        }
+        if let Command::UseSpeakerOutput {} = request.command {
+            return self.use_speaker_output();
         }
         if let Command::Begin { expected_revision } = &request.command {
             if self.session.is_some() {

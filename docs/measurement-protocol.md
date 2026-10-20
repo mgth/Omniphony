@@ -1,4 +1,4 @@
-# Measurement sessions, version 6
+# Measurement sessions, version 7
 
 The companion can discover renderer outputs and play an identified finite sweep
 under an exclusive, temporary session. This increment does not acquire microphones,
@@ -269,3 +269,21 @@ The field is omitted when false, so a request without it keeps the version-4 wir
 form. An older renderer refuses the field (and a version-6 request with
 `unsupported_version`); a client that negotiated an older version can only play
 the noise through the output's gain.
+
+## Switching to speaker output, version 7
+
+A renderer playing to headphones (binaural output) reports the snapshot
+`unavailable_reason` "measurement requires speaker output mode" (the contract's
+`SPEAKER_OUTPUT_REQUIRED`): the microphone cannot measure speakers that are not
+playing. This can happen without the user choosing it, for instance when a renderer
+resumes from standby and adopts the live state another host handed back.
+
+Version 7 adds the command `use_speaker_output: {}`, accepted outside a session
+only (`busy` otherwise). It sets the live output mode to the speakers through the
+same option as the Studio's output mode, tells the other clients, and replies with
+the new snapshot. If a BRIR set's layout was in use, the snapshot may then say to
+wait for the speaker layout rebuild, which the renderer runs on its own. Like
+`set_outputs`, it is live only: the saved configuration changes only through the
+Studio's Save. An older renderer refuses the unknown command; a client offers it
+only on a version-7 connection.
+

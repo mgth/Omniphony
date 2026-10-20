@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 pub const REQUEST_ADDRESS: &str = crate::CONTROL_MEASUREMENT;
 pub const REPLY_ADDRESS: &str = crate::STATE_MEASUREMENT;
 /// The version this schema writes. Version 5 adds output positions, version 6
-/// level noise that skips the output's gain.
-pub const VERSION: u32 = 6;
+/// level noise that skips the output's gain, version 7 [`Command::UseSpeakerOutput`].
+pub const VERSION: u32 = 7;
 /// The oldest request version a renderer still answers, in that version's
 /// shape ([`Response::for_version`]); older clients reject unknown fields.
 pub const MIN_VERSION: u32 = 4;
@@ -14,6 +14,11 @@ pub const MIN_VERSION: u32 = 4;
 pub const POSITIONS_VERSION: u32 = 5;
 /// First version whose renderers accept [`LevelNoise::bypass_output_gain`].
 pub const NOISE_GAINS_VERSION: u32 = 6;
+/// First version whose renderers accept [`Command::UseSpeakerOutput`].
+pub const SPEAKER_OUTPUT_VERSION: u32 = 7;
+/// The snapshot's `unavailable_reason` while the renderer plays to headphones
+/// (binaural output): the one reason [`Command::UseSpeakerOutput`] resolves.
+pub const SPEAKER_OUTPUT_REQUIRED: &str = "measurement requires speaker output mode";
 
 /// Whether a renderer built from this schema answers `version` requests.
 pub fn supported(version: u32) -> bool {
@@ -72,6 +77,10 @@ pub enum Command {
         sequence_outputs: Vec<String>,
         signal: Sweep,
     },
+    /// Version 7: switch the live output to the speakers, when the renderer plays
+    /// to headphones ([`SPEAKER_OUTPUT_REQUIRED`]). Outside a session only; replies
+    /// with the new snapshot. Live only, like `set_outputs`: never the saved config.
+    UseSpeakerOutput {},
     /// Optional v4 extension: finite, band-limited pink noise for physical level matching.
     StartNoise {
         session_id: String,
