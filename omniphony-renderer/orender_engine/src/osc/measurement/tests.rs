@@ -762,6 +762,48 @@ fn level_noise_can_skip_the_output_gain_but_keeps_the_master() {
     }
 }
 
+#[test]
+fn headphone_output_is_named_and_can_be_switched_to_the_speakers() {
+    let control = fixture_control();
+    control.live.write().binaural.output_mode = renderer::live_params::OutputMode::Binaural;
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let now = Instant::now();
+    let Reply::Snapshot { snapshot } = command(&mut service, &owner, 1, Command::Discover {}, now)
+    else {
+        panic!("expected a snapshot")
+    };
+    assert_eq!(
+        snapshot.unavailable_reason.as_deref(),
+        Some(SPEAKER_OUTPUT_REQUIRED)
+    );
+    let generation = control.live_state_generation();
+    let Reply::Snapshot { snapshot } =
+        command(&mut service, &owner, 2, Command::UseSpeakerOutput {}, now)
+    else {
+        panic!("expected a snapshot")
+    };
+    assert_eq!(snapshot.unavailable_reason, None);
+    assert_eq!(
+        control.live.read().binaural.output_mode,
+        renderer::live_params::OutputMode::SpeakerArray
+    );
+    // The other clients hear of it; the saved configuration is not written.
+    assert!(control.live_state_generation() > generation);
+    // Asking again changes nothing; a session refuses it.
+    let generation = control.live_state_generation();
+    assert!(matches!(
+        command(&mut service, &owner, 3, Command::UseSpeakerOutput {}, now),
+        Reply::Snapshot { .. }
+    ));
+    assert_eq!(control.live_state_generation(), generation);
+    begin(&mut service, &owner, now);
+    assert_error(
+        command(&mut service, &owner, 4, Command::UseSpeakerOutput {}, now),
+        "busy",
+    );
+}
+
 fn request(service: &mut Service, peer: &Peer, version: u32, command: Command) -> Response {
     service.handle(
         Request {
@@ -862,7 +904,7 @@ fn version_4_clients_get_their_own_reply_shape_without_positions() {
     let (owner, _client) = peer();
 
     let current = request(&mut service, &owner, VERSION, Command::Discover {});
-    assert_eq!(current.version, 6);
+    assert_eq!(current.version, 7);
     assert!(!version_4_shaped(&current), "version 5 adds fields");
     let five = request(&mut service, &owner, 5, Command::Discover {});
     assert_eq!(five.version, 5);
@@ -903,10 +945,10 @@ fn version_4_clients_get_their_own_reply_shape_without_positions() {
 }
 
 #[test]
-fn versions_outside_4_to_6_are_refused_in_the_current_version() {
+fn versions_outside_4_to_7_are_refused_in_the_current_version() {
     let mut service = Service::new(fixture_control(), 42, None);
     let (owner, _client) = peer();
-    for version in [3, 7] {
+    for version in [3, 8] {
         let response = request(&mut service, &owner, version, Command::Discover {});
         assert_eq!(response.version, VERSION);
         assert_error(response.reply, "unsupported_version");
