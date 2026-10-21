@@ -736,6 +736,10 @@ impl SpatialRenderer {
         {
             self.channel_states.clear();
             self.speaker_stage.drop_gain_carries();
+            // The rooms too: the reflections, reverb and BRIR tails of the
+            // previous stream would otherwise ring on into the next one.
+            self.binaural.clear_history();
+            self.brir.clear_history();
         }
 
         // Offline, a BRIR set's loudspeakers replace the layout on the frame

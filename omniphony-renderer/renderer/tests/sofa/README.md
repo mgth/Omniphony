@@ -17,6 +17,7 @@ only and are never shipped.
 | `room_corners_global_metadata.sofa` | Spherical corners with only global `RoomCorners:Type`/`RoomCorners:Units` attributes | Same generator and base | MIT OR Apache-2.0 |
 | `room_corners_unsupported_unit.sofa` | Cartesian corners in feet: the box is refused, the BRIR still loads | Same generator and base | MIT OR Apache-2.0 |
 | `room_corners_offset_listener.sofa` | Cartesian corners with the listener at `(3, 2, 1.2)` metres | Same generator and base | MIT OR Apache-2.0 |
+| `rows_multispeaker_brir.sofa` | MultiSpeakerBRIR, three speakers at seven head orientations 10° apart, three orientations per chunk, `[M][R][E]` `Data.Delay` (read by `brir.rs`'s unit tests) | [mgth/sofar](https://github.com/mgth/sofar) `tests/data/` (from v-lix's fork), at the rev `Cargo.toml` pins | MIT OR Apache-2.0 |
 
 Except for the generated `room_corners_*.sofa` variants, the files are copied
 byte for byte from those repositories. libmysofa's three larger

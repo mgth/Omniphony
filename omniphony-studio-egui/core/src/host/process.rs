@@ -7,9 +7,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The Studio has no console on Windows, so a console tool (`where`,
+/// `powershell`, `sc`) would open one of its own for the length of the call.
+/// Elsewhere this does nothing.
+pub fn hide_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 pub fn capture(command: &mut Command, timeout: Duration) -> io::Result<Output> {
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
+    hide_console(command);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout.try_clone()?))

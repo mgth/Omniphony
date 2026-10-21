@@ -471,6 +471,136 @@ fn energy_of(h: &[f32; HRIR_LEN]) -> f32 {
     h.iter().map(|&x| x * x).sum()
 }
 
+/// The most values an HRTF set's `Data.IR` may hold (`M × R × N`): the
+/// densest free-field sets measure about twelve thousand directions of a
+/// few hundred samples, some seven million values, and responses a hundred
+/// times longer are a room's. Loading inflates them to about sixteen bytes
+/// each at once, so this bounds the stage at a quarter of a GB.
+pub const HRTF_MAX_SAMPLES: usize = 1 << 24;
+
+/// The fewest distinct directions an HRTF set may have: the blend takes the
+/// nearest three.
+#[cfg(any(test, feature = "sofa"))]
+const HRTF_MIN_DIRECTIONS: usize = 3;
+
+/// The largest SOFA file the HRTF stage reads: [`HRTF_MAX_SAMPLES`] stored
+/// uncompressed as doubles, with room for everything else a file holds.
+/// Refused before it is read.
+pub const HRTF_MAX_FILE_BYTES: u64 = 8 * HRTF_MAX_SAMPLES as u64 + (16 << 20);
+
+/// Why a file of `len` bytes is too large to read as an HRTF set.
+fn file_too_large(len: u64) -> String {
+    format!(
+        "{} MB, more than the {} MB an HRTF set this engine loads takes - a file this size \
+         holds room-length responses, which the room stage takes",
+        len.div_ceil(1 << 20),
+        HRTF_MAX_FILE_BYTES >> 20
+    )
+}
+
+/// The bytes of the SOFA file at `path` for the HRTF stage: refused unread
+/// when it is larger than [`HRTF_MAX_FILE_BYTES`], so that a room chosen as
+/// an HRTF set is never held in memory whole.
+pub fn read_hrtf_file(path: &str) -> Result<Vec<u8>, String> {
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("open SOFA '{path}': {e}"))?
+        .len();
+    if len > HRTF_MAX_FILE_BYTES {
+        return Err(format!("SOFA '{path}': {}", file_too_large(len)));
+    }
+    std::fs::read(path).map_err(|e| format!("open SOFA '{path}': {e}"))
+}
+
+/// Why the HRTF stage would not take an open SOFA file of `len` bytes, read
+/// from its shape and geometry alone (no response is read), or `None` when
+/// it would.
+#[cfg(feature = "sofa")]
+pub fn hrtf_refusal(sofa: &sofar::reader::LazySofa<'_>, len: u64) -> Option<String> {
+    hrtf_shape_refusal(&sofa.ir_shape(), &sofa.hrtf().source_position.values, len)
+}
+
+/// [`hrtf_refusal`] of a file of `len` bytes whose `Data.IR` has `shape` and
+/// whose cartesian `SourcePosition` is `positions` (`[M][C]` or `[I][C]`).
+#[cfg(any(test, feature = "sofa"))]
+fn hrtf_shape_refusal(shape: &[usize], positions: &[f32], len: u64) -> Option<String> {
+    let (m, r, n) = match shape {
+        &[m, r, n] => (m, r, n),
+        &[_, _, e, _] if e > 1 => {
+            return Some(format!(
+                "{e} loudspeakers in every measurement: the HRTF stage takes one direction per \
+                 measurement"
+            ));
+        }
+        &[_, _, _, _] => {
+            return Some("Data.IR has four axes: the HRTF stage reads [M][R][N]".to_string());
+        }
+        other => return Some(format!("Data.IR has {} axes, expected 3", other.len())),
+    };
+    if r < 2 {
+        return Some(format!(
+            "{r} receiver(s); a binaural set needs the two ears"
+        ));
+    }
+    if m == 0 || n == 0 {
+        return Some(format!("no measurements (M = {m}, N = {n})"));
+    }
+    if positions.len() < 3 {
+        return Some("no SourcePosition: no direction to place a response at".to_string());
+    }
+    // A set given one SourcePosition for every measurement ([I][C]) has
+    // that one direction throughout.
+    let rows = if positions.len() >= 3 * m { m } else { 1 };
+    let at_listener = positions
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .take(rows)
+        .filter(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() < 1e-3)
+        .count();
+    if at_listener > 0 {
+        return Some(format!(
+            "{} of {m} measurements have their SourcePosition at the listener: no direction to \
+             place a response at",
+            if rows == m { at_listener } else { m }
+        ));
+    }
+    // A set is a sphere of directions, blended between the nearest three; a
+    // single one is a room or a microphone array's response (the WDR
+    // studios' DRIR files: one measurement of fifty microphones).
+    let mut distinct: Vec<[f32; 3]> = Vec::with_capacity(HRTF_MIN_DIRECTIONS);
+    for p in positions.as_chunks::<3>().0.iter().take(rows) {
+        let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        let u = [p[0] / n, p[1] / n, p[2] / n];
+        if !distinct
+            .iter()
+            .any(|d| d[0] * u[0] + d[1] * u[1] + d[2] * u[2] > 0.9999)
+        {
+            distinct.push(u);
+            if distinct.len() == HRTF_MIN_DIRECTIONS {
+                break;
+            }
+        }
+    }
+    if distinct.len() < HRTF_MIN_DIRECTIONS {
+        return Some(format!(
+            "{} direction{} measured: an HRTF set has directions all round the listener",
+            distinct.len(),
+            if distinct.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if len > HRTF_MAX_FILE_BYTES {
+        return Some(file_too_large(len));
+    }
+    let values = m.checked_mul(r).and_then(|v| v.checked_mul(n));
+    if values.is_none_or(|v| v > HRTF_MAX_SAMPLES) {
+        return Some(format!(
+            "Data.IR holds {m} × {r} × {n} values, more than the {HRTF_MAX_SAMPLES} an HRTF \
+             set may hold: responses this long are a room's"
+        ));
+    }
+    None
+}
+
 /// Build an [`HrirSet`](super::hrir::HrirSet) from a SOFA file, resampled to
 /// `sample_rate`. Requires the `sofa` build feature.
 ///
@@ -491,11 +621,23 @@ pub fn hrir_set_from_sofa(
     diffuse_field_eq: bool,
 ) -> anyhow::Result<super::hrir::HrirSet> {
     use sofar::reader::OpenOptions;
+    // Its size asked before it is read: the reader below inflates the whole
+    // of Data.IR at once, as doubles and again as floats, and a room's
+    // responses chosen as an HRTF set do not fit in a small box's memory.
+    let bytes = read_hrtf_file(path).map_err(anyhow::Error::msg)?;
+    let len = bytes.len() as u64;
+    let lazy = sofar::reader::LazySofa::open(&bytes)
+        .map_err(|e| anyhow::anyhow!("open SOFA '{path}': {e}"))?;
+    if let Some(why) = hrtf_refusal(&lazy, len) {
+        anyhow::bail!("SOFA '{path}': {why}");
+    }
+    drop(lazy);
     let mut opts = OpenOptions::new();
     opts.sample_rate(sample_rate as f32);
     let sofa = opts
-        .open(path)
+        .open_data(&bytes)
         .map_err(|e| anyhow::anyhow!("open SOFA '{path}': {e:?}"))?;
+    drop(bytes);
     let filter_len = sofa.filter_len();
     let data = MeasuredHrirData::from_sofa(&sofa, sample_rate)
         .map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))?;
@@ -949,6 +1091,50 @@ mod tests {
         let d = MeasuredHrirData::saf_kemar();
         assert_eq!(d.len(), 836);
         assert_eq!(d.sample_rate, 48_000);
+    }
+
+    /// The IoSR listening room's 22.2 set as the HRTF stage would see it:
+    /// 3456 measurements, two ears, 65 536 samples, every SourcePosition at
+    /// the listener (its loudspeakers are in EmitterPosition), 1.5 GB. Not an
+    /// HRTF set on any count; what is said first is why it has no direction.
+    #[test]
+    fn a_set_with_no_direction_or_too_many_values_is_no_hrtf_set() {
+        let (m, len) = (3456, 1_528_481_559);
+        let refusal = hrtf_shape_refusal(&[m, 2, 65_536], &vec![0.0; 3 * m], len).unwrap();
+        assert!(
+            refusal.starts_with("3456 of 3456 measurements"),
+            "{refusal}"
+        );
+
+        // Directions, but responses a room long.
+        let dirs: Vec<f32> = (0..m).flat_map(|i| [1.0, i as f32 * 1e-3, 0.0]).collect();
+        let refusal = hrtf_shape_refusal(&[m, 2, 65_536], &dirs, len).unwrap();
+        assert!(refusal.contains("more than the 144 MB"), "{refusal}");
+        let refusal = hrtf_shape_refusal(&[m, 2, 65_536], &dirs, 100 << 20).unwrap();
+        assert!(refusal.contains("more than the 16777216"), "{refusal}");
+
+        // The densest free-field sets are well inside: FABIAN's 11 950
+        // directions of 256 samples, a 49 MB file of doubles.
+        let fabian: Vec<f32> = (0..11_950)
+            .flat_map(|i| [1.0, i as f32 * 1e-4, 0.0])
+            .collect();
+        assert_eq!(
+            hrtf_shape_refusal(&[11_950, 2, 256], &fabian, 49 << 20),
+            None
+        );
+        // One measurement placed at the listener is enough to refuse.
+        let mut one = fabian.clone();
+        one[3..6].fill(0.0);
+        let refusal = hrtf_shape_refusal(&[11_950, 2, 256], &one, 49 << 20).unwrap();
+        assert!(refusal.starts_with("1 of 11950"), "{refusal}");
+
+        // One measurement of a fifty-microphone array (the WDR studios'
+        // DRIR files), and two directions, are no sphere of directions.
+        let refusal = hrtf_shape_refusal(&[1, 50, 17_000], &[0.0, 2.0, 0.0], 3 << 20).unwrap();
+        assert!(refusal.starts_with("1 direction measured"), "{refusal}");
+        let two = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0];
+        let refusal = hrtf_shape_refusal(&[3, 2, 256], &two, 1 << 20).unwrap();
+        assert!(refusal.starts_with("2 directions measured"), "{refusal}");
     }
 
     fn energy(h: &[f32]) -> f32 {

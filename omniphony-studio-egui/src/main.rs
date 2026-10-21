@@ -7,6 +7,10 @@
 //! wgpu viewport hosted by an egui paint callback, and floats fixed-extent
 //! panels over the viewport so panel expansion can never resize the scene.
 
+// A GUI application on Windows: no console window opens beside it. Debug
+// builds keep theirs for the log.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod panels;
 mod prefs;
