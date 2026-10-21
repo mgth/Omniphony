@@ -1185,8 +1185,13 @@ mod reflections_tests {
         };
         let json = reflections_json(&binaural);
         assert!(near(&axes(&json["roomM"]), [4.0, 5.0, 2.7]), "{json}");
+        // Grown in proportion until the height holds the cube under the
+        // lowered ears: 3.35 m / (0.5 − 0.056) of height, × 2.794 overall.
         assert!(
-            near(&axes(&json["roomEffectiveM"]), [6.7, 6.7, 6.7]),
+            near(
+                &axes(&json["roomEffectiveM"]),
+                [11.177845, 13.972306, 7.545045]
+            ),
             "{json}"
         );
         binaural.unit_scale_m = 1.0;
