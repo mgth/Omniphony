@@ -158,6 +158,8 @@ struct LayoutDomainSpeakerState {
     freq_low: Option<f32>,
     #[serde(default, alias = "freq_high")]
     freq_high: Option<f32>,
+    #[serde(default, alias = "correctionFilter")]
+    correction_filter: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -175,6 +177,38 @@ struct SpeakerRuntimeState {
     #[serde(rename = "delayMs")]
     delay_ms: Option<f64>,
     muted: Option<bool>,
+    #[serde(default)]
+    correction: Option<SpeakerCorrectionState>,
+}
+
+/// `correction` of a `/state/speakers` entry.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpeakerCorrectionState {
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    taps: u64,
+    #[serde(default)]
+    source_rate: u64,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+impl SpeakerCorrectionState {
+    fn into_model(self) -> crate::model::app_state::SpeakerCorrection {
+        use crate::model::app_state::SpeakerCorrection;
+        match self.state.as_str() {
+            "loaded" => SpeakerCorrection::Loaded {
+                taps: self.taps,
+                source_rate: self.source_rate,
+            },
+            "error" => SpeakerCorrection::Failed {
+                error: self.error.unwrap_or_default(),
+            },
+            _ => SpeakerCorrection::Pending,
+        }
+    }
 }
 
 fn clamp_layout_value(value: f64, min: f64, max: f64) -> f64 {
@@ -237,6 +271,7 @@ fn normalized_layout_domain_speaker(raw: LayoutDomainSpeakerState) -> Speaker {
     let delay_ms = raw.delay_ms.unwrap_or(0.0).max(0.0);
     let freq_low = raw.freq_low.filter(|value| *value > 0.0);
     let freq_high = raw.freq_high.filter(|value| *value > 0.0);
+    let correction_filter = raw.correction_filter.filter(|path| !path.trim().is_empty());
 
     if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
         let x = clamp_layout_value(x, -1.0, 1.0);
@@ -261,6 +296,7 @@ fn normalized_layout_domain_speaker(raw: LayoutDomainSpeakerState) -> Speaker {
             delay_ms,
             freq_low,
             freq_high,
+            correction_filter,
         };
     }
 
@@ -286,6 +322,7 @@ fn normalized_layout_domain_speaker(raw: LayoutDomainSpeakerState) -> Speaker {
         delay_ms,
         freq_low,
         freq_high,
+        correction_filter,
     }
 }
 
@@ -345,13 +382,14 @@ pub fn apply_speakers_domain_state(s: &mut AppState, value: &str) -> bool {
 
     s.speaker_gains.clear();
     s.speaker_mutes.clear();
+    s.speaker_corrections.clear();
 
     if let Some(layout) = s
         .layouts
         .iter_mut()
         .find(|entry| entry.key == "omniphony-live")
     {
-        for speaker in &parsed.speakers {
+        for speaker in parsed.speakers {
             let key = speaker.id.to_string();
             let gain = speaker.gain.unwrap_or(1.0).clamp(0.0, 2.0);
             if (gain - 1.0).abs() > f64::EPSILON {
@@ -364,6 +402,9 @@ pub fn apply_speakers_domain_state(s: &mut AppState, value: &str) -> bool {
                 if let Some(layout_speaker) = layout.speakers.get_mut(speaker.id as usize) {
                     layout_speaker.delay_ms = delay_ms.max(0.0);
                 }
+            }
+            if let Some(correction) = speaker.correction {
+                s.speaker_corrections.insert(key, correction.into_model());
             }
         }
     }
@@ -1282,6 +1323,59 @@ mod domain_state_tests {
         });
         assert!((speaker.x - 1.0).abs() < 1e-6, "x {}", speaker.x);
         assert!(speaker.y.abs() < 1e-6 && speaker.z.abs() < 1e-6);
+    }
+
+    /// A speaker's correction filter arrives with the live layout, and how the
+    /// renderer loaded it with the speakers' state; a speaker without a
+    /// filter carries no status, and a status the Studio does not know reads
+    /// as pending.
+    #[test]
+    fn correction_filters_reach_the_live_layout_and_their_status() {
+        use crate::model::app_state::SpeakerCorrection;
+        let mut state = AppState::default();
+        assert!(apply_layout_domain_state(
+            &mut state,
+            r#"{"speakers":[{"name":"L","azimuth":-30},{"name":"R","azimuth":30,"correction_filter":"/f/R.wav"}]}"#,
+        ));
+        let live = state
+            .layouts
+            .iter()
+            .find(|l| l.key == "omniphony-live")
+            .unwrap();
+        assert_eq!(live.speakers[0].correction_filter, None);
+        assert_eq!(
+            live.speakers[1].correction_filter.as_deref(),
+            Some("/f/R.wav")
+        );
+
+        assert!(apply_speakers_domain_state(
+            &mut state,
+            r#"{"speakers":[{"id":0,"gain":1,"correction":null},
+                {"id":1,"gain":1,"correction":{"file":"/f/R.wav","state":"loaded","taps":8192,"sourceRate":44100}}]}"#,
+        ));
+        assert_eq!(state.speaker_corrections.get("0"), None);
+        assert_eq!(
+            state.speaker_corrections.get("1"),
+            Some(&SpeakerCorrection::Loaded {
+                taps: 8192,
+                source_rate: 44100
+            })
+        );
+        assert!(apply_speakers_domain_state(
+            &mut state,
+            r#"{"speakers":[{"id":1,"correction":{"file":"/f/R.wav","state":"error","error":"gone"}},
+                {"id":2,"correction":{"file":"x","state":"later"}}]}"#,
+        ));
+        assert_eq!(
+            state.speaker_corrections.get("1"),
+            Some(&SpeakerCorrection::Failed {
+                error: "gone".into()
+            })
+        );
+        assert_eq!(
+            state.speaker_corrections.get("2"),
+            Some(&SpeakerCorrection::Pending)
+        );
     }
 
     /// The domain states arrive from the network as JSON: anything that is not

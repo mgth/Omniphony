@@ -27,6 +27,13 @@ pub struct Speaker {
     pub freq_low: Option<f32>,
     #[serde(rename = "freqHigh", default, skip_serializing_if = "Option::is_none")]
     pub freq_high: Option<f32>,
+    /// Room correction filter file the renderer convolves this output with.
+    #[serde(
+        rename = "correctionFilter",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub correction_filter: Option<String>,
 }
 
 fn default_radius_m() -> f64 {
@@ -99,6 +106,8 @@ struct ExportSpeaker<'a> {
     freq_low: Option<f32>,
     #[serde(rename = "freqHigh", skip_serializing_if = "Option::is_none")]
     freq_high: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    correction_filter: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -148,6 +157,9 @@ fn format_layout_as_yaml(layout: &ExportLayout<'_>) -> String {
         }
         if let Some(freq_high) = speaker.freq_high {
             text.push_str(&format!("    freq_high: {}\n", freq_high));
+        }
+        if let Some(path) = speaker.correction_filter {
+            text.push_str(&format!("    correction_filter: {}\n", yaml_quote(path)));
         }
     }
     text
@@ -212,6 +224,10 @@ struct RawSpeaker {
     freq_high: Option<f64>,
     #[serde(default, rename = "freq_high")]
     freq_high_snake: Option<f64>,
+    #[serde(default, rename = "correctionFilter")]
+    correction_filter: Option<String>,
+    #[serde(default, rename = "correction_filter")]
+    correction_filter_snake: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -287,6 +303,10 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         .or(raw.freq_high_snake)
         .map(|v| v.max(0.0) as f32)
         .filter(|&v| v > 0.0);
+    let correction_filter = raw
+        .correction_filter
+        .or(raw.correction_filter_snake)
+        .filter(|path| !path.trim().is_empty());
 
     if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
         let x = clamp(x, -1.0, 1.0);
@@ -306,6 +326,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
             delay_ms,
             freq_low,
             freq_high,
+            correction_filter,
         };
     }
 
@@ -327,6 +348,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         delay_ms,
         freq_low,
         freq_high,
+        correction_filter,
     }
 }
 
@@ -749,6 +771,7 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
                     delay_ms: speaker.delay_ms.max(0.0),
                     freq_low: speaker.freq_low,
                     freq_high: speaker.freq_high,
+                    correction_filter: speaker.correction_filter.as_deref(),
                 }
             })
             .collect(),
@@ -796,6 +819,7 @@ mod tests {
             delay_ms: 0.0,
             freq_low: None,
             freq_high: None,
+            correction_filter: None,
         }
     }
 

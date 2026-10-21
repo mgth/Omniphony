@@ -190,6 +190,40 @@ pub fn control_speaker_delay(state: &SharedState, id: i32, delay_ms: f32) {
     );
 }
 
+/// Name speaker `id`'s room correction filter file, or remove it with
+/// `None`. The renderer loads it and reports how on `/state/speakers`; until
+/// then the speaker reads as pending.
+pub fn control_speaker_correction_filter(state: &SharedState, id: i32, path: Option<String>) {
+    use crate::model::app_state::SpeakerCorrection;
+    let id = id.max(0);
+    let path = path.map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
+    {
+        let mut live = state.inner.lock().unwrap();
+        if let Some(speaker) = live
+            .app
+            .layouts
+            .iter_mut()
+            .find(|layout| layout.key == "omniphony-live")
+            .and_then(|layout| layout.speakers.get_mut(id as usize))
+        {
+            speaker.correction_filter = path.clone();
+        }
+        let key = id.to_string();
+        if path.is_some() {
+            live.app
+                .speaker_corrections
+                .insert(key, SpeakerCorrection::Pending);
+        } else {
+            live.app.speaker_corrections.remove(&key);
+        }
+    }
+    send_json_control(
+        &state.osc_tx,
+        osc_contract::CONTROL_CONFIG_SPEAKERS,
+        serde_json::json!({ "speakerEdits": [{ "id": id, "correctionFilter": path }] }),
+    );
+}
+
 pub fn control_speaker_spatialize(state: &SharedState, id: i32, spatialize: i32) {
     send_json_control(
         &state.osc_tx,

@@ -1470,6 +1470,7 @@ mod panel_event_tests {
             delay_ms: 0.0,
             freq_low: None,
             freq_high: None,
+            correction_filter: None,
         }]);
         // A channel routed to it, whose own position says floor.
         let direct = SourcePosition {

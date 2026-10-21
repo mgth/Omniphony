@@ -694,6 +694,19 @@ impl SourceBounds {
     }
 }
 
+/// How the renderer loaded a speaker's room correction filter
+/// (`correction` in `/omniphony/state/speakers`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum SpeakerCorrection {
+    /// Asked for, not prepared yet.
+    Pending,
+    /// Running: its length at the engine rate and the rate it was designed at.
+    Loaded { taps: u64, source_rate: u64 },
+    /// Not applied (the speaker plays unfiltered), with the renderer's reason.
+    Failed { error: String },
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppState {
     pub sources: HashMap<String, SourcePosition>,
@@ -730,6 +743,10 @@ pub struct AppState {
     pub source_bounds: SourceBounds,
     #[serde(rename = "speakerMutes")]
     pub speaker_mutes: HashMap<String, u8>,
+    /// How the renderer loaded each speaker's room correction filter, keyed
+    /// like [`Self::speaker_gains`]; absent where the speaker has none.
+    #[serde(rename = "speakerCorrections", default)]
+    pub speaker_corrections: HashMap<String, SpeakerCorrection>,
     #[serde(rename = "roomRatio")]
     pub room_ratio: RoomRatio,
     pub spread: SpreadState,
@@ -1317,6 +1334,7 @@ impl Default for AppState {
             object_mutes: HashMap::new(),
             source_bounds: SourceBounds::default(),
             speaker_mutes: HashMap::new(),
+            speaker_corrections: HashMap::new(),
             room_ratio: RoomRatio::default(),
             spread: SpreadState::default(),
             loudness: None,
