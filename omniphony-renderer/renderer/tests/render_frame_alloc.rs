@@ -491,3 +491,115 @@ fn a_warmed_up_render_with_output_correction_does_not_allocate() {
     let _ = std::fs::remove_file(long_path);
     let _ = std::fs::remove_file(short_path);
 }
+
+/// The live transitions of the correction, with its worker building the
+/// filter sets as a running host has it: the first filter arriving, the
+/// correction switched off and on again, the filter replaced, the last one
+/// removed. The worker allocates; the render thread, which only takes what
+/// it hands over and hands back what it replaces, does not.
+#[test]
+fn output_correction_transitions_do_not_allocate_on_the_render_thread() {
+    use renderer::output_correction::{FilterSource, OutputFilters};
+    let long: Vec<f32> = (0..20_000)
+        .map(|i| (-(i as f32) / 3000.0).exp() * if i % 2 == 0 { 0.5 } else { -0.4 })
+        .collect();
+    let long_path = filter_file("transition-long", &long);
+    let short_path = filter_file("transition-short", &[0.7, 0.2, 0.1]);
+    let file = |p: &std::path::Path| Some(FilterSource::File(p.to_string_lossy().into()));
+    let first = OutputFilters::new(vec![file(&long_path), None, None]);
+    let replaced = first.with(0, file(&short_path)).unwrap();
+    let removed = replaced.with(0, None).unwrap();
+
+    let mut r = renderer();
+    let control = r.renderer_control();
+    let pcm: Vec<f32> = (0..BLOCK * CHANNELS)
+        .map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 16) as f32 / 65535.0 - 0.5)
+        .collect();
+    let mut evs = Vec::with_capacity(CHANNELS);
+    let mut buf = Vec::new();
+    let mut block = 0;
+    // Render until `done` holds (the worker's set has landed), counting the
+    // render thread's allocations; give the worker time between blocks.
+    let mut run = |r: &mut SpatialRenderer, done: &dyn Fn(&SpatialRenderer) -> bool| -> u64 {
+        let mut allocations = 0;
+        for i in 0..4000 {
+            events(block, &mut evs);
+            block += 1;
+            let ((), n) = count_allocations(|| {
+                let frame = r
+                    .render_frame(&pcm, CHANNELS, &evs, std::mem::take(&mut buf), true)
+                    .unwrap();
+                buf = r.recycle_frame(frame);
+            });
+            allocations += n;
+            // Past two periods of the 8192-sample level once it has landed.
+            if i > 1200 && done(r) {
+                return allocations;
+            }
+            if i % 20 == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        panic!("the transition never landed");
+    };
+    // Warm up without any filter: a fresh renderer allocates its first
+    // blocks, which is not what this test is about.
+    run(&mut r, &|_| true);
+    let base = r.output_latency_samples();
+    let active = move |r: &SpatialRenderer| r.output_latency_samples() == base + 127;
+    let loaded = |filters: &OutputFilters| {
+        let control = control.clone();
+        let generation = filters.generation;
+        move |r: &SpatialRenderer| {
+            control.output_correction_status().generation == generation && active(r)
+        }
+    };
+    type Change = Box<dyn Fn(&mut LiveParams)>;
+    type Done = Box<dyn Fn(&SpatialRenderer) -> bool>;
+    let steps: [(&str, Change, Done); 5] = [
+        (
+            "first filter",
+            Box::new({
+                let f = first.clone();
+                move |live| live.output_filters = f.clone()
+            }),
+            Box::new(loaded(&first)),
+        ),
+        (
+            "correction off",
+            Box::new(|live| live.options.output_correction = false),
+            Box::new(active),
+        ),
+        (
+            "correction on",
+            Box::new(|live| live.options.output_correction = true),
+            Box::new(active),
+        ),
+        (
+            "filter replaced",
+            Box::new({
+                let f = replaced.clone();
+                move |live| live.output_filters = f.clone()
+            }),
+            Box::new(loaded(&replaced)),
+        ),
+        (
+            "last filter removed",
+            Box::new({
+                let f = removed.clone();
+                move |live| live.output_filters = f.clone()
+            }),
+            Box::new(move |r: &SpatialRenderer| r.output_latency_samples() == base),
+        ),
+    ];
+    for (name, change, done) in steps {
+        change(&mut control.live.write());
+        let allocations = run(&mut r, &*done);
+        assert_eq!(
+            allocations, 0,
+            "{name}: {allocations} allocation(s) on the render thread"
+        );
+    }
+    let _ = std::fs::remove_file(long_path);
+    let _ = std::fs::remove_file(short_path);
+}

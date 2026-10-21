@@ -168,9 +168,20 @@ pub struct OutputCorrectionStatus {
 /// Where the worker reports each prepared set.
 pub type OutputCorrectionStatusSink = Arc<dyn Fn(OutputCorrectionStatus) + Send + Sync>;
 
-/// Read a filter and bring it to `sample_rate`: the samples and the rate the
-/// file was at.
-pub fn load_filter(source: &FilterSource, sample_rate: u32) -> Result<(Vec<f32>, u32), String> {
+/// A filter brought to the engine rate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadedFilter {
+    /// The impulse response at the engine rate.
+    pub taps: Vec<f32>,
+    /// Rate the filter was designed at (the file's).
+    pub source_rate: u32,
+    /// Samples the response was moved later by to keep the whole of it
+    /// through a rate change ([`resample_filter`]); 0 at the engine rate.
+    pub delay: usize,
+}
+
+/// Read a filter and bring it to `sample_rate`.
+pub fn load_filter(source: &FilterSource, sample_rate: u32) -> Result<LoadedFilter, String> {
     match source {
         FilterSource::File(path) => {
             let path: &str = path;
@@ -191,7 +202,7 @@ pub fn load_filter(source: &FilterSource, sample_rate: u32) -> Result<(Vec<f32>,
 }
 
 /// [`load_filter`] on a WAV file's bytes.
-fn filter_from_wav(bytes: &[u8], sample_rate: u32) -> Result<(Vec<f32>, u32), String> {
+fn filter_from_wav(bytes: &[u8], sample_rate: u32) -> Result<LoadedFilter, String> {
     let wav = crate::object_test::clip::parse_wav(bytes)?;
     if wav.channels != 1 {
         return Err(format!(
@@ -213,37 +224,132 @@ fn filter_from_wav(bytes: &[u8], sample_rate: u32) -> Result<(Vec<f32>, u32), St
             wav.samples.len() as f64 / source_rate as f64
         ));
     }
-    let mut taps = if source_rate == sample_rate {
-        wav.samples
+    if wav.samples.iter().any(|t| !t.is_finite()) {
+        return Err("the filter holds non-finite samples".to_string());
+    }
+    let (mut taps, delay) = if source_rate == sample_rate {
+        (wav.samples, 0)
     } else {
         resample_filter(&wav.samples, source_rate, sample_rate)
     };
-    taps.truncate(max_taps);
+    taps.truncate(max_taps + delay);
     // Trailing zeros cost partitions for nothing.
     let end = taps.iter().rposition(|&t| t != 0.0).map_or(0, |i| i + 1);
     taps.truncate(end);
     if taps.is_empty() {
         return Err("the filter is silent".to_string());
     }
-    if taps.iter().any(|t| !t.is_finite()) {
-        return Err("the filter holds non-finite samples".to_string());
-    }
-    Ok((taps, source_rate))
+    Ok(LoadedFilter {
+        taps,
+        source_rate,
+        delay,
+    })
 }
 
-/// A filter designed at `from` Hz as the same frequency response at `to` Hz.
-/// Interpolating an impulse response at a different rate samples it at a
-/// different density, which scales its gain by `to / from`; the
-/// `from / to` factor puts it back.
-fn resample_filter(taps: &[f32], from: u32, to: u32) -> Vec<f32> {
-    let kernel = crate::binaural::measured::ResampleKernel::new(from, to);
-    let mut out = Vec::new();
-    kernel.resample_into(taps, &mut out);
-    let scale = from as f32 / to as f32;
-    for t in &mut out {
-        *t *= scale;
+/// Half-width of the interpolation kernel that moves a filter between
+/// rates, in samples of the lower rate. Long enough for a flat passband to
+/// 90 % of the lower Nyquist with the images and aliases ~90 dB down; the
+/// binaural resampler's 16 is made for HRIRs, which nobody listens to near
+/// Nyquist, and lets a downsampled filter alias by most of a dB at 19 kHz.
+const FILTER_HALF_WIDTH: usize = 64;
+
+/// Kaiser window shape for that kernel (≈ 90 dB of stopband).
+const FILTER_KAISER_BETA: f64 = 8.6;
+
+/// Cut-off of that kernel as a fraction of the lower Nyquist: the band above
+/// it, which only a filter's top 5 % reaches, is given to the transition.
+const FILTER_CUTOFF: f64 = 0.95;
+
+/// A filter designed at `from` Hz as the same response at `to` Hz, and the
+/// samples it was moved later by.
+///
+/// Band-limited interpolation spreads each tap over a symmetric kernel: a
+/// tap at time zero also lands on the samples before it. A causal filter
+/// with energy at its start (a minimum-phase correction, or the identity)
+/// keeps its response only with that part, so the filter is padded ahead by
+/// at least the kernel's half-width and moved later by as much — chosen so
+/// that the move is a whole number of samples at both rates. The stage
+/// delays every output by the same amount, so the outputs stay aligned.
+///
+/// Interpolating an impulse response at another rate also samples it at
+/// another density, which scales its gain by `to / from`; the `from / to`
+/// factor puts it back.
+fn resample_filter(taps: &[f32], from: u32, to: u32) -> (Vec<f32>, usize) {
+    let g = gcd(from, to) as usize;
+    let (from_g, to_g) = (from as usize / g, to as usize / g);
+    // In samples of the source: the kernel's half-width at the lower rate.
+    let half = (FILTER_HALF_WIDTH * from as usize).div_ceil(from.min(to) as usize);
+    let pad = half.div_ceil(from_g) * from_g;
+    let delay = pad / from_g * to_g;
+    let mut padded = vec![0.0f64; pad + taps.len() + half];
+    for (p, &t) in padded[pad..].iter_mut().zip(taps) {
+        *p = t as f64;
     }
-    out
+    // Cut-off in cycles per source sample, and the kernel tabulated for the
+    // `to_g` fractional positions an output sample can fall on.
+    let cutoff = FILTER_CUTOFF * (to as f64 / from as f64).min(1.0);
+    let width = 2 * half;
+    let i0_beta = bessel_i0(FILTER_KAISER_BETA);
+    let table: Vec<f64> = (0..to_g)
+        .flat_map(|phase| {
+            let frac = (phase * from_g % to_g) as f64 / to_g as f64;
+            (0..width).map(move |j| {
+                let d = frac + half as f64 - 1.0 - j as f64;
+                let x = d / half as f64;
+                if x.abs() >= 1.0 {
+                    return 0.0;
+                }
+                let window = bessel_i0(FILTER_KAISER_BETA * (1.0 - x * x).sqrt()) / i0_beta;
+                let arg = std::f64::consts::PI * cutoff * d;
+                let sinc = if arg.abs() < 1e-12 {
+                    1.0
+                } else {
+                    arg.sin() / arg
+                };
+                cutoff * sinc * window
+            })
+        })
+        .collect();
+    let out_len = padded.len() * to_g / from_g;
+    let scale = from as f64 / to as f64;
+    let out = (0..out_len)
+        .map(|n| {
+            // First source sample the row multiplies: the integer part of
+            // `n · from / to`, less the half-width.
+            let k0 = (n * from_g / to_g) as isize - half as isize + 1;
+            let row = &table[(n % to_g) * width..][..width];
+            let acc: f64 = row
+                .iter()
+                .enumerate()
+                .filter_map(|(j, &w)| {
+                    let k = k0 + j as isize;
+                    (k >= 0 && (k as usize) < padded.len()).then(|| padded[k as usize] * w)
+                })
+                .sum();
+            (acc * scale) as f32
+        })
+        .collect();
+    (out, delay)
+}
+
+/// Modified Bessel function of the first kind, order 0 (the Kaiser window's).
+fn bessel_i0(x: f64) -> f64 {
+    let mut sum = 1.0;
+    let mut term = 1.0;
+    let half = x / 2.0;
+    for k in 1..64 {
+        term *= half / k as f64;
+        let t = term * term;
+        sum += t;
+        if t < sum * 1e-17 {
+            break;
+        }
+    }
+    sum
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 /// What the stage is asked for: the filter set, whether the correction is
@@ -266,7 +372,12 @@ struct Geometry {
 /// The partitioned filters of every output, cut for one [`Geometry`].
 struct Bank {
     geometry: Geometry,
-    /// Indexed by output; `None` leaves the output unfiltered.
+    /// Samples every output is delayed by besides the head block: the
+    /// longest move of a resampled filter ([`resample_filter`]). An output
+    /// without a filter then plays through a unit filter at this delay.
+    delay: usize,
+    /// Indexed by output; `None` leaves the output unfiltered (only when
+    /// `delay` is 0).
     kernels: Vec<Option<NonUniformKernel>>,
 }
 
@@ -278,7 +389,9 @@ struct TailBanks {
     outgoing: Option<Arc<Bank>>,
 }
 
-/// The streaming state of every output, sized for one [`Geometry`].
+/// The streaming state of every output, sized for one [`Geometry`], with the
+/// buffers the stage writes its output into: everything the audio thread
+/// needs to start on new streams, built on the worker.
 struct Streams {
     geometry: Geometry,
     /// One head history per output.
@@ -287,6 +400,10 @@ struct Streams {
     tails: Vec<TailStreams>,
     /// One entry per tail segment.
     tail_banks: Vec<TailBanks>,
+    /// Per output: the block being produced.
+    blocks: Vec<Vec<f32>>,
+    /// Interleaved output of the last completed block.
+    fifo: Vec<f32>,
 }
 
 impl Streams {
@@ -299,6 +416,8 @@ impl Streams {
             inputs: Vec::new(),
             tails: Vec::new(),
             tail_banks: Vec::new(),
+            blocks: Vec::new(),
+            fifo: Vec::new(),
         }
     }
 
@@ -321,15 +440,29 @@ impl Streams {
                     outgoing: None,
                 })
                 .collect(),
+            blocks: vec![vec![0.0; CORRECTION_BLOCK]; outputs],
+            fifo: vec![0.0; outputs * CORRECTION_BLOCK],
         }
     }
 }
 
 /// A prepared set: the bank, and the streams when the geometry changed.
+/// Shared with the audio thread through the incoming slot; the streams are
+/// taken out under a lock nobody else holds by then, so the audio thread
+/// moves them in without unwrapping (and freeing) the `Arc`.
 struct Prepared {
     key: Key,
     bank: Arc<Bank>,
-    streams: Option<Streams>,
+    streams: parking_lot::Mutex<Option<Streams>>,
+}
+
+/// What the audio thread hands back to the worker to be freed there. The
+/// fields are never read: they are carried only to be dropped.
+#[allow(dead_code)]
+enum Retired {
+    Bank(Arc<Bank>),
+    Streams(Streams),
+    Prepared(Arc<Prepared>),
 }
 
 enum Request {
@@ -344,7 +477,10 @@ enum Request {
     Drop(Retired),
 }
 
-type Retired = Box<dyn std::any::Any + Send>;
+/// Requests and retirements in flight. The channel is bounded, so its slots
+/// are allocated once with it and a send from the audio thread never
+/// allocates; the worker drains it as fast as it fills.
+const CHANNEL_CAPACITY: usize = 64;
 
 /// See the module doc.
 pub struct OutputCorrectionStage {
@@ -356,16 +492,12 @@ pub struct OutputCorrectionStage {
     /// The bank on its way out during the block a swap lands in.
     fade_from: Option<Arc<Bank>>,
     incoming: Arc<ArcSwapOption<Prepared>>,
-    request_tx: mpsc::Sender<Request>,
+    request_tx: mpsc::SyncSender<Request>,
     streams: Streams,
     /// The head's partition of a one-tap unit filter: what an output without
     /// a filter ramps from or to.
     identity: PartitionedKernel,
     scratch: OutputScratch,
-    /// Per output: the block being produced.
-    blocks: Vec<Vec<f32>>,
-    /// Interleaved output of the last completed block.
-    fifo: Vec<f32>,
     read_pos: usize,
     sink: OutputCorrectionStatusSink,
     synchronous_builds: bool,
@@ -386,7 +518,7 @@ impl OutputCorrectionStage {
         debug_assert_eq!(ladder[0], CORRECTION_BLOCK);
         let plan = NonUniformPlan::new(ladder);
         let incoming: Arc<ArcSwapOption<Prepared>> = Arc::new(ArcSwapOption::empty());
-        let (request_tx, request_rx) = mpsc::channel::<Request>();
+        let (request_tx, request_rx) = mpsc::sync_channel::<Request>(CHANNEL_CAPACITY);
         {
             let plan = plan.clone();
             let slot = Arc::clone(&incoming);
@@ -410,8 +542,6 @@ impl OutputCorrectionStage {
             incoming,
             request_tx,
             streams: Streams::empty(),
-            blocks: Vec::new(),
-            fifo: Vec::new(),
             read_pos: 0,
             sink,
             synchronous_builds: false,
@@ -436,20 +566,20 @@ impl OutputCorrectionStage {
         self.bank.is_some() && !self.streams.inputs.is_empty()
     }
 
-    /// Samples the stage delays the outputs by: `CORRECTION_BLOCK − 1` while
-    /// active, else 0.
+    /// Samples the stage delays the outputs by while active: the head block
+    /// (`CORRECTION_BLOCK − 1`), plus the move of a resampled filter. 0 while
+    /// inactive.
     pub fn latency_samples(&self) -> usize {
-        if self.is_active() {
-            self.plan.head().latency_samples()
-        } else {
-            0
+        match &self.bank {
+            Some(bank) if self.is_active() => self.plan.head().latency_samples() + bank.delay,
+            _ => 0,
         }
     }
 
-    fn retire(&self, r: Retired) {
-        // A closed channel means the worker is gone (the stage is being torn
-        // down); dropping here is then the only option.
-        let _ = self.request_tx.send(Request::Drop(r));
+    /// Hand `retired` to the worker to be freed. Should the channel be full
+    /// (or the worker gone, the stage being torn down), it is freed here.
+    fn retire(&self, retired: Retired) {
+        let _ = self.request_tx.try_send(Request::Drop(retired));
     }
 
     /// The worker: reads and partitions filter sets, frees what the audio
@@ -494,11 +624,11 @@ impl OutputCorrectionStage {
         sample_rate: u32,
         sink: &OutputCorrectionStatusSink,
     ) -> Prepared {
-        let mut taps: Vec<Option<Vec<f32>>> = Vec::with_capacity(key.outputs);
+        let mut loaded: Vec<Option<LoadedFilter>> = Vec::with_capacity(key.outputs);
         let mut statuses = Vec::with_capacity(key.outputs);
         for output in 0..key.outputs {
             let Some(source) = filters.source(output) else {
-                taps.push(None);
+                loaded.push(None);
                 statuses.push(None);
                 continue;
             };
@@ -507,10 +637,10 @@ impl OutputCorrectionStage {
                 ..FilterStatus::default()
             };
             match load_filter(source, sample_rate) {
-                Ok((samples, source_rate)) => {
-                    status.taps = samples.len();
-                    status.source_rate = source_rate;
-                    taps.push(key.enabled.then_some(samples));
+                Ok(filter) => {
+                    status.taps = filter.taps.len() - filter.delay.min(filter.taps.len());
+                    status.source_rate = filter.source_rate;
+                    loaded.push(Some(filter));
                 }
                 Err(e) => {
                     log::warn!(
@@ -518,7 +648,7 @@ impl OutputCorrectionStage {
                         status.source
                     );
                     status.error = Some(e);
-                    taps.push(None);
+                    loaded.push(None);
                 }
             }
             statuses.push(Some(status));
@@ -528,6 +658,25 @@ impl OutputCorrectionStage {
             sample_rate,
             outputs: statuses,
         });
+        // One delay for every output, filtered or not, and whether the
+        // correction is on or off: switching it must not move the outputs.
+        let delay = loaded.iter().flatten().map(|f| f.delay).max().unwrap_or(0);
+        let taps: Vec<Option<Vec<f32>>> = loaded
+            .into_iter()
+            .map(|filter| match filter {
+                Some(filter) if key.enabled => {
+                    let mut taps = vec![0.0; delay - filter.delay];
+                    taps.extend_from_slice(&filter.taps);
+                    Some(taps)
+                }
+                _ if delay > 0 => {
+                    let mut unit = vec![0.0; delay + 1];
+                    unit[delay] = 1.0;
+                    Some(unit)
+                }
+                _ => None,
+            })
+            .collect();
         let longest = taps.iter().flatten().map(Vec::len).max().unwrap_or(1);
         let geometry = match current {
             Some(g) if g.outputs == key.outputs && longest <= g.taps => g,
@@ -539,19 +688,26 @@ impl OutputCorrectionStage {
         let levels = plan.levels_for(geometry.taps);
         let bank = Arc::new(Bank {
             geometry,
+            delay,
             kernels: taps
                 .iter()
                 .map(|t| t.as_deref().map(|t| plan.partition(t, levels)))
                 .collect(),
         });
         let streams = (current != Some(geometry)).then(|| Streams::new(plan, &bank));
-        Prepared { key, bank, streams }
+        Prepared {
+            key,
+            bank,
+            streams: parking_lot::Mutex::new(streams),
+        }
     }
 
     /// Follow the live filters; called once per frame from the audio thread
     /// before [`Self::process`]. Steady state is one compare. A change asks
     /// the worker for the new set; the stage keeps the current one until it
-    /// lands. Without any filter the stage stops at once.
+    /// lands. Without any filter the stage stops at once. Nothing here
+    /// allocates: sets are built on the worker, and what is replaced goes
+    /// back to it.
     pub fn ensure(&mut self, filters: &OutputFilters, enabled: bool, outputs: usize) {
         if !filters.any() || outputs == 0 {
             if self.key.is_some() {
@@ -564,23 +720,22 @@ impl OutputCorrectionStage {
             enabled,
             outputs,
         };
-        if self.key != Some(key) {
+        // A request the channel could not take is asked again next frame.
+        if self.key != Some(key) && self.request(key, filters.clone()) {
             self.key = Some(key);
-            self.request(key, filters.clone());
         }
         if let Some(prepared) = self.incoming.swap(None) {
-            match Arc::try_unwrap(prepared) {
-                Ok(prepared) if self.key == Some(prepared.key) => self.adopt(prepared, filters),
-                Ok(prepared) => self.retire(Box::new(prepared)),
-                Err(_) => unreachable!("the incoming slot held the only reference"),
+            if self.key == Some(prepared.key) {
+                self.adopt(&prepared, filters);
             }
+            self.retire(Retired::Prepared(prepared));
         }
     }
 
     /// Ask for `key`'s set: through the worker, or here with synchronous
     /// builds (published through the worker's slot, so it is adopted the same
-    /// way, on this frame).
-    fn request(&mut self, key: Key, filters: OutputFilters) {
+    /// way, on this frame). `false` when the worker's channel is full.
+    fn request(&mut self, key: Key, filters: OutputFilters) -> bool {
         let current = (!self.streams.inputs.is_empty()).then_some(self.streams.geometry);
         if self.synchronous_builds {
             let prepared = Self::prepare(
@@ -592,51 +747,54 @@ impl OutputCorrectionStage {
                 &self.sink,
             );
             self.incoming.store(Some(Arc::new(prepared)));
+            true
         } else {
-            let _ = self.request_tx.send(Request::Prepare {
+            match self.request_tx.try_send(Request::Prepare {
                 key,
                 filters,
                 current,
-            });
+            }) {
+                Ok(()) => true,
+                Err(mpsc::TrySendError::Full(_)) => false,
+                // The worker is gone: nothing will ever come, do not ask
+                // again on every frame.
+                Err(mpsc::TrySendError::Disconnected(_)) => true,
+            }
         }
     }
 
     /// Take a prepared set: new streams start from silence, a bank for the
     /// running streams ramps in over the next block.
-    fn adopt(&mut self, prepared: Prepared, filters: &OutputFilters) {
-        let Prepared { bank, streams, key } = prepared;
-        if let Some(streams) = streams {
+    fn adopt(&mut self, prepared: &Prepared, filters: &OutputFilters) {
+        let bank = Arc::clone(&prepared.bank);
+        if let Some(streams) = prepared.streams.lock().take() {
             let old = std::mem::replace(&mut self.streams, streams);
             if !old.inputs.is_empty() {
-                self.retire(Box::new(old));
+                self.retire(Retired::Streams(old));
             }
             if let Some(old) = self.bank.replace(bank) {
-                self.retire(Box::new(old));
+                self.retire(Retired::Bank(old));
             }
             if let Some(old) = self.fade_from.take() {
-                self.retire(Box::new(old));
+                self.retire(Retired::Bank(old));
             }
-            let outputs = self.streams.geometry.outputs;
-            if self.blocks.len() != outputs {
-                self.blocks = vec![vec![0.0; CORRECTION_BLOCK]; outputs];
-            }
-            self.fifo.clear();
-            self.fifo.resize(outputs * CORRECTION_BLOCK, 0.0);
             self.read_pos = 0;
             return;
         }
         if bank.geometry != self.streams.geometry {
             // Cut for streams that were replaced while it was prepared (a
             // set landing in between): ask again for the streams running now.
-            self.retire(Box::new(bank));
-            self.request(key, filters.clone());
+            self.retire(Retired::Bank(bank));
+            if !self.request(prepared.key, filters.clone()) {
+                self.key = None;
+            }
             return;
         }
         match self.bank.replace(bank) {
             Some(old) => {
                 if let Some(prev) = self.fade_from.replace(old) {
                     // Two swaps in one block: the middle bank never played.
-                    self.retire(Box::new(prev));
+                    self.retire(Retired::Bank(prev));
                 }
             }
             None => unreachable!("a bank without streams arrives only for running streams"),
@@ -655,18 +813,18 @@ impl OutputCorrectionStage {
     fn stop(&mut self) {
         self.key = None;
         if let Some(old) = self.bank.take() {
-            self.retire(Box::new(old));
+            self.retire(Retired::Bank(old));
         }
         if let Some(old) = self.fade_from.take() {
-            self.retire(Box::new(old));
+            self.retire(Retired::Bank(old));
         }
         let old = std::mem::replace(&mut self.streams, Streams::empty());
         if !old.inputs.is_empty() {
-            self.retire(Box::new(old));
+            self.retire(Retired::Streams(old));
         }
         // A set still on its way is for the filters just dropped.
         if let Some(prepared) = self.incoming.swap(None) {
-            self.retire(Box::new(prepared));
+            self.retire(Retired::Prepared(prepared));
         }
     }
 
@@ -686,7 +844,7 @@ impl OutputCorrectionStage {
                 self.process_block();
             }
             let at = self.read_pos * outputs;
-            frame.copy_from_slice(&self.fifo[at..at + outputs]);
+            frame.copy_from_slice(&self.streams.fifo[at..at + outputs]);
             self.read_pos += 1;
         }
     }
@@ -700,6 +858,8 @@ impl OutputCorrectionStage {
             inputs,
             tails,
             tail_banks,
+            blocks,
+            fifo,
             ..
         } = &mut self.streams;
         for input in inputs.iter_mut() {
@@ -710,7 +870,7 @@ impl OutputCorrectionStage {
         }
         let bank = self.bank.as_ref().expect("active");
         let fade_from = self.fade_from.as_deref();
-        for (o, (input, out)) in inputs.iter().zip(&mut self.blocks).enumerate() {
+        for (o, (input, out)) in inputs.iter().zip(blocks.iter_mut()).enumerate() {
             let incoming = bank.kernels[o].as_ref();
             match fade_from {
                 None => match incoming {
@@ -735,7 +895,7 @@ impl OutputCorrectionStage {
             if tails[0].period_starts(segment) {
                 if let Some(old) = banks.outgoing.take() {
                     // What `retire` does, without borrowing the whole stage.
-                    let _ = self.request_tx.send(Request::Drop(Box::new(old)));
+                    let _ = self.request_tx.try_send(Request::Drop(Retired::Bank(old)));
                 }
                 if !Arc::ptr_eq(&banks.current, bank) {
                     banks.outgoing = Some(std::mem::replace(&mut banks.current, Arc::clone(bank)));
@@ -743,7 +903,7 @@ impl OutputCorrectionStage {
             }
             let current = &*banks.current;
             let outgoing = banks.outgoing.as_deref();
-            for (o, (tail, out)) in tails.iter_mut().zip(&mut self.blocks).enumerate() {
+            for (o, (tail, out)) in tails.iter_mut().zip(blocks.iter_mut()).enumerate() {
                 tail.run(
                     segment,
                     outgoing.is_some(),
@@ -759,12 +919,12 @@ impl OutputCorrectionStage {
             }
         }
         if let Some(old) = self.fade_from.take() {
-            self.retire(Box::new(old));
+            let _ = self.request_tx.try_send(Request::Drop(Retired::Bank(old)));
         }
-        let outputs = self.blocks.len();
-        for (o, block) in self.blocks.iter().enumerate() {
+        let outputs = blocks.len();
+        for (o, block) in blocks.iter().enumerate() {
             for (i, &v) in block.iter().enumerate() {
-                self.fifo[i * outputs + o] = v;
+                fifo[i * outputs + o] = v;
             }
         }
         self.read_pos = 0;
@@ -1107,32 +1267,99 @@ mod tests {
         assert_eq!(out, x);
     }
 
+    /// Response of `h` at `f` Hz when played at `fs`: (gain, phase with the
+    /// delay `delay` samples removed).
+    fn response(h: &[f32], fs: f64, f: f64, delay: usize) -> (f64, f64) {
+        let (re, im) = h
+            .iter()
+            .enumerate()
+            .fold((0.0f64, 0.0f64), |(re, im), (n, &v)| {
+                let w = -2.0 * std::f64::consts::PI * f * (n as f64 - delay as f64) / fs;
+                (re + v as f64 * w.cos(), im + v as f64 * w.sin())
+            });
+        ((re * re + im * im).sqrt(), im.atan2(re))
+    }
+
+    /// A filter moved to another rate keeps its response, magnitude and
+    /// phase, once its common delay is taken out: the identity and a
+    /// minimum-phase lowpass (both with their energy at time zero, where an
+    /// interpolation that drops the kernel's first half loses most), over
+    /// the rate pairs a filter file and an engine come in, up to 85 % of
+    /// the lower Nyquist (18.7 kHz between 44.1 and 48 kHz), where the
+    /// interpolation kernel's own roll-off starts.
     #[test]
-    fn a_filter_at_another_rate_keeps_its_frequency_response() {
-        // A one-pole lowpass at 44.1 kHz: its DC gain (the sum of the taps)
-        // and its gain at 1 kHz must survive the move to 48 kHz.
-        let from = 44_100;
+    fn a_filter_at_another_rate_keeps_its_response() {
+        let mut identity = vec![0.0f32; 256];
+        identity[0] = 1.0;
         let a = 0.9f32;
-        let taps: Vec<f32> = (0..2000).map(|n| (1.0 - a) * a.powi(n)).collect();
-        let (out, rate) = filter_from_wav(&wav_f32(from, &taps), RATE).unwrap();
-        assert_eq!(rate, from);
-        // The filter starts on a step, which the interpolation smooths a
-        // little: a few thousandths of a dB at DC.
-        let dc: f32 = out.iter().sum();
-        assert!((20.0 * dc.log10()).abs() < 0.05, "DC gain {dc}");
-        let gain_at = |h: &[f32], fs: f32, f: f32| {
-            let (re, im) = h
-                .iter()
-                .enumerate()
-                .fold((0.0f64, 0.0f64), |(re, im), (n, &v)| {
-                    let w = -2.0 * std::f64::consts::PI * f as f64 * n as f64 / fs as f64;
-                    (re + v as f64 * w.cos(), im + v as f64 * w.sin())
-                });
-            (re * re + im * im).sqrt()
-        };
-        let g_src = gain_at(&taps, from as f32, 1000.0);
-        let g_dst = gain_at(&out, RATE as f32, 1000.0);
-        assert!((20.0 * (g_dst / g_src).log10()).abs() < 0.05);
+        let lowpass: Vec<f32> = (0..2000).map(|n| (1.0 - a) * a.powi(n)).collect();
+        let rates = [44_100u32, 48_000, 88_200, 96_000, 192_000];
+        for (name, taps) in [("identity", &identity), ("lowpass", &lowpass)] {
+            for &from in &rates {
+                for &to in &rates {
+                    if from == to {
+                        continue;
+                    }
+                    let loaded = filter_from_wav(&wav_f32(from, taps), to).unwrap();
+                    assert_eq!(loaded.source_rate, from);
+                    let nyquist = 0.5 * from.min(to) as f64;
+                    for f in [0.0, 50.0, 1000.0, 5000.0, 10_000.0, 0.85 * nyquist] {
+                        let (g_src, p_src) = response(taps, from as f64, f, 0);
+                        let (g, p) = response(&loaded.taps, to as f64, f, loaded.delay);
+                        let db = 20.0 * (g / g_src).log10();
+                        assert!(
+                            db.abs() < 0.05,
+                            "{name} {from}->{to} at {f} Hz: {db:+.3} dB"
+                        );
+                        let dp = (p - p_src + std::f64::consts::PI)
+                            .rem_euclid(2.0 * std::f64::consts::PI)
+                            - std::f64::consts::PI;
+                        assert!(
+                            dp.abs() < 0.02,
+                            "{name} {from}->{to} at {f} Hz: {dp:+.4} rad"
+                        );
+                    }
+                    // The move is a few milliseconds at most.
+                    assert!(loaded.delay as f64 / (to as f64) < 0.0035, "{from}->{to}");
+                }
+            }
+        }
+    }
+
+    /// Every output, filtered or not, takes the move of a resampled filter,
+    /// and keeps it with the correction off: the outputs stay aligned and the
+    /// latency does not change under an A/B switch.
+    #[test]
+    fn a_resampled_filter_delays_every_output_alike() {
+        let mut identity = vec![0.0f32; 64];
+        identity[0] = 1.0;
+        let (_d, src) = filter_file("resampled", 44_100, &identity);
+        let filters = OutputFilters::new(vec![Some(src), None]);
+        // Tones well inside the band both rates share.
+        let x: Vec<f32> = (0..2 * 8000)
+            .map(|i| {
+                let t = (i / 2) as f32 / RATE as f32;
+                let f = if i % 2 == 0 { 500.0 } else { 3000.0 };
+                0.5 * (2.0 * std::f32::consts::PI * f * t).sin()
+            })
+            .collect();
+        for enabled in [true, false] {
+            let mut s = stage(&CORRECTION_LADDER);
+            let out = run(&mut s, &filters, enabled, &x, 2, 512);
+            let lat = s.latency_samples();
+            assert!(lat > CORRECTION_BLOCK - 1, "the move is in the latency");
+            for o in 0..2 {
+                let (got, dry) = (channel(&out, 2, o), channel(&x, 2, o));
+                let err: f64 = (lat + 64..got.len() - 64)
+                    .map(|n| (got[n] as f64 - dry[n - lat] as f64).powi(2))
+                    .sum();
+                let sig: f64 = dry.iter().map(|&v| (v as f64).powi(2)).sum();
+                assert!(
+                    10.0 * (err / sig).log10() < -60.0,
+                    "output {o}, correction {enabled}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -205,7 +205,11 @@ fn a_correction_filter_in_the_layout_filters_its_speaker() {
     std::fs::write(&filter, wav).unwrap();
     // The first speaker of the layout (FL) takes the filter.
     let original = manifest_dir().join("../layouts/7.1.4.yaml");
-    let text = std::fs::read_to_string(&original).unwrap();
+    // Line endings as checked out (CRLF on Windows) normalised first, so the
+    // edit below finds its line on every platform.
+    let text = std::fs::read_to_string(&original)
+        .unwrap()
+        .replace("\r\n", "\n");
     let filtered = text.replacen(
         "    delay_ms: 0\n",
         &format!(
