@@ -2204,7 +2204,7 @@ dependencies = [
 [[package]]
 name = "sofar"
 version = "0.3.0"
-source = "git+https://github.com/mgth/sofar?rev=26ca8670b09bd55febc19fbdd73be5af06825ddb#26ca8670b09bd55febc19fbdd73be5af06825ddb"
+source = "git+https://github.com/mgth/sofar?rev=01a08d71ca6e9576443aed1b68cd122efe0f010e#01a08d71ca6e9576443aed1b68cd122efe0f010e"
 dependencies = [
  "arrayvec",
  "audioadapter-buffers",

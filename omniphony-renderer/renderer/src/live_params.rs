@@ -2749,7 +2749,7 @@ impl RendererControl {
         )
         .map_err(|e| e.to_string())?;
         let width = self.speaker_stage_width.load(Ordering::Relaxed);
-        if !Self::brir_layout_fits(loaded.emitter_positions.len(), width) {
+        if !Self::brir_layout_fits(&loaded.emitter_positions, width) {
             return Err(format!(
                 "the BRIR set needs {} virtual speakers (with the LFE) but the renderer \
                  was opened with {width}; it renders on the speaker layout instead",
@@ -2763,11 +2763,11 @@ impl RendererControl {
         }))
     }
 
-    /// Whether a set of `emitters` (plus the LFE bus) fits a speaker stage
-    /// of `width` (0: not reported yet, assumed to fit).
-    fn brir_layout_fits(emitters: usize, width: usize) -> bool {
-        // `emitters + 1 <= width`: the LFE bus takes a channel too.
-        width == 0 || emitters < width
+    /// Whether the layout of a set's `emitters` - its panned loudspeakers
+    /// and the LFE bus ([`crate::binaural::brir::measured_room_buses`]) -
+    /// fits a speaker stage of `width` (0: not reported yet, assumed to fit).
+    fn brir_layout_fits(emitters: &[[f32; 3]], width: usize) -> bool {
+        width == 0 || crate::binaural::brir::measured_room_buses(emitters) <= width
     }
 
     /// `f` of the resident BRIR set and the live params when a headphone
@@ -2795,9 +2795,9 @@ impl RendererControl {
         // outdated once more, never as current with the older set.
         let generation = self.brir_status_generation.load(Ordering::Acquire);
         let width = self.speaker_stage_width.load(Ordering::Relaxed);
-        match self.brir_set_in_use(|loaded, _| {
-            Self::brir_layout_fits(loaded.emitter_positions.len(), width)
-        }) {
+        match self
+            .brir_set_in_use(|loaded, _| Self::brir_layout_fits(&loaded.emitter_positions, width))
+        {
             Some(true) => generation,
             _ => 0,
         }

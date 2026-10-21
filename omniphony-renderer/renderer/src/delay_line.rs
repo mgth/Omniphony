@@ -48,6 +48,11 @@ impl DelayLine {
         }
     }
 
+    /// Zero the history in place, keeping the delay and its ramp.
+    pub fn clear(&mut self) {
+        self.buf.fill(0.0);
+    }
+
     /// Set the target delay from milliseconds + sample rate.
     ///
     /// The conversion (`ms × sr / 1000`) is done **once here**, so `process`

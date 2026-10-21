@@ -99,7 +99,9 @@ pub struct BrirSummary {
     /// Each emitter's position relative to the listener, in the renderer's
     /// frame (`x` right, `y` front, `z` up, metres), in the set's order: the
     /// virtual loudspeakers a BRIR source renders onto
-    /// ([`crate::speaker_layout::SpeakerLayout::from_brir_emitters`]).
+    /// ([`crate::speaker_layout::SpeakerLayout::from_brir_emitters`]), but
+    /// for a room's LFE loudspeakers ([`crate::binaural::brir::lfe_emitters`]),
+    /// which carry the LFE instead.
     pub emitter_positions: Vec<[f32; 3]>,
     pub orientations: usize,
     pub max_taps: usize,
@@ -145,7 +147,8 @@ pub(crate) struct KernelBank {
     set_id: usize,
     orientation: usize,
     /// `[emitter] → [left, right]`, every kernel cut into the levels the
-    /// set's longest response calls for.
+    /// set's longest response calls for; then, for a room that measures its
+    /// LFE loudspeakers, the LFE's ([`BrirSet::lfe_pair`]).
     kernels: Vec<[NonUniformKernel; 2]>,
 }
 
@@ -155,14 +158,15 @@ fn set_id(set: &Arc<BrirSet>) -> usize {
 
 fn build_bank(plan: &NonUniformPlan, set: &Arc<BrirSet>, orientation: usize) -> KernelBank {
     let levels = plan.levels_for(set.max_taps());
+    let partition = |pair: &super::brir::BrirPair| {
+        [
+            plan.partition(&pair.left, levels),
+            plan.partition(&pair.right, levels),
+        ]
+    };
     let kernels = (0..set.emitters().len())
-        .map(|e| {
-            let pair = set.pair(e, orientation);
-            [
-                plan.partition(&pair.left, levels),
-                plan.partition(&pair.right, levels),
-            ]
-        })
+        .map(|e| partition(set.pair(e, orientation)))
+        .chain(set.lfe_pair(orientation).as_ref().map(partition))
         .collect();
     KernelBank {
         set_id: set_id(set),
@@ -263,7 +267,8 @@ pub struct BrirStage {
     incoming_set: Arc<ArcSwapOption<Loaded>>,
     incoming_bank: Arc<ArcSwapOption<KernelBank>>,
     request_tx: mpsc::Sender<Request>,
-    /// Per bus: the emitter it is rendered from, `None` for a direct bus.
+    /// Per bus: the kernel it is rendered from - an emitter's, or the
+    /// room's LFE past them - `None` for a bus fed to both ears.
     bus_emitter: Vec<Option<usize>>,
     /// Identity of the bus geometry `bus_emitter` was built for.
     geometry_id: usize,
@@ -606,9 +611,11 @@ impl BrirStage {
     /// Map the virtual speakers onto the set's emitters and size the
     /// streams. `geometry_id` identifies the bus geometry (the cascade's
     /// topology identity); steady state is two compares. A bus is rendered
-    /// from the emitter nearest to it in direction; mismatches beyond
-    /// `MISMATCH_WARN_DEG` (10°) and emitters shared by several buses are
-    /// logged once per mapping.
+    /// from the emitter nearest to it in direction, never from an LFE
+    /// loudspeaker; mismatches beyond `MISMATCH_WARN_DEG` (10°) and emitters
+    /// shared by several buses are logged once per mapping. A direct bus
+    /// (the LFE) is rendered from the room's LFE loudspeakers where it
+    /// measures them, and fed to both ears otherwise.
     pub fn configure_buses(&mut self, positions: &[[f64; 3]], direct: &[bool], geometry_id: usize) {
         let Some(set) = self.set.as_ref() else {
             return;
@@ -630,21 +637,30 @@ impl BrirStage {
                 }
             };
             let emitter_dirs: Vec<[f32; 3]> = emitters.iter().map(|&e| unit(e)).collect();
+            // The LFE's kernel follows the emitters' in every bank.
+            let lfe_kernel = (0..emitters.len())
+                .any(|e| set.is_lfe(e))
+                .then_some(emitters.len());
             let mut uses = vec![0usize; emitters.len()];
             for (b, p) in positions.iter().enumerate() {
-                if direct.get(b).copied().unwrap_or(false) || emitters.is_empty() {
-                    self.bus_emitter.push(None);
+                if direct.get(b).copied().unwrap_or(false) {
+                    self.bus_emitter.push(lfe_kernel);
                     continue;
                 }
                 let d = unit([p[0] as f32, p[1] as f32, p[2] as f32]);
-                let (best, dot) = emitter_dirs
+                let Some((best, dot)) = emitter_dirs
                     .iter()
                     .enumerate()
+                    .filter(|&(i, _)| !set.is_lfe(i))
                     .map(|(i, e)| (i, d[0] * e[0] + d[1] * e[1] + d[2] * e[2]))
-                    .fold(
-                        (0, f32::NEG_INFINITY),
-                        |acc, x| if x.1 > acc.1 { x } else { acc },
-                    );
+                    .fold(None, |acc: Option<(usize, f32)>, x| match acc {
+                        Some(a) if a.1 >= x.1 => Some(a),
+                        _ => Some(x),
+                    })
+                else {
+                    self.bus_emitter.push(None);
+                    continue;
+                };
                 let angle = dot.clamp(-1.0, 1.0).acos().to_degrees();
                 if angle > MISMATCH_WARN_DEG {
                     log::warn!(
@@ -659,12 +675,18 @@ impl BrirStage {
                     log::warn!("BRIR: emitter {e} serves {n} virtual speakers");
                 }
             }
+            let direct_buses = direct.iter().take(total).filter(|&&d| d).count();
             log::info!(
-                "BRIR: {} virtual speakers → {} emitters used of {} ({} direct)",
+                "BRIR: {} virtual speakers → {} emitters used of {} ({} direct{})",
                 total,
                 uses.iter().filter(|&&n| n > 0).count(),
                 emitters.len(),
-                self.bus_emitter.iter().filter(|e| e.is_none()).count()
+                direct_buses,
+                if lfe_kernel.is_some() && direct_buses > 0 {
+                    ", through the room's LFE loudspeakers"
+                } else {
+                    ""
+                }
             );
             self.geometry_id = geometry_id;
             self.mapped_set_id = sid;
@@ -685,7 +707,39 @@ impl BrirStage {
         }
     }
 
-    /// Per bus: the emitter it is rendered from (`None` = direct).
+    /// Silence the stage in place, as a fresh load's streams start: every
+    /// bus history, every tail segment and the output block. The set, its
+    /// bank and the bus mapping stay. What a seek needs: the room's tail of
+    /// what played before must not ring on into what plays next. Nothing
+    /// allocates but the retirement of a bank swap still in flight.
+    pub fn clear_history(&mut self) {
+        for input in &mut self.streams.inputs {
+            input.reset();
+        }
+        self.streams.tails.reset();
+        if let Some(bank) = self.bank.as_ref() {
+            for banks in &mut self.streams.tail_banks {
+                if let Some(old) = banks.outgoing.take() {
+                    let _ = self.request_tx.send(Request::Drop(Box::new(old)));
+                }
+                if !Arc::ptr_eq(&banks.current, bank) {
+                    let old = std::mem::replace(&mut banks.current, Arc::clone(bank));
+                    let _ = self.request_tx.send(Request::Drop(Box::new(old)));
+                }
+            }
+        }
+        if let Some(old) = self.fade_from.take() {
+            self.retire(Box::new(old));
+        }
+        for scratch in &mut self.scratch {
+            scratch.clear();
+        }
+        self.fifo.fill(0.0);
+        self.read_pos = 0;
+    }
+
+    /// Per bus: the kernel it is rendered from - emitter `n`, or the room's
+    /// LFE at `emitters().len()` - or `None` when it is fed to both ears.
     pub fn bus_emitters(&self) -> &[Option<usize>] {
         &self.bus_emitter
     }
@@ -945,8 +999,13 @@ pub(crate) mod test_support {
             emitter_position: &emitter,
             listener_position: &[0.0, 0.0, 0.0],
             listener_view: &view,
+            listener_up: &[],
+            receiver_position: &[],
             data_ir: &ir,
+            ir_first: 0,
             data_delay: &[],
+            room_type: None,
+            room_corners: None,
         };
         let opts = BrirLoadOptions {
             max_length_s: 0.0,
@@ -1185,6 +1244,62 @@ mod tests {
         );
     }
 
+    /// A 22.2 room's LFE bus plays through its two LFE loudspeakers, each at
+    /// half so that the two sum to one loudspeaker's level, and no panned
+    /// bus is rendered from either of them.
+    #[test]
+    fn a_22_2_rooms_lfe_bus_plays_through_its_lfe_loudspeakers() {
+        let emitters = crate::binaural::brir::iosr_22_2_emitters(2.0);
+        let pairs = (0..emitters.len())
+            .map(|e| {
+                let mut left = vec![0.0f32; 64];
+                left[5 + e] = 1.0;
+                let right = left.iter().map(|x| -x).collect();
+                BrirPair { left, right }
+            })
+            .collect();
+        let set = Arc::new(BrirSet::from_pairs(
+            emitters.clone(),
+            vec![(0.0, 0.0)],
+            pairs,
+        ));
+        // The layout's buses: every loudspeaker but the two LFE ones, then
+        // the LFE.
+        let mut positions: Vec<[f64; 3]> = emitters
+            .iter()
+            .enumerate()
+            .filter(|&(e, _)| e != 3 && e != 9)
+            .map(|(_, p)| [p[0] as f64, p[1] as f64, p[2] as f64])
+            .collect();
+        positions.push([0.0, 1.0, 0.0]);
+        let total = positions.len();
+        let mut direct = vec![false; total];
+        direct[total - 1] = true;
+        let mut stage = stage_on(&BRIR_LADDER, &set, &positions, &direct);
+        let map = stage.bus_emitters().to_vec();
+        assert_eq!(map[total - 1], Some(emitters.len()), "the LFE bus");
+        let panned: Vec<usize> = (0..emitters.len()).filter(|&e| e != 3 && e != 9).collect();
+        let want: Vec<Option<usize>> = panned.iter().map(|&e| Some(e)).collect();
+        assert_eq!(&map[..total - 1], want.as_slice());
+
+        let len = 3 * BRIR_BLOCK;
+        let mut bus = vec![0.0f32; total * len];
+        bus[total - 1] = 1.0;
+        let (l, r) = render(&mut stage, &bus, total, 64, HeadPose::identity());
+        let lat = stage.latency_samples();
+        for (i, (&x, &y)) in l.iter().zip(&r).enumerate() {
+            let want = if i == lat + 5 + 3 || i == lat + 5 + 9 {
+                0.5
+            } else {
+                0.0
+            };
+            assert!(
+                (x - want).abs() < 1e-5 && (y + want).abs() < 1e-5,
+                "sample {i}: {x} {y}"
+            );
+        }
+    }
+
     /// The pair of a bus comes back whole and in place across every level of
     /// the ladder, `BRIR_BLOCK − 1` samples late and not one more.
     #[test]
@@ -1320,6 +1435,56 @@ mod tests {
             let mut stage = stage_on(&BRIR_LADDER, &set, &positions, &direct);
             let got = render(&mut stage, &signal, 3, frame, HeadPose::identity());
             assert!(got == want, "frames of {frame} samples changed the output");
+        }
+    }
+
+    /// A cleared stage is the stage fresh from its load: whatever it rendered
+    /// before, the next signal comes out bit for bit as a stage that never
+    /// heard anything renders it, through every level of the ladder, and
+    /// silence comes out as silence. Cleared mid-block too: a seek does not
+    /// wait for a block boundary.
+    #[test]
+    fn a_cleared_stage_renders_as_a_fresh_one() {
+        let (positions, direct) = ring_buses(3, &[2]);
+        let taps = 30_000;
+        let set = noise_set(&positions, &[taps; 3], &[0.0], 3);
+        let signal = noise(3 * (taps + 2 * 8192), 0x1234_5678);
+        let mut fresh = stage_on(&BRIR_LADDER, &set, &positions, &direct);
+        assert_eq!(fresh.plan.levels_for(taps), BRIR_LADDER.len());
+        let want = render(&mut fresh, &signal, 3, 40, HeadPose::identity());
+        assert!(want.0.iter().any(|&v| v != 0.0));
+
+        for before in [3 * 40, 3 * (2 * 8192 + 77)] {
+            let mut stage = stage_on(&BRIR_LADDER, &set, &positions, &direct);
+            render(
+                &mut stage,
+                &noise(before, 0x0bad_cafe),
+                3,
+                40,
+                HeadPose::identity(),
+            );
+            stage.clear_history();
+            let got = render(&mut stage, &signal, 3, 40, HeadPose::identity());
+            assert!(
+                got == want,
+                "{} samples before the clear changed the output",
+                before / 3
+            );
+
+            render(
+                &mut stage,
+                &noise(before, 0x0bad_cafe),
+                3,
+                40,
+                HeadPose::identity(),
+            );
+            stage.clear_history();
+            let silence = vec![0.0f32; 3 * (taps + 8192)];
+            let (l, r) = render(&mut stage, &silence, 3, 40, HeadPose::identity());
+            assert!(
+                l.iter().chain(&r).all(|&v| v == 0.0),
+                "the tail of what played before the clear rang on"
+            );
         }
     }
 

@@ -477,9 +477,12 @@ impl SpeakerLayout {
     }
 
     /// The virtual loudspeakers of a measured room (a BRIR set): one
-    /// spatialized speaker per emitter, in the set's order, so bus `n` is
-    /// emitter `n`, plus a non-spatialized `LFE` last — the set measures no
-    /// subwoofer, and the cascade's direct-bus policy feeds it to both ears.
+    /// spatialized speaker per emitter, in the set's order, plus a
+    /// non-spatialized `LFE` last. A room that measures its LFE loudspeakers
+    /// (a 22.2 room, [`crate::binaural::brir::lfe_emitters`]) has them carry
+    /// that LFE, and they take no speaker of their own: nothing is panned to
+    /// a subwoofer. Without them the cascade's direct-bus policy feeds the
+    /// LFE to both ears.
     ///
     /// `positions` are the emitters relative to the listener in the
     /// renderer's frame (`x` right, `y` front, `z` up, metres). Each is
@@ -499,6 +502,7 @@ impl SpeakerLayout {
         radius_m: f32,
     ) -> Result<Self> {
         let radius_m = radius_m.max(0.01);
+        let lfe = crate::binaural::brir::lfe_emitters(positions);
         let directions: Vec<(f32, f32)> = positions
             .iter()
             .map(|&[x, y, z]| {
@@ -509,6 +513,9 @@ impl SpeakerLayout {
         let mut names: Vec<Option<&str>> = vec![None; positions.len()];
         let mut candidates: Vec<(f32, usize, usize)> = Vec::new();
         for (e, &(azimuth, elevation)) in directions.iter().enumerate() {
+            if lfe[e] {
+                continue;
+            }
             for (n, &(_, std_azimuth, std_elevation)) in BRIR_STANDARD_POSITIONS.iter().enumerate()
             {
                 let angle = angle_between_deg(azimuth, elevation, std_azimuth, std_elevation);
@@ -529,6 +536,7 @@ impl SpeakerLayout {
             .iter()
             .zip(&names)
             .enumerate()
+            .filter(|&(e, _)| !lfe[e])
             .map(|(e, (&[x, y, z], name))| {
                 let [x, y, z] = room.inverse([x / radius_m, y / radius_m, z / radius_m]);
                 let name = name.map_or_else(|| format!("E{}", e + 1), str::to_string);

@@ -89,21 +89,23 @@ pub fn active_locale() -> &'static str {
 
 /// The environment's language, mapped onto a catalogue.
 ///
-/// The web reads `navigator.languages`; a native process reads the POSIX
-/// variables, most specific first. Region matters for exactly two of the
-/// catalogues — Brazilian Portuguese and simplified Chinese — so those are
-/// matched on the full tag and everything else on the language alone.
+/// The POSIX variables come first, most specific first, so a shell can still
+/// force a language. Windows and a macOS app started from the Finder set none
+/// of them, so the system's preferred UI languages follow, in the user's order
+/// — what the web read from `navigator.languages`.
 fn detect_system_locale() -> String {
-    locale_from(|key| std::env::var(key).ok())
+    let variables = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok());
+    locale_from(variables.chain(sys_locale::get_locales()))
 }
 
-/// [`detect_system_locale`] over any variable lookup, so its rules are tested
-/// without touching the process environment.
-fn locale_from(var: impl Fn(&str) -> Option<String>) -> String {
-    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        let Some(value) = var(key) else {
-            continue;
-        };
+/// [`detect_system_locale`] over any list of tags, so its rules are tested
+/// without touching the process environment. Region matters for exactly two
+/// of the catalogues — Brazilian Portuguese and simplified Chinese — so those
+/// are matched on the full tag and everything else on the language alone.
+fn locale_from(candidates: impl IntoIterator<Item = String>) -> String {
+    for value in candidates {
         let tag = value
             .split(['.', '@'])
             .next()
@@ -322,25 +324,38 @@ mod tests {
 
     #[test]
     fn the_two_region_sensitive_tags_are_matched_on_the_full_tag() {
-        let lc_all =
-            |value: &'static str| locale_from(move |k| (k == "LC_ALL").then(|| value.into()));
+        let one = |value: &str| locale_from([value.to_owned()]);
         // Region matters for exactly these two catalogues.
-        assert_eq!(lc_all("pt_BR.UTF-8"), "pt-BR");
-        assert_eq!(lc_all("zh_CN.UTF-8"), "zh-CN");
+        assert_eq!(one("pt_BR.UTF-8"), "pt-BR");
+        assert_eq!(one("zh_CN.UTF-8"), "zh-CN");
         // Everything else matches on the language alone.
-        assert_eq!(lc_all("fr_CA.UTF-8"), "fr");
+        assert_eq!(one("fr_CA.UTF-8"), "fr");
         // The C locale says nothing about a language.
-        assert_eq!(lc_all("C"), "en");
+        assert_eq!(one("C"), "en");
     }
 
     #[test]
-    fn a_silent_variable_defers_to_the_next_one() {
-        let vars = |k: &str| match k {
-            "LC_ALL" => Some("C".to_owned()),
-            "LANG" => Some("de_DE.UTF-8".to_owned()),
-            _ => None,
-        };
-        assert_eq!(locale_from(vars), "de");
-        assert_eq!(locale_from(|_| None), "en");
+    fn a_silent_candidate_defers_to_the_next_one() {
+        let tags = |list: &[&str]| locale_from(list.iter().map(|s| s.to_string()));
+        assert_eq!(tags(&["C", "de_DE.UTF-8"]), "de");
+        assert_eq!(tags(&[]), "en");
+    }
+
+    #[test]
+    fn system_language_tags_map_like_the_posix_variables() {
+        // What Windows and macOS report: BCP 47 tags, scripts included.
+        let one = |value: &str| locale_from([value.to_owned()]);
+        assert_eq!(one("fr-FR"), "fr");
+        assert_eq!(one("pt-BR"), "pt-BR");
+        assert_eq!(one("zh-Hans-CN"), "zh-CN");
+        assert_eq!(one("ja"), "ja");
+    }
+
+    #[test]
+    fn an_unknown_system_language_lets_a_later_preference_through() {
+        // A user whose first language has no catalogue gets their second
+        // choice, not English.
+        let tags = |list: &[&str]| locale_from(list.iter().map(|s| s.to_string()));
+        assert_eq!(tags(&["ru-RU", "de-DE", "en-US"]), "de");
     }
 }
