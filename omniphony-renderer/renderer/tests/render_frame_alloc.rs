@@ -5,7 +5,7 @@
 //! binary, for the counting allocator.
 
 use bridge_api::RChannelLabel;
-use renderer::backend_conformance::{CountingAllocator, count_allocations};
+use renderer::backend_conformance::{CountingAllocator, count_allocations, count_heap_events};
 use renderer::live_params::{
     BinauralMode, CrossoverType, LiveEvaluationMode, LiveParams, OutputMode,
     PreferredEvaluationMode, RampMode,
@@ -495,8 +495,9 @@ fn a_warmed_up_render_with_output_correction_does_not_allocate() {
 /// The live transitions of the correction, with its worker building the
 /// filter sets as a running host has it: the first filter arriving, the
 /// correction switched off and on again, the filter replaced, the last one
-/// removed. The worker allocates; the render thread, which only takes what
-/// it hands over and hands back what it replaces, does not.
+/// removed. The worker allocates and the reclaimer frees; the render thread,
+/// which only takes what the one hands over and hands back to the other what
+/// it replaces, does neither.
 #[test]
 fn output_correction_transitions_do_not_allocate_on_the_render_thread() {
     use renderer::output_correction::{FilterSource, OutputFilters};
@@ -525,13 +526,13 @@ fn output_correction_transitions_do_not_allocate_on_the_render_thread() {
         for i in 0..4000 {
             events(block, &mut evs);
             block += 1;
-            let ((), n) = count_allocations(|| {
+            let ((), allocs, frees) = count_heap_events(|| {
                 let frame = r
                     .render_frame(&pcm, CHANNELS, &evs, std::mem::take(&mut buf), true)
                     .unwrap();
                 buf = r.recycle_frame(frame);
             });
-            allocations += n;
+            allocations += allocs + frees;
             // Past two periods of the 8192-sample level once it has landed.
             if i > 1200 && done(r) {
                 return allocations;
@@ -597,9 +598,69 @@ fn output_correction_transitions_do_not_allocate_on_the_render_thread() {
         let allocations = run(&mut r, &*done);
         assert_eq!(
             allocations, 0,
-            "{name}: {allocations} allocation(s) on the render thread"
+            "{name}: {allocations} allocation(s) or deallocation(s) on the render thread"
         );
     }
     let _ = std::fs::remove_file(long_path);
     let _ = std::fs::remove_file(short_path);
+}
+
+/// The worker stalled in the middle of a preparation (reading a slow disk, a
+/// long filter) while the user keeps switching the correction and then leaves
+/// the speaker path: the requests it cannot take yet are asked again later,
+/// what the stage drops goes to the reclaimer, and the audio thread neither
+/// allocates nor frees anything.
+#[test]
+fn output_correction_with_a_stalled_worker_keeps_off_the_heap() {
+    use renderer::output_correction::{FilterSource, OutputCorrectionStage, OutputFilters};
+    use std::sync::{Arc, Mutex};
+    let long: Vec<f32> = (0..20_000)
+        .map(|i| (-(i as f32) / 3000.0).exp() * if i % 2 == 0 { 0.5 } else { -0.4 })
+        .collect();
+    let path = filter_file("stalled", &long);
+    let filters = OutputFilters::new(vec![Some(FilterSource::File(
+        path.to_string_lossy().into(),
+    ))]);
+    // The worker reports each set through the sink, from inside the
+    // preparation: holding the gate stalls it there.
+    let gate = Arc::new(Mutex::new(()));
+    let sink_gate = Arc::clone(&gate);
+    let mut stage = OutputCorrectionStage::with_status_sink(
+        48_000,
+        Arc::new(move |_| drop(sink_gate.lock().unwrap())),
+    );
+    let mut buf = vec![0.1f32; 256];
+    let mut step = |stage: &mut OutputCorrectionStage, enabled: bool| {
+        stage.ensure(&filters, enabled, 1);
+        stage.process(&mut buf, 1);
+    };
+    for _ in 0..2000 {
+        step(&mut stage, true);
+        if stage.is_active() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(stage.is_active());
+    // Settle past the tails' periods.
+    for _ in 0..200 {
+        step(&mut stage, true);
+    }
+    let held = gate.lock().unwrap();
+    let ((), allocs, frees) = count_heap_events(|| {
+        for i in 0..400 {
+            step(&mut stage, i % 2 == 1);
+        }
+        stage.deactivate();
+        step(&mut stage, true);
+        stage.deactivate();
+    });
+    drop(held);
+    assert_eq!(
+        (allocs, frees),
+        (0, 0),
+        "allocations and deallocations on the audio thread with the worker stalled"
+    );
+    drop(stage);
+    let _ = std::fs::remove_file(path);
 }

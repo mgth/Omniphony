@@ -30,7 +30,7 @@
 //! filter longer than the streams were sized for rebuild the streams, which
 //! restarts the outputs from silence for one block.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
 use arc_swap::ArcSwapOption;
@@ -214,6 +214,14 @@ fn filter_from_wav(bytes: &[u8], sample_rate: u32) -> Result<LoadedFilter, Strin
     if source_rate == 0 {
         return Err("the file declares a sample rate of 0 Hz".to_string());
     }
+    if source_rate != sample_rate && !FILTER_SOURCE_RATES.contains(&source_rate) {
+        return Err(format!(
+            "a filter at {source_rate} Hz cannot be used at {sample_rate} Hz: a filter at \
+             another rate than the engine's must be designed between {} and {} Hz",
+            FILTER_SOURCE_RATES.start(),
+            FILTER_SOURCE_RATES.end()
+        ));
+    }
     let max_taps = (MAX_FILTER_SECONDS * sample_rate as f64) as usize;
     // Bounded before resampling too: a header claiming a few hertz would
     // otherwise expand a short file a thousandfold.
@@ -260,70 +268,84 @@ const FILTER_KAISER_BETA: f64 = 8.6;
 /// it, which only a filter's top 5 % reaches, is given to the transition.
 const FILTER_CUTOFF: f64 = 0.95;
 
+/// Points of the tabulated kernel per sample of the source, interpolated
+/// linearly between (≈ −95 dB of interpolation error).
+const FILTER_KERNEL_OVERSAMPLING: usize = 256;
+
+/// Rates a filter file may be designed at when the engine runs at another
+/// one. Below, a correction filter has no treble to correct; above, nothing
+/// records or designs at. The bounds also bound the resampling: its delay
+/// (the kernel's half-width at the lower rate, at most 2 ms) and its table.
+pub const FILTER_SOURCE_RATES: std::ops::RangeInclusive<u32> = 32_000..=384_000;
+
 /// A filter designed at `from` Hz as the same response at `to` Hz, and the
 /// samples it was moved later by.
 ///
 /// Band-limited interpolation spreads each tap over a symmetric kernel: a
 /// tap at time zero also lands on the samples before it. A causal filter
 /// with energy at its start (a minimum-phase correction, or the identity)
-/// keeps its response only with that part, so the filter is padded ahead by
-/// at least the kernel's half-width and moved later by as much — chosen so
-/// that the move is a whole number of samples at both rates. The stage
-/// delays every output by the same amount, so the outputs stay aligned.
+/// keeps its response only with that part, so the response is moved later by
+/// the kernel's half-width, rounded up to whole samples at `to`: about
+/// 1.3 ms, 2 ms at most within [`FILTER_SOURCE_RATES`]. The stage delays
+/// every output by the same amount, so the outputs stay aligned.
 ///
 /// Interpolating an impulse response at another rate also samples it at
 /// another density, which scales its gain by `to / from`; the `from / to`
 /// factor puts it back.
 fn resample_filter(taps: &[f32], from: u32, to: u32) -> (Vec<f32>, usize) {
-    let g = gcd(from, to) as usize;
-    let (from_g, to_g) = (from as usize / g, to as usize / g);
+    let low = from.min(to) as f64;
     // In samples of the source: the kernel's half-width at the lower rate.
-    let half = (FILTER_HALF_WIDTH * from as usize).div_ceil(from.min(to) as usize);
-    let pad = half.div_ceil(from_g) * from_g;
-    let delay = pad / from_g * to_g;
-    let mut padded = vec![0.0f64; pad + taps.len() + half];
-    for (p, &t) in padded[pad..].iter_mut().zip(taps) {
-        *p = t as f64;
-    }
-    // Cut-off in cycles per source sample, and the kernel tabulated for the
-    // `to_g` fractional positions an output sample can fall on.
+    let half = (FILTER_HALF_WIDTH as f64 * from as f64 / low).ceil() as usize;
+    let delay = (half as f64 * to as f64 / from as f64).ceil() as usize;
     let cutoff = FILTER_CUTOFF * (to as f64 / from as f64).min(1.0);
-    let width = 2 * half;
+    // The kernel at every 1/OVERSAMPLING of a source sample over its width.
+    let os = FILTER_KERNEL_OVERSAMPLING;
     let i0_beta = bessel_i0(FILTER_KAISER_BETA);
-    let table: Vec<f64> = (0..to_g)
-        .flat_map(|phase| {
-            let frac = (phase * from_g % to_g) as f64 / to_g as f64;
-            (0..width).map(move |j| {
-                let d = frac + half as f64 - 1.0 - j as f64;
-                let x = d / half as f64;
-                if x.abs() >= 1.0 {
-                    return 0.0;
-                }
-                let window = bessel_i0(FILTER_KAISER_BETA * (1.0 - x * x).sqrt()) / i0_beta;
-                let arg = std::f64::consts::PI * cutoff * d;
-                let sinc = if arg.abs() < 1e-12 {
-                    1.0
-                } else {
-                    arg.sin() / arg
-                };
-                cutoff * sinc * window
-            })
+    let kernel: Vec<f64> = (0..=2 * half * os + 1)
+        .map(|i| {
+            let d = i as f64 / os as f64 - half as f64;
+            let x = d / half as f64;
+            if x.abs() >= 1.0 {
+                return 0.0;
+            }
+            let window = bessel_i0(FILTER_KAISER_BETA * (1.0 - x * x).sqrt()) / i0_beta;
+            let arg = std::f64::consts::PI * cutoff * d;
+            let sinc = if arg.abs() < 1e-12 {
+                1.0
+            } else {
+                arg.sin() / arg
+            };
+            cutoff * sinc * window
         })
         .collect();
-    let out_len = padded.len() * to_g / from_g;
+    let at = |d: f64| {
+        let pos = (d + half as f64) * os as f64;
+        let i = pos.floor();
+        let (k, f) = (i as usize, pos - i);
+        if i < 0.0 || k + 1 >= kernel.len() {
+            return 0.0;
+        }
+        kernel[k] + (kernel[k + 1] - kernel[k]) * f
+    };
+    // Output `n` reads the source at `(n − delay) · from / to`, kept as the
+    // exact fraction of the reduced rates.
+    let g = gcd(from, to) as i64;
+    let (from_g, to_g) = (from as i64 / g, to as i64 / g);
+    let out_len = delay + ((taps.len() + half) as u64 * to as u64).div_ceil(from as u64) as usize;
     let scale = from as f64 / to as f64;
     let out = (0..out_len)
         .map(|n| {
-            // First source sample the row multiplies: the integer part of
-            // `n · from / to`, less the half-width.
-            let k0 = (n * from_g / to_g) as isize - half as isize + 1;
-            let row = &table[(n % to_g) * width..][..width];
-            let acc: f64 = row
-                .iter()
-                .enumerate()
-                .filter_map(|(j, &w)| {
-                    let k = k0 + j as isize;
-                    (k >= 0 && (k as usize) < padded.len()).then(|| padded[k as usize] * w)
+            let num = (n as i64 - delay as i64) * from_g;
+            let (whole, frac) = (
+                num.div_euclid(to_g),
+                num.rem_euclid(to_g) as f64 / to_g as f64,
+            );
+            let first = whole - half as i64 + 1;
+            let acc: f64 = (0..2 * half)
+                .filter_map(|j| {
+                    let k = first + j as i64;
+                    let tap = *taps.get(usize::try_from(k).ok()?)?;
+                    Some(tap as f64 * at(frac + half as f64 - 1.0 - j as f64))
                 })
                 .sum();
             (acc * scale) as f32
@@ -456,31 +478,58 @@ struct Prepared {
     streams: parking_lot::Mutex<Option<Streams>>,
 }
 
-/// What the audio thread hands back to the worker to be freed there. The
+/// What the audio thread hands to the reclaimer to be freed there. The
 /// fields are never read: they are carried only to be dropped.
 #[allow(dead_code)]
 enum Retired {
     Bank(Arc<Bank>),
     Streams(Streams),
     Prepared(Arc<Prepared>),
+    Filters(OutputFilters),
 }
 
-enum Request {
-    Prepare {
-        key: Key,
-        filters: OutputFilters,
-        /// The geometry of the streams the stage runs: the bank is cut for
-        /// it when it fits, so the swap keeps them.
-        current: Option<Geometry>,
-    },
-    /// Something the audio thread retired, carried here only to be freed.
-    Drop(Retired),
+/// A filter set for the worker to prepare.
+struct Request {
+    key: Key,
+    filters: OutputFilters,
+    /// The geometry of the streams the stage runs: the bank is cut for it
+    /// when it fits, so the swap keeps them.
+    current: Option<Geometry>,
 }
 
-/// Requests and retirements in flight. The channel is bounded, so its slots
-/// are allocated once with it and a send from the audio thread never
-/// allocates; the worker drains it as fast as it fills.
-const CHANNEL_CAPACITY: usize = 64;
+/// Requests queued for the worker. The stage counts them and sends no more
+/// than this, so a send never fails (and never frees the request on the
+/// audio thread): a change the queue cannot take is asked again on the next
+/// frame, by which time the worker, which keeps only the latest, has caught
+/// up.
+const REQUEST_CAPACITY: usize = 4;
+
+/// Retirements queued for the reclaimer, a thread that does nothing but free
+/// them, so the queue drains even while the worker spends seconds preparing a
+/// set. Both channels are bounded: their slots are allocated with them, and a
+/// send from the audio thread never allocates.
+const RETIRE_CAPACITY: usize = 64;
+
+/// Retirements the stage keeps, in storage allocated with it, while the
+/// reclaimer's queue is full; sent on as it drains. Only a reclaimer starved
+/// for this many retirements in a row would leave one to be freed on the
+/// audio thread.
+const DEFERRED_CAPACITY: usize = 256;
+
+/// Hand `retired` to the reclaimer, or keep it in `deferred` while its queue
+/// is full.
+fn retire_to(tx: &mpsc::SyncSender<Retired>, deferred: &mut Vec<Retired>, retired: Retired) {
+    match tx.try_send(retired) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(retired)) => {
+            if deferred.len() < deferred.capacity() {
+                deferred.push(retired);
+            }
+        }
+        // The reclaimer is gone: the stage is being torn down.
+        Err(mpsc::TrySendError::Disconnected(_)) => {}
+    }
+}
 
 /// See the module doc.
 pub struct OutputCorrectionStage {
@@ -493,6 +542,12 @@ pub struct OutputCorrectionStage {
     fade_from: Option<Arc<Bank>>,
     incoming: Arc<ArcSwapOption<Prepared>>,
     request_tx: mpsc::SyncSender<Request>,
+    /// Requests sent and not yet taken by the worker.
+    requests_in_flight: Arc<AtomicUsize>,
+    retire_tx: mpsc::SyncSender<Retired>,
+    /// Retirements waiting for room in the reclaimer's queue (capacity
+    /// [`DEFERRED_CAPACITY`], never grown).
+    deferred: Vec<Retired>,
     streams: Streams,
     /// The head's partition of a one-tap unit filter: what an output without
     /// a filter ramps from or to.
@@ -518,19 +573,31 @@ impl OutputCorrectionStage {
         debug_assert_eq!(ladder[0], CORRECTION_BLOCK);
         let plan = NonUniformPlan::new(ladder);
         let incoming: Arc<ArcSwapOption<Prepared>> = Arc::new(ArcSwapOption::empty());
-        let (request_tx, request_rx) = mpsc::sync_channel::<Request>(CHANNEL_CAPACITY);
+        let (request_tx, request_rx) = mpsc::sync_channel::<Request>(REQUEST_CAPACITY);
+        let requests_in_flight = Arc::new(AtomicUsize::new(0));
         {
             let plan = plan.clone();
             let slot = Arc::clone(&incoming);
             let sink = Arc::clone(&sink);
+            let in_flight = Arc::clone(&requests_in_flight);
             std::thread::Builder::new()
                 .name("output-correction-worker".into())
                 .spawn(move || {
                     crate::background_pool::enter_background();
-                    Self::worker(request_rx, plan, sample_rate, sink, slot)
+                    Self::worker(request_rx, &in_flight, plan, sample_rate, sink, slot)
                 })
                 .expect("spawn output correction worker");
         }
+        let (retire_tx, retire_rx) = mpsc::sync_channel::<Retired>(RETIRE_CAPACITY);
+        std::thread::Builder::new()
+            .name("output-correction-reclaim".into())
+            .spawn(move || {
+                crate::background_pool::enter_background();
+                for retired in retire_rx {
+                    drop(retired);
+                }
+            })
+            .expect("spawn output correction reclaimer");
         Self {
             sample_rate,
             identity: plan.head().partition(&[1.0]),
@@ -541,6 +608,9 @@ impl OutputCorrectionStage {
             fade_from: None,
             incoming,
             request_tx,
+            requests_in_flight,
+            retire_tx,
+            deferred: Vec::with_capacity(DEFERRED_CAPACITY),
             streams: Streams::empty(),
             read_pos: 0,
             sink,
@@ -576,39 +646,49 @@ impl OutputCorrectionStage {
         }
     }
 
-    /// Hand `retired` to the worker to be freed. Should the channel be full
-    /// (or the worker gone, the stage being torn down), it is freed here.
-    fn retire(&self, retired: Retired) {
-        let _ = self.request_tx.try_send(Request::Drop(retired));
+    /// Hand `retired` to the reclaimer (see [`retire_to`]).
+    fn retire(&mut self, retired: Retired) {
+        retire_to(&self.retire_tx, &mut self.deferred, retired);
     }
 
-    /// The worker: reads and partitions filter sets, frees what the audio
-    /// thread retires. Only the latest request queued is prepared.
+    /// Send on what waited for room in the reclaimer's queue.
+    fn flush_deferred(&mut self) {
+        while let Some(retired) = self.deferred.pop() {
+            match self.retire_tx.try_send(retired) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(retired)) => {
+                    // Back where it was: within the capacity it came from.
+                    self.deferred.push(retired);
+                    return;
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => return,
+            }
+        }
+    }
+
+    /// The worker: reads and partitions filter sets. Only the latest request
+    /// queued is prepared.
     fn worker(
         rx: mpsc::Receiver<Request>,
+        in_flight: &AtomicUsize,
         plan: NonUniformPlan,
         sample_rate: u32,
         sink: OutputCorrectionStatusSink,
         slot: Arc<ArcSwapOption<Prepared>>,
     ) {
-        while let Ok(first) = rx.recv() {
-            let mut latest = None;
-            let mut handle = |req: Request| match req {
-                Request::Prepare {
-                    key,
-                    filters,
-                    current,
-                } => latest = Some((key, filters, current)),
-                Request::Drop(retired) => drop(retired),
-            };
-            handle(first);
+        while let Ok(mut latest) = rx.recv() {
+            in_flight.fetch_sub(1, Ordering::AcqRel);
             while let Ok(next) = rx.try_recv() {
-                handle(next);
+                in_flight.fetch_sub(1, Ordering::AcqRel);
+                latest = next;
             }
-            if let Some((key, filters, current)) = latest {
-                let prepared = Self::prepare(&plan, key, &filters, current, sample_rate, &sink);
-                slot.store(Some(Arc::new(prepared)));
-            }
+            let Request {
+                key,
+                filters,
+                current,
+            } = latest;
+            let prepared = Self::prepare(&plan, key, &filters, current, sample_rate, &sink);
+            slot.store(Some(Arc::new(prepared)));
         }
     }
 
@@ -720,8 +800,11 @@ impl OutputCorrectionStage {
             enabled,
             outputs,
         };
-        // A request the channel could not take is asked again next frame.
-        if self.key != Some(key) && self.request(key, filters.clone()) {
+        if !self.deferred.is_empty() {
+            self.flush_deferred();
+        }
+        // A request the queue could not take is asked again next frame.
+        if self.key != Some(key) && self.request(key, filters) {
             self.key = Some(key);
         }
         if let Some(prepared) = self.incoming.swap(None) {
@@ -734,31 +817,45 @@ impl OutputCorrectionStage {
 
     /// Ask for `key`'s set: through the worker, or here with synchronous
     /// builds (published through the worker's slot, so it is adopted the same
-    /// way, on this frame). `false` when the worker's channel is full.
-    fn request(&mut self, key: Key, filters: OutputFilters) -> bool {
+    /// way, on this frame). `false` when the worker's queue is full: nothing
+    /// was sent, nothing taken.
+    fn request(&mut self, key: Key, filters: &OutputFilters) -> bool {
         let current = (!self.streams.inputs.is_empty()).then_some(self.streams.geometry);
         if self.synchronous_builds {
             let prepared = Self::prepare(
                 &self.plan,
                 key,
-                &filters,
+                filters,
                 current,
                 self.sample_rate,
                 &self.sink,
             );
             self.incoming.store(Some(Arc::new(prepared)));
-            true
-        } else {
-            match self.request_tx.try_send(Request::Prepare {
-                key,
-                filters,
-                current,
-            }) {
-                Ok(()) => true,
-                Err(mpsc::TrySendError::Full(_)) => false,
-                // The worker is gone: nothing will ever come, do not ask
-                // again on every frame.
-                Err(mpsc::TrySendError::Disconnected(_)) => true,
+            return true;
+        }
+        // The only sender: below the capacity, the send cannot fail on a
+        // full queue.
+        if self.requests_in_flight.load(Ordering::Acquire) >= REQUEST_CAPACITY {
+            return false;
+        }
+        self.requests_in_flight.fetch_add(1, Ordering::AcqRel);
+        let request = Request {
+            key,
+            filters: filters.clone(),
+            current,
+        };
+        match self.request_tx.try_send(request) {
+            Ok(()) => true,
+            Err(mpsc::TrySendError::Full(request)) => {
+                self.requests_in_flight.fetch_sub(1, Ordering::AcqRel);
+                self.retire(Retired::Filters(request.filters));
+                false
+            }
+            // The worker is gone: nothing will ever come, do not ask again
+            // on every frame.
+            Err(mpsc::TrySendError::Disconnected(request)) => {
+                self.retire(Retired::Filters(request.filters));
+                true
             }
         }
     }
@@ -785,7 +882,7 @@ impl OutputCorrectionStage {
             // Cut for streams that were replaced while it was prepared (a
             // set landing in between): ask again for the streams running now.
             self.retire(Retired::Bank(bank));
-            if !self.request(prepared.key, filters.clone()) {
+            if !self.request(prepared.key, filters) {
                 self.key = None;
             }
             return;
@@ -895,7 +992,7 @@ impl OutputCorrectionStage {
             if tails[0].period_starts(segment) {
                 if let Some(old) = banks.outgoing.take() {
                     // What `retire` does, without borrowing the whole stage.
-                    let _ = self.request_tx.try_send(Request::Drop(Retired::Bank(old)));
+                    retire_to(&self.retire_tx, &mut self.deferred, Retired::Bank(old));
                 }
                 if !Arc::ptr_eq(&banks.current, bank) {
                     banks.outgoing = Some(std::mem::replace(&mut banks.current, Arc::clone(bank)));
@@ -919,7 +1016,7 @@ impl OutputCorrectionStage {
             }
         }
         if let Some(old) = self.fade_from.take() {
-            let _ = self.request_tx.try_send(Request::Drop(Retired::Bank(old)));
+            retire_to(&self.retire_tx, &mut self.deferred, Retired::Bank(old));
         }
         let outputs = blocks.len();
         for (o, block) in blocks.iter().enumerate() {
@@ -1293,7 +1390,7 @@ mod tests {
         identity[0] = 1.0;
         let a = 0.9f32;
         let lowpass: Vec<f32> = (0..2000).map(|n| (1.0 - a) * a.powi(n)).collect();
-        let rates = [44_100u32, 48_000, 88_200, 96_000, 192_000];
+        let rates = [32_000u32, 44_100, 48_000, 88_200, 96_000, 192_000];
         for (name, taps) in [("identity", &identity), ("lowpass", &lowpass)] {
             for &from in &rates {
                 for &to in &rates {
@@ -1319,8 +1416,8 @@ mod tests {
                             "{name} {from}->{to} at {f} Hz: {dp:+.4} rad"
                         );
                     }
-                    // The move is a few milliseconds at most.
-                    assert!(loaded.delay as f64 / (to as f64) < 0.0035, "{from}->{to}");
+                    // The move is the kernel's half-width: 2 ms at most.
+                    assert!(loaded.delay as f64 / (to as f64) <= 0.0021, "{from}->{to}");
                 }
             }
         }
@@ -1360,6 +1457,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A rate pair with no small common factor (a WAV at 44 101 Hz) moves
+    /// the response by the kernel's half-width like any other, and a rate
+    /// outside the supported range is refused before anything is sized by it.
+    #[test]
+    fn odd_rates_resample_with_a_bounded_delay_and_absurd_ones_are_refused() {
+        let mut identity = vec![0.0f32; 256];
+        identity[0] = 1.0;
+        let odd = filter_from_wav(&wav_f32(44_101, &identity), RATE).unwrap();
+        assert!(odd.delay <= 70, "delay {}", odd.delay);
+        let (g, _) = response(&odd.taps, RATE as f64, 1000.0, odd.delay);
+        assert!((20.0 * g.log10()).abs() < 0.05);
+        for rate in [8_000, 1_000_003] {
+            let err = filter_from_wav(&wav_f32(rate, &[1.0]), RATE).unwrap_err();
+            assert!(err.contains("cannot be used"), "{rate}: {err}");
+        }
+        // At the engine's own rate any rate is the engine's: no resampling.
+        assert_eq!(
+            filter_from_wav(&wav_f32(RATE, &[1.0]), RATE).unwrap().delay,
+            0
+        );
     }
 
     #[test]

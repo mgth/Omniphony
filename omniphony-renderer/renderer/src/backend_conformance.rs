@@ -326,6 +326,8 @@ thread_local! {
     /// const init has no destructor and never allocates, so reading/writing it
     /// from inside the global allocator is reentrancy-safe.
     static THREAD_ALLOCS: Cell<u64> = const { Cell::new(0) };
+    /// Per-thread deallocation counter, the same way ([`count_heap_events`]).
+    static THREAD_DEALLOCS: Cell<u64> = const { Cell::new(0) };
 }
 
 #[inline]
@@ -352,6 +354,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let _ = THREAD_DEALLOCS.try_with(|c| c.set(c.get().wrapping_add(1)));
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -371,6 +374,20 @@ pub fn count_allocations<R>(f: impl FnOnce() -> R) -> (R, u64) {
     let result = f();
     let after = THREAD_ALLOCS.with(Cell::get);
     (result, after.wrapping_sub(before))
+}
+
+/// Run `f`, returning its result and the allocations and deallocations made
+/// *on this thread* during the call: an audio thread must neither take from
+/// the allocator nor give back to it.
+pub fn count_heap_events<R>(f: impl FnOnce() -> R) -> (R, u64, u64) {
+    let allocs = THREAD_ALLOCS.with(Cell::get);
+    let deallocs = THREAD_DEALLOCS.with(Cell::get);
+    let result = f();
+    (
+        result,
+        THREAD_ALLOCS.with(Cell::get).wrapping_sub(allocs),
+        THREAD_DEALLOCS.with(Cell::get).wrapping_sub(deallocs),
+    )
 }
 
 /// Result of [`check_zero_alloc`].

@@ -27,13 +27,14 @@ measurement client that needs the raw speaker turns the correction off first.
 
 - Mono WAV, PCM (8/16/24/32-bit) or 32-bit float. A multichannel file is
   refused: one file per output.
-- Any sample rate. A filter designed at another rate than the engine's is
-  resampled when it is loaded, keeping its magnitude and phase up to 90 % of
-  the lower of the two Nyquist frequencies. To keep the start of the
-  response, a resampled filter is moved later by a few samples (at most
-  3.4 ms, for 44.1 kHz ↔ 48 kHz); every output is then delayed by the same
-  amount, filtered or not and with the correction on or off, and the delay is
-  part of the reported latency. Filters at the engine rate add nothing.
+- At the engine's rate, or at any rate from 32 to 384 kHz: a filter designed
+  at another rate than the engine's is resampled when it is loaded, keeping
+  its magnitude and phase up to 90 % of the lower of the two Nyquist
+  frequencies. To keep the start of the response, a resampled filter is moved
+  later by the resampling kernel's half-width (about 1.3 ms, 2 ms at most);
+  every output is then delayed by the same amount, filtered or not and with
+  the correction on or off, and the delay is part of the reported latency.
+  Filters at the engine rate add nothing.
 - Up to 1.5 s long at the engine rate. Trailing zeros are dropped.
 - The filter is applied as it is: no normalisation. A filter that boosts
   should come with its own headroom.
@@ -85,5 +86,6 @@ large ones whose work is spread across the small blocks, so a long bass
 correction costs little more than a short one. Filters are read, resampled
 and partitioned on a background thread, which also builds the buffers the
 stage plays through; the audio thread swaps them in with a one-block
-crossfade, hands what it replaces back to that thread through a bounded
-channel, and never allocates, live transitions included.
+crossfade and hands what it replaces to a second thread that only frees, so
+it neither allocates nor frees, live transitions included and even while
+the first thread is busy preparing a set.
