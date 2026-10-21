@@ -4349,31 +4349,11 @@ fn output_correction_filters_its_speaker_and_reports_its_latency() {
         std::env::temp_dir().join(format!("orender-correction-render-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("lfe.wav");
-    {
-        let taps = [0.0f32, 0.0, 0.5];
-        let mut b = Vec::new();
-        b.extend_from_slice(b"RIFF");
-        b.extend_from_slice(&(36u32 + 12).to_le_bytes());
-        b.extend_from_slice(b"WAVEfmt ");
-        for v in [16u32] {
-            b.extend_from_slice(&v.to_le_bytes());
-        }
-        for v in [3u16, 1] {
-            b.extend_from_slice(&v.to_le_bytes());
-        }
-        for v in [48_000u32, 48_000 * 4] {
-            b.extend_from_slice(&v.to_le_bytes());
-        }
-        for v in [4u16, 32] {
-            b.extend_from_slice(&v.to_le_bytes());
-        }
-        b.extend_from_slice(b"data");
-        b.extend_from_slice(&12u32.to_le_bytes());
-        for t in taps {
-            b.extend_from_slice(&t.to_le_bytes());
-        }
-        std::fs::write(&path, b).unwrap();
-    }
+    std::fs::write(
+        &path,
+        crate::output_correction::test_wav(48_000, &[0.0, 0.0, 0.5]),
+    )
+    .unwrap();
     let render = |filtered: bool| -> (Vec<f32>, usize, usize) {
         let mut r = crossover_renderer();
         r.set_synchronous_stage_builds(true);

@@ -771,6 +771,29 @@ impl OutputCorrectionStage {
     }
 }
 
+/// A canonical mono 32-bit float WAV file of `samples` (tests).
+#[cfg(test)]
+pub(crate) fn test_wav(rate: u32, samples: &[f32]) -> Vec<u8> {
+    let data = samples.len() * 4;
+    let mut b = Vec::new();
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&((36 + data) as u32).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&3u16.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&rate.to_le_bytes());
+    b.extend_from_slice(&(rate * 4).to_le_bytes());
+    b.extend_from_slice(&4u16.to_le_bytes());
+    b.extend_from_slice(&32u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&(data as u32).to_le_bytes());
+    for s in samples {
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,27 +821,7 @@ mod tests {
             .collect()
     }
 
-    /// A canonical mono 32-bit float WAV.
-    fn wav_f32(rate: u32, samples: &[f32]) -> Vec<u8> {
-        let data = samples.len() * 4;
-        let mut b = Vec::new();
-        b.extend_from_slice(b"RIFF");
-        b.extend_from_slice(&((36 + data) as u32).to_le_bytes());
-        b.extend_from_slice(b"WAVEfmt ");
-        b.extend_from_slice(&16u32.to_le_bytes());
-        b.extend_from_slice(&3u16.to_le_bytes());
-        b.extend_from_slice(&1u16.to_le_bytes());
-        b.extend_from_slice(&rate.to_le_bytes());
-        b.extend_from_slice(&(rate * 4).to_le_bytes());
-        b.extend_from_slice(&4u16.to_le_bytes());
-        b.extend_from_slice(&32u16.to_le_bytes());
-        b.extend_from_slice(b"data");
-        b.extend_from_slice(&(data as u32).to_le_bytes());
-        for s in samples {
-            b.extend_from_slice(&s.to_le_bytes());
-        }
-        b
-    }
+    use super::test_wav as wav_f32;
 
     /// `taps` written as a WAV file in a fresh temporary directory.
     fn filter_file(name: &str, rate: u32, taps: &[f32]) -> (tempdir::Dir, FilterSource) {
