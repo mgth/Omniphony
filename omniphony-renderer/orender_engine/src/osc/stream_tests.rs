@@ -449,6 +449,7 @@ fn measurement_session_over_tcp_blocks_writes_and_releases_on_disconnect() {
         2,
         Command::Begin {
             expected_revision: snapshot.revision.clone(),
+            bypass_output_filters: false,
         },
     ) else {
         panic!("session")
@@ -467,6 +468,7 @@ fn measurement_session_over_tcp_blocks_writes_and_releases_on_disconnect() {
     } = client.measurement(
         3,
         Command::Start {
+            bass_managed: false,
             sequence_outputs: Vec::new(),
             reference_output_id: None,
             session_id: session_id.clone(),
@@ -535,6 +537,7 @@ fn registered_clients_are_told_which_output_plays_level_noise() {
         2,
         Command::Begin {
             expected_revision: snapshot.revision.clone(),
+            bypass_output_filters: false,
         },
     ) else {
         panic!("session")
@@ -560,4 +563,99 @@ fn registered_clients_are_told_which_output_plays_level_noise() {
     );
     companion.measurement(4, Command::Stop { session_id });
     assert_eq!(noise(&mut studio), [OscType::Int(-1), OscType::Int(0)]);
+}
+
+/// Protocol 8 over the real listener: a measured filter of the default
+/// 8192 taps goes up in one request, is set on an output, and a registered
+/// Studio is told it plays a live (unsaved) filter; a session that holds the
+/// filters off is shown too, and released with the connection.
+#[test]
+fn an_uploaded_filter_and_a_session_bypass_reach_the_studio() {
+    use osc_contract::measurement::{
+        Command, FilterOrigin, MAX_UPLOAD_CHUNK_TAPS, OutputFilterSetting, Reply, encode_taps,
+    };
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let control = fixture_control();
+    let (_sender, port) = listening_sender(&control);
+    let speakers = |client: &mut Client| -> serde_json::Value {
+        let messages = client
+            .until(osc_contract::STATE_SPEAKERS)
+            .expect("the speakers state");
+        let message = messages
+            .iter()
+            .rfind(|m| m.addr == osc_contract::STATE_SPEAKERS)
+            .unwrap();
+        let [OscType::String(json)] = message.args.as_slice() else {
+            panic!("JSON")
+        };
+        serde_json::from_str(json).unwrap()
+    };
+    let mut studio = Client::connect(port);
+    studio.send(osc_contract::REGISTER, vec![]);
+    let initial = speakers(&mut studio);
+    assert_eq!(initial["correctionBypassed"], false);
+
+    let mut companion = Client::connect(port);
+    let taps: Vec<f32> = (0..MAX_UPLOAD_CHUNK_TAPS)
+        .map(|i| (-(i as f32) / 700.0).exp() * if i % 2 == 0 { 0.7 } else { -0.3 })
+        .collect();
+    let Reply::FilterUpload { upload } = companion.measurement(
+        1,
+        Command::UploadFilter {
+            upload_id: None,
+            sample_rate: 48_000,
+            total_taps: taps.len() as u32,
+            offset: 0,
+            taps: encode_taps(&taps),
+        },
+    ) else {
+        panic!("upload")
+    };
+    assert_eq!(upload.received_taps as usize, taps.len());
+    let Reply::Snapshot { snapshot } = companion.measurement(2, Command::Discover {}) else {
+        panic!("snapshot")
+    };
+    let Reply::Snapshot { snapshot } = companion.measurement(
+        3,
+        Command::SetOutputFilters {
+            expected_revision: snapshot.revision,
+            outputs: vec![OutputFilterSetting {
+                output_id: snapshot.outputs[0].id.clone(),
+                filter: Some(upload.upload_id),
+            }],
+        },
+    ) else {
+        panic!("set")
+    };
+    let filter = snapshot.outputs[0].filter.clone().expect("filter");
+    assert_eq!(
+        (filter.origin, filter.hash),
+        (FilterOrigin::Live, upload.hash)
+    );
+    let state = loop {
+        let state = speakers(&mut studio);
+        if !state["speakers"][0]["correction"].is_null() {
+            break state;
+        }
+    };
+    assert_eq!(state["speakers"][0]["correction"]["origin"], "live");
+    assert_eq!(
+        state["speakers"][0]["correction"]["sourceTaps"],
+        MAX_UPLOAD_CHUNK_TAPS
+    );
+
+    let Reply::Session { snapshot, .. } = companion.measurement(
+        4,
+        Command::Begin {
+            expected_revision: snapshot.revision,
+            bypass_output_filters: true,
+        },
+    ) else {
+        panic!("session")
+    };
+    assert!(snapshot.output_filters_bypassed);
+    while speakers(&mut studio)["correctionBypassed"] != true {}
+    drop(companion);
+    while speakers(&mut studio)["correctionBypassed"] != false {}
+    assert!(!control.measurement.filters_bypass_requested());
 }

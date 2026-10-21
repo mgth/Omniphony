@@ -1279,6 +1279,87 @@ mod persistence_class_tests {
         );
     }
 
+    /// An inline filter (a measurement client's upload, not saved yet) is
+    /// laid over the layout by speaker name: layout edits rebuild the live
+    /// filters from the layout, and must carry it with its speaker through
+    /// a move, a removal of another speaker and a whole-layout replacement,
+    /// never silently fall back to the file. Choosing a file for that
+    /// speaker replaces it.
+    #[test]
+    fn an_inline_filter_follows_its_speaker_through_layout_edits() {
+        use renderer::output_correction::{FilterSamples, FilterSource};
+        let ctx = RuntimeControlContext::new(crate::test_support::fixture_control());
+        let send = |addr: &str, json: &str| {
+            let msg = OscMessage {
+                addr: addr.to_string(),
+                args: vec![OscType::String(json.into())],
+            };
+            apply_simple_osc_control(&msg, &ctx).expect("handled")
+        };
+        let names: Vec<String> = ctx
+            .renderer
+            .editable_layout()
+            .speakers
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        // Speaker 2 names a file, and has a measured inline filter over it.
+        send(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            r#"{"speakerEdits":[{"id":2,"correctionFilter":"/f/two.wav"}]}"#,
+        );
+        let samples = std::sync::Arc::new(
+            FilterSamples::new(48_000, vec![0.5, 0.25, 0.125], 48_000).unwrap(),
+        );
+        {
+            let mut live = ctx.renderer.live.write();
+            let mut inline = (*live.inline_filters).clone();
+            inline.insert(names[2].clone(), std::sync::Arc::clone(&samples));
+            live.inline_filters = std::sync::Arc::new(inline);
+        }
+        refresh_output_filters(&ctx.renderer);
+        let inline = Some(FilterSource::Samples(std::sync::Arc::clone(&samples)));
+        let at = |index: usize| {
+            ctx.renderer
+                .live
+                .read()
+                .output_filters
+                .source(index)
+                .cloned()
+        };
+        assert_eq!(at(2), inline);
+
+        send(
+            osc_contract::CONTROL_CONFIG_LAYOUT,
+            r#"{"moveSpeaker":{"from":2,"to":0}}"#,
+        );
+        assert_eq!((at(0), at(2)), (inline.clone(), None));
+        send(
+            osc_contract::CONTROL_CONFIG_LAYOUT,
+            r#"{"removeSpeaker":1}"#,
+        );
+        assert_eq!(at(0), inline);
+
+        // A wholesale replacement (the Studio's layout editor) keeps it on
+        // the speaker of the same name, wherever it lands.
+        let replaced = format!(
+            r#"{{"replaceLayout":{{"speakers":[{{"name":"Other","azimuth":30}},{{"name":"{}","azimuth":-30,"correctionFilter":"/f/two.wav"}}]}}}}"#,
+            names[2]
+        );
+        send(osc_contract::CONTROL_CONFIG_LAYOUT, &replaced);
+        assert_eq!((at(0), at(1)), (None, inline.clone()));
+
+        // A file chosen for the speaker (even the one it already names)
+        // replaces the unsaved inline filter.
+        let effects = send(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            r#"{"speakerEdits":[{"id":1,"correctionFilter":"/f/two.wav"}]}"#,
+        );
+        assert!(effects.mark_dirty);
+        assert_eq!(at(1), Some(FilterSource::File("/f/two.wav".into())));
+        assert!(ctx.renderer.live.read().inline_filters.is_empty());
+    }
+
     /// A replaced layout seeds the live output gains from the speakers it
     /// carries, as a boot does.
     #[test]
@@ -1441,9 +1522,21 @@ fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Contro
 /// speakers, or named a filter. Left alone when they already match, so the
 /// stage reloads nothing.
 fn sync_output_filters(ctx: &RuntimeControlContext) {
+    refresh_output_filters(&ctx.renderer);
+}
+
+/// Rebuild the live correction filters from the editable layout and the
+/// unsaved inline filters laid over it (`LiveParams::inline_filters`, by
+/// speaker name), so an inline filter follows its speaker through a move, an
+/// addition, a removal or a whole-layout replacement the way a file does. A
+/// speaker renamed away from its inline filter loses it (the name is the
+/// filter's identity, as it is the measurement protocol's output ID). Left
+/// alone when the sources already match, so the stage reloads nothing.
+pub fn refresh_output_filters(control: &renderer::live_params::RendererControl) {
+    let layout = control.editable_layout();
+    let mut live = control.live.write();
     let next =
-        renderer::output_correction::OutputFilters::from_layout(&ctx.renderer.editable_layout());
-    let mut live = ctx.renderer.live.write();
+        renderer::output_correction::OutputFilters::for_layout(&layout, &live.inline_filters);
     if *live.output_filters.sources != *next.sources {
         live.output_filters = next;
     }
@@ -1483,16 +1576,29 @@ fn config_speakers(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Cont
                 }
                 if let Some(filter) = speaker_patch.correction_filter.clone() {
                     let filter = filter.filter(|path| !path.trim().is_empty());
-                    let edited = ctx.renderer.with_editable_layout(|layout| {
+                    let (edited, name) = ctx.renderer.with_editable_layout(|layout| {
                         match layout.speakers.get_mut(speaker_patch.id) {
-                            Some(speaker) if speaker.correction_filter != filter => {
+                            Some(speaker) => {
+                                let edited = speaker.correction_filter != filter;
                                 speaker.correction_filter = filter;
-                                true
+                                (edited, Some(speaker.name.clone()))
                             }
-                            _ => false,
+                            None => (false, None),
                         }
                     });
-                    if edited {
+                    // Choosing a file (or none) for a speaker replaces an
+                    // unsaved inline filter it had.
+                    let dropped_inline = name.is_some_and(|name| {
+                        let mut live = ctx.renderer.live.write();
+                        if !live.inline_filters.contains_key(&name) {
+                            return false;
+                        }
+                        let mut inline = (*live.inline_filters).clone();
+                        inline.remove(&name);
+                        live.inline_filters = std::sync::Arc::new(inline);
+                        true
+                    });
+                    if edited || dropped_inline {
                         sync_output_filters(ctx);
                         changed = true;
                     }

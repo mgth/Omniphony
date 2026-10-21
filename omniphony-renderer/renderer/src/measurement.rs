@@ -1,11 +1,11 @@
 //! Bounded measurement playback. Preparation and reclamation run on the
 //! control thread; the audio path only reads a buffer and atomics.
 use arc_swap::ArcSwapOption;
-use omniphony_osc_contract::measurement::{LevelNoise, SignalState, Sweep};
+use omniphony_osc_contract::measurement::{LevelNoise, MAX_SEQUENCE_OUTPUTS, SignalState, Sweep};
 use parking_lot::Mutex;
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -24,11 +24,39 @@ pub struct Configuration {
     pub master_gain_bits: u32,
 }
 
+/// Where one segment of a [`Signal`] plays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Route {
+    /// Straight onto this physical output, before its gain and delay.
+    Direct(usize),
+    /// As a source at this position (the layout's coordinates, those an
+    /// object's position is given in), panned and split by the crossover
+    /// like programme audio, so bass management sends its low band to the
+    /// subwoofers.
+    Source([f64; 3]),
+}
+
+/// What [`MeasurementControl::render_with_source`] did with a block.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rendered {
+    /// The lease owns the block: the programme and the tests are silenced.
+    pub owned: bool,
+    /// Where to place the block's source samples, while a signal with
+    /// [`Route::Source`] segments plays: every block of it, silent between
+    /// those segments, so the source's crossover keeps its state warm.
+    pub source_at: Option<[f64; 3]>,
+}
+
 pub struct Signal {
     pub output_index: usize,
     pub configuration: Configuration,
     samples: Box<[f32]>,
+    /// The output of each segment ([`Route::Direct`]); unused for a
+    /// [`Route::Source`] segment.
     routing: Box<[usize]>,
+    /// Per segment, the position of a [`Route::Source`] one; empty when every
+    /// segment is direct.
+    sources: Box<[Option<[f64; 3]>]>,
     total_frames: usize,
     fade_frames: usize,
     deadline: Instant,
@@ -82,6 +110,47 @@ impl Signal {
         Self::prepare_routing(spec, outputs[0], routing, configuration, now)
     }
 
+    /// One sweep per route, in order, each a whole segment (silence
+    /// included). `output_index` is the output the signal is reported for.
+    pub fn prepare_routes(
+        spec: Sweep,
+        output_index: usize,
+        routes: &[Route],
+        configuration: Configuration,
+        now: Instant,
+    ) -> Result<Arc<Self>, &'static str> {
+        if routes.is_empty() || routes.len() > 2 * MAX_SEQUENCE_OUTPUTS + 1 {
+            return Err("a signal plays 1 to 65 segments");
+        }
+        omniphony_osc_contract::measurement::sequence_frames(
+            spec,
+            configuration.sample_rate,
+            (routes.len() / 2).max(1),
+        )?;
+        let mut routing = Vec::with_capacity(routes.len());
+        let mut sources = Vec::with_capacity(routes.len());
+        for route in routes {
+            match *route {
+                Route::Direct(output) => {
+                    routing.push(output);
+                    sources.push(None);
+                }
+                Route::Source(position) => {
+                    if position.iter().any(|v| !v.is_finite()) {
+                        return Err("a source position must be finite");
+                    }
+                    routing.push(output_index);
+                    sources.push(Some(position));
+                }
+            }
+        }
+        let mut signal = Self::prepare_routing(spec, output_index, routing, configuration, now)?;
+        if sources.iter().any(Option::is_some) {
+            Arc::get_mut(&mut signal).expect("just built").sources = sources.into_boxed_slice();
+        }
+        Ok(signal)
+    }
+
     fn prepare_routing(
         spec: Sweep,
         output_index: usize,
@@ -106,6 +175,7 @@ impl Signal {
             configuration,
             samples,
             routing: routing.into_boxed_slice(),
+            sources: Box::new([]),
             total_frames,
             fade_frames: 0,
             deadline: now + Duration::from_secs_f64(total_frames as f64 / sample_rate as f64 + 2.0),
@@ -163,6 +233,7 @@ impl Signal {
             configuration,
             samples: samples.into_boxed_slice(),
             routing: vec![output_index; spec.duration_seconds as usize].into_boxed_slice(),
+            sources: Box::new([]),
             total_frames: spec.frames(configuration.sample_rate) as usize,
             fade_frames: rate / 200,
             deadline: now + Duration::from_secs(u64::from(spec.duration_seconds) + 2),
@@ -218,6 +289,8 @@ pub struct MeasurementControl {
     signal: ArcSwapOption<Signal>,
     /// Keep removed buffers alive until no audio guard can own them.
     retired: Mutex<Vec<Arc<Signal>>>,
+    /// The session plays the outputs unfiltered ([`Self::filters_bypassed`]).
+    bypass_filters: AtomicBool,
 }
 
 impl Default for MeasurementControl {
@@ -227,6 +300,7 @@ impl Default for MeasurementControl {
             lease_until_ms: AtomicU64::new(0),
             signal: ArcSwapOption::empty(),
             retired: Mutex::new(Vec::new()),
+            bypass_filters: AtomicBool::new(false),
         }
     }
 }
@@ -254,7 +328,29 @@ impl MeasurementControl {
     /// Control thread only. Never changes saved renderer settings.
     pub fn end(&self) {
         self.lease_until_ms.store(0, Ordering::Release);
+        self.bypass_filters.store(false, Ordering::Release);
         self.replace(None);
+    }
+
+    /// Control thread only: play the outputs without their correction
+    /// filters for the rest of the session (see [`Self::filters_bypassed`]).
+    pub fn bypass_filters(&self, on: bool) {
+        self.bypass_filters.store(on, Ordering::Release);
+    }
+
+    /// Whether the session asked for the filters to be bypassed, whatever
+    /// its lease. For the state clients see.
+    pub fn filters_bypass_requested(&self) -> bool {
+        self.armed() && self.bypass_filters.load(Ordering::Acquire)
+    }
+
+    /// Whether the outputs play without their correction filters: a session
+    /// asked for it and its lease holds. The audio thread reads it every
+    /// frame; outside a session it costs one load, and a lease that runs out
+    /// gives the filters back even if the control thread never ends the
+    /// session.
+    pub fn filters_bypassed(&self, now: impl FnOnce() -> Instant) -> bool {
+        self.armed() && self.bypass_filters.load(Ordering::Acquire) && self.active(now())
     }
     fn replace(&self, next: Option<Arc<Signal>>) {
         let old = self.signal.swap(next);
@@ -268,18 +364,39 @@ impl MeasurementControl {
 
     /// Returns whether the measurement lease owns this block. All other outputs
     /// are silent during the lease, including between bursts and after Stop.
+    /// A signal with [`Route::Source`] segments needs
+    /// [`Self::render_with_source`].
     pub fn render(&self, output: &mut [f32], configuration: Configuration, now: Instant) -> bool {
+        self.render_with_source(output, &mut Vec::new(), configuration, now)
+            .owned
+    }
+
+    /// [`Self::render`], writing the samples of [`Route::Source`] segments
+    /// into `source` (one per frame of `output`) for the caller to place at
+    /// [`Rendered::source_at`]. `source` grows to the block's length the
+    /// first time such a signal plays, and keeps its capacity.
+    pub fn render_with_source(
+        &self,
+        output: &mut [f32],
+        source: &mut Vec<f32>,
+        configuration: Configuration,
+        now: Instant,
+    ) -> Rendered {
+        let owned = Rendered {
+            owned: true,
+            source_at: None,
+        };
         let width = configuration.width;
         let signal = self.signal.load();
         if !self.active(now) {
             if let Some(signal) = signal.as_ref() {
                 signal.expire();
             }
-            return false;
+            return Rendered::default();
         }
         output.fill(0.0);
         let Some(signal) = signal.as_ref() else {
-            return true;
+            return owned;
         };
         signal.poll(now);
         if configuration != signal.configuration
@@ -290,17 +407,24 @@ impl MeasurementControl {
         }
         let state = signal.state.load(Ordering::Acquire);
         if state >= COMPLETED {
-            return true;
+            return owned;
         }
         if signal
             .state
             .compare_exchange(state, RENDERING, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return true;
+            return owned;
         }
         let start = signal.rendered_frames() as usize;
         let count = (output.len() / width).min(signal.total_frames.saturating_sub(start));
+        // Every block of a signal with sources carries one, silent outside
+        // their segments: the first position until a segment names its own.
+        let mut source_at = signal.sources.iter().flatten().next().copied();
+        if source_at.is_some() {
+            source.clear();
+            source.resize(output.len() / width, 0.0);
+        }
         // Split at segment boundaries, so routing and division stay outside
         // the per-sample loop. The same prepared mono buffer is reused.
         let mut copied = 0;
@@ -309,6 +433,12 @@ impl MeasurementControl {
             let segment = cursor / signal.samples.len();
             let offset = cursor % signal.samples.len();
             let n = (count - copied).min(signal.samples.len() - offset);
+            if let Some(Some(position)) = signal.sources.get(segment) {
+                source[copied..copied + n].copy_from_slice(&signal.samples[offset..offset + n]);
+                source_at = Some(*position);
+                copied += n;
+                continue;
+            }
             let channel = signal.routing[segment];
             let frames = output[copied * width..(copied + n) * width]
                 .chunks_exact_mut(width)
@@ -340,7 +470,10 @@ impl MeasurementControl {
                 Ordering::Acquire,
             );
         }
-        true
+        Rendered {
+            owned: true,
+            source_at,
+        }
     }
 }
 

@@ -1352,6 +1352,13 @@ pub struct LiveParams {
     /// option.
     pub output_filters: crate::output_correction::OutputFilters,
 
+    /// Correction filters handed over as samples (the measurement protocol's
+    /// `set_output_filters`) and not saved yet, by speaker name. They take
+    /// the place of a speaker's `correction_filter` in [`Self::output_filters`]
+    /// (`OutputFilters::for_layout`); a Save writes them to files and empties
+    /// this, a Reload or a profile switch drops them.
+    pub inline_filters: crate::output_correction::InlineFilters,
+
     /// Speaker test signal, `None` when no test is running. Transient by
     /// design: never persisted to the config, and cleared on a fresh start, so
     /// a saved session can never come up making noise.
@@ -1904,6 +1911,11 @@ pub struct RendererControl {
     /// filter file, its length, or why it plays unfiltered. Written by the
     /// stage's worker, read by the state snapshot.
     pub output_correction_status: ArcSwap<crate::output_correction::OutputCorrectionStatus>,
+    /// Which filter set every output plays through alone
+    /// (`output_correction::settled_key`), 0 while a change is still on its
+    /// way. Written by the output correction stage on the audio thread, read
+    /// by the measurement service before a sweep.
+    pub output_correction_settled: Arc<std::sync::atomic::AtomicU64>,
     /// Bumped with every [`Self::set_binaural_brir_status`]: identifies the
     /// set a BRIR layout was derived from (never 0, which names the user's
     /// layout in [`Self::render_layout_key`]).
@@ -2132,6 +2144,7 @@ impl RendererControl {
             output_correction_status: ArcSwap::from_pointee(
                 crate::output_correction::OutputCorrectionStatus::default(),
             ),
+            output_correction_settled: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             brir_status_generation: std::sync::atomic::AtomicU64::new(0),
             render_layout_key: std::sync::atomic::AtomicU64::new(0),
             speaker_stage_width: std::sync::atomic::AtomicUsize::new(0),

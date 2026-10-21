@@ -254,6 +254,7 @@ fn start_recompute(
                                 &live,
                                 &layout,
                                 &control_clone.output_correction_status(),
+                                control_clone.measurement.filters_bypass_requested(),
                             )
                         };
                         let message = |addr: &str, json: String| OscMessage {

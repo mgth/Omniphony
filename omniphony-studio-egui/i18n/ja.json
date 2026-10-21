@@ -724,6 +724,8 @@
   "speaker.correction.pending": "読み込み中…",
   "speaker.correction.error": "適用されていません: {error}",
   "speaker.correction.off": "ルーム補正はオフです。このスピーカーはフィルターなしで再生されます。",
+  "speaker.correction.live": "測定したフィルター（未保存）",
+  "speaker.correction.bypassed": "測定セッション中は一時停止中です。終了するまでスピーカーはフィルターなしで再生されます。",
   "speaker.filter.full": "フルバンド",
   "speaker.filter.low": "ローパス",
   "speaker.filter.high": "ハイパス",

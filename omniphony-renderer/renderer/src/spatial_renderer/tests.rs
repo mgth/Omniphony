@@ -4455,3 +4455,124 @@ fn output_correction_filters_its_speaker_and_reports_its_latency() {
         "{wet_value} vs {dry_value}"
     );
 }
+
+/// A bass-managed measurement sweep (protocol 8) plays as a source at its
+/// speaker's position, through the crossover: with the documented
+/// bass-management recipe, the subwoofer plays the sweep's low band and the
+/// speaker the rest, the other speakers next to nothing. The same sweep sent
+/// straight to the speaker (the protocol's default) never reaches the sub.
+#[test]
+fn a_bass_managed_sweep_plays_through_the_subwoofer_like_programme_audio() {
+    use crate::measurement::{Configuration, Route, Signal};
+    use std::sync::atomic::Ordering;
+    const CUTOFF: f32 = 120.0;
+    const LFE_SPK: usize = 3;
+    const FL: usize = 0;
+    let render = |positioned: bool| -> Vec<(f64, f64)> {
+        let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+        for (idx, sp) in layout.speakers.iter_mut().enumerate() {
+            if idx == LFE_SPK {
+                sp.spatialize = true;
+                sp.freq_high = Some(CUTOFF);
+            } else {
+                sp.freq_low = Some(CUTOFF);
+            }
+        }
+        let mut r = SpatialRenderer::new(test_support::spec(layout)).unwrap();
+        let control = r.renderer_control();
+        // A first frame settles the topology the signal is prepared for.
+        r.render_frame(&[0.0; 1024], 1, &[], Vec::new(), false)
+            .unwrap();
+        let topology = control.active_topology();
+        let speaker = &topology.speaker_layout.speakers[FL];
+        let route = if positioned {
+            Route::Source([speaker.x as f64, speaker.y as f64, speaker.z as f64])
+        } else {
+            Route::Direct(FL)
+        };
+        let now = std::time::Instant::now();
+        let signal = Signal::prepare_routes(
+            omniphony_osc_contract::measurement::Sweep {
+                duration_ms: 1000,
+                peak_dbfs: -20.0,
+                start_hz: 20.0,
+                end_hz: 2000.0,
+            },
+            FL,
+            &[route],
+            Configuration {
+                sample_rate: 48_000,
+                width: topology.speaker_layout.speakers.len(),
+                speaker_generation: control.speaker_params_generation.load(Ordering::Acquire),
+                geometry_generation: control.geometry_generation.load(Ordering::Acquire),
+                master_gain_bits: control.live.read().master_gain.to_bits(),
+            },
+            now,
+        )
+        .unwrap();
+        control.measurement.install(signal.clone());
+        control
+            .measurement
+            .renew(now, std::time::Duration::from_secs(30));
+        let mut energy = vec![(0.0, 0.0); 12];
+        // Low and high halves of the sweep, by time (a log sweep from 20 Hz
+        // to 2 kHz passes 120 Hz near 39 % of its length).
+        let sweep_start = 48_000 / 4;
+        let split = sweep_start + 48_000 * 39 / 100;
+        let mut frame = 0;
+        while signal.state() != omniphony_osc_contract::measurement::SignalState::Completed {
+            let out = r
+                .render_frame(&[0.0; 1024], 1, &[], Vec::new(), false)
+                .unwrap();
+            assert_eq!(out.n_channels, 12);
+            for (i, f) in out.samples.as_chunks::<12>().0.iter().enumerate() {
+                for (spk, &v) in f.iter().enumerate() {
+                    let e = (v as f64) * (v as f64);
+                    if frame + i < split - 4_800 {
+                        energy[spk].0 += e;
+                    } else if frame + i > split + 4_800 {
+                        energy[spk].1 += e;
+                    }
+                }
+            }
+            frame += 1024;
+            assert!(frame < 48_000 * 3, "the sweep completes");
+        }
+        control.measurement.end();
+        energy
+    };
+    let direct = render(false);
+    assert!(direct[FL].0 > 1.0 && direct[FL].1 > 1.0, "{direct:?}");
+    assert_eq!(
+        direct[LFE_SPK],
+        (0.0, 0.0),
+        "a direct sweep skips the crossover"
+    );
+
+    let managed = render(true);
+    // Below the cutoff the sub carries the sweep, above it the speaker does.
+    assert!(
+        managed[LFE_SPK].0 > 10.0 * managed[FL].0,
+        "low band: sub {} vs speaker {}",
+        managed[LFE_SPK].0,
+        managed[FL].0
+    );
+    assert!(
+        managed[FL].1 > 100.0 * managed[LFE_SPK].1,
+        "high band: speaker {} vs sub {}",
+        managed[FL].1,
+        managed[LFE_SPK].1
+    );
+    // The upper band reaches the speaker at the sweep's level, and no other.
+    assert!(
+        (managed[FL].1 / direct[FL].1 - 1.0).abs() < 0.1,
+        "{} vs {}",
+        managed[FL].1,
+        direct[FL].1
+    );
+    for (spk, e) in managed.iter().enumerate() {
+        if spk != FL && spk != LFE_SPK {
+            assert!(e.1 < 1e-3 * managed[FL].1, "speaker {spk}: {e:?}");
+        }
+    }
+}

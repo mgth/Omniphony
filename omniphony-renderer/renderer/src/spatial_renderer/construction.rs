@@ -493,6 +493,7 @@ impl SpatialRenderer {
             distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
             speakers: speaker_live,
             output_filters: crate::output_correction::OutputFilters::from_layout(speaker_layout),
+            inline_filters: Default::default(),
             room_ratio,
             room_ratio_rear,
             room_ratio_lower,
@@ -600,6 +601,7 @@ impl SpatialRenderer {
             binaural_gain_buf: Vec::new(),
             binaural_direct_buf: Vec::new(),
             object_test_source: Default::default(),
+            measurement_source: Vec::new(),
         })
     }
 
@@ -640,10 +642,12 @@ impl SpatialRenderer {
         sample_rate: u32,
     ) -> crate::output_correction::OutputCorrectionStage {
         let status_control = Arc::clone(control);
-        crate::output_correction::OutputCorrectionStage::with_status_sink(
+        let mut stage = crate::output_correction::OutputCorrectionStage::with_status_sink(
             sample_rate,
             Arc::new(move |status| status_control.set_output_correction_status(status)),
-        )
+        );
+        stage.set_settled_flag(Arc::clone(&control.output_correction_settled));
+        stage
     }
 
     /// Re-target the renderer to another sample rate: the one the frames it is

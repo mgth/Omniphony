@@ -36,6 +36,7 @@ pub fn save_live_config(
 
     refuse_live_state_from_defaults(control, &path)?;
     let mut config = renderer::config::Config::load_for_update(&path)?;
+    write_inline_filters(control, &path)?;
     store_live_into_config(control, host, &mut config);
     // A deliberate save supersedes any pending live-handoff overlay.
     commit_config(&path, &config)?;
@@ -45,6 +46,155 @@ pub fn save_live_config(
         path,
         restart_required: false,
     })
+}
+
+/// Directory, next to the config file, where a Save writes the inline
+/// correction filters of the active profile.
+pub const INLINE_FILTER_DIR: &str = "room-correction";
+
+/// Write every unsaved inline correction filter (`LiveParams::inline_filters`,
+/// a measurement client's upload) as a mono float WAV file under
+/// `room-correction/<profile>/` next to the config file at `config_path`
+/// ([`write_inline_filter_files`]), point its speaker's `correction_filter`
+/// at it, and drop the inline filter: the speaker then plays the file, the
+/// same taps. Only the Save does this (docs/persistence-policy.md): inline
+/// filters are render state. An inline filter whose speaker no longer exists
+/// (renamed or removed) is dropped without a file. Fails before touching the
+/// layout if a file cannot be written.
+pub fn write_inline_filters(control: &RendererControl, config_path: &Path) -> Result<()> {
+    if control.live.read().inline_filters.is_empty() {
+        return Ok(());
+    }
+    let profile = control.profiles_info().active;
+    let written = write_inline_filter_files(control, config_path, &profile)?;
+    control.with_editable_layout(|layout| {
+        for speaker in &mut layout.speakers {
+            if let Some((_, file)) = written.iter().find(|(name, _)| *name == speaker.name) {
+                speaker.correction_filter = Some(file.clone());
+            }
+        }
+    });
+    control.live.write().inline_filters = Default::default();
+    crate::osc::refresh_output_filters(control);
+    log::info!(
+        "saved {} inline correction filter(s) for profile '{profile}'",
+        written.len()
+    );
+    Ok(())
+}
+
+/// Profile creation's share of [`write_inline_filters`]: the unsaved inline
+/// filters written as files for the new profile `profile` and named in
+/// `render`'s layout (the live state [`store_live_into_config`] copied into
+/// it), while the live state keeps them unsaved for the active profile.
+pub fn store_inline_filters_into(
+    control: &RendererControl,
+    config_path: &Path,
+    profile: &str,
+    render: &mut RenderConfig,
+) -> Result<()> {
+    if control.live.read().inline_filters.is_empty() {
+        return Ok(());
+    }
+    let written = write_inline_filter_files(control, config_path, profile)?;
+    if let Some(layout) = render.current_layout.as_mut() {
+        for speaker in &mut layout.speakers {
+            if let Some((_, file)) = written.iter().find(|(name, _)| *name == speaker.name) {
+                speaker.correction_filter = Some(file.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write the inline filter of every speaker of the editable layout that has
+/// one under `room-correction/<profile>/`, and say which file each speaker's
+/// went to. A file is never rewritten: its name carries the filter's rate and
+/// content hash, so a saved configuration that names it (another profile
+/// created from this one, an earlier Save) keeps the filter it was saved
+/// with. The same filter saved again reuses its file; a name taken by other
+/// bytes (a hash collision, a file edited by hand) moves on to a numbered
+/// one.
+fn write_inline_filter_files(
+    control: &RendererControl,
+    config_path: &Path,
+    profile: &str,
+) -> Result<Vec<(String, String)>> {
+    let inline = control.live.read().inline_filters.clone();
+    let dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(INLINE_FILTER_DIR)
+        .join(file_stem(profile));
+    let layout = control.editable_layout();
+    let mut written = Vec::new();
+    for speaker in &layout.speakers {
+        let Some(samples) = inline.get(&speaker.name) else {
+            continue;
+        };
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| anyhow!("cannot create {}: {e}", dir.display()))?;
+        let bytes = renderer::output_correction::filter_wav(samples.sample_rate, &samples.taps);
+        let base = format!(
+            "{}-{}-{:016x}",
+            file_stem(&speaker.name),
+            samples.sample_rate,
+            samples.hash
+        );
+        let mut n = 1;
+        let file = loop {
+            let stem = if n == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            };
+            let file = dir.join(format!("{stem}.wav"));
+            match std::fs::read(&file) {
+                Ok(existing) if existing == bytes => break file,
+                Ok(_) => {
+                    n += 1;
+                    continue;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(anyhow!("cannot read {}: {e}", file.display())),
+            }
+            let temp = dir.join(format!(".{stem}.wav.tmp"));
+            std::fs::write(&temp, &bytes)
+                .and_then(|()| std::fs::rename(&temp, &file))
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&temp);
+                    anyhow!(
+                        "cannot write the correction filter of {} to {}: {e}",
+                        speaker.name,
+                        file.display()
+                    )
+                })?;
+            break file;
+        };
+        written.push((speaker.name.clone(), file.to_string_lossy().into_owned()));
+    }
+    Ok(written)
+}
+
+/// `name` as a file name: letters, digits, `-`, `_` and `.` kept, anything
+/// else `_`; never empty or hidden.
+fn file_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem = stem.trim_start_matches('.');
+    if stem.is_empty() {
+        "output".to_string()
+    } else {
+        stem.to_string()
+    }
 }
 
 /// Refuse to write the live state over `path` while it is the defaults the
@@ -367,6 +517,132 @@ mod tests {
         assert!((seeded[&2].gain - 0.501).abs() < 1e-3);
         assert_eq!(seeded[&3].gain, 0.0);
         assert!(!seeded.contains_key(&0), "unity speakers need no entry");
+    }
+
+    /// Inline correction filters reach the disk only through the Save: each
+    /// becomes a mono float WAV under `room-correction/<profile>/` next to
+    /// config.yaml, its speaker's `correction_filter` names it, the live
+    /// state plays the file instead (the same taps), and reading the saved
+    /// config back finds the same filter, sample for sample. One whose
+    /// speaker is gone is dropped.
+    #[test]
+    fn a_save_writes_inline_filters_as_files_the_config_reads_back() {
+        use renderer::output_correction::{FilterSamples, FilterSource, load_filter};
+        let path = temp_config_path("inline-filters");
+        let dir = path.parent().unwrap().join(INLINE_FILTER_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        let name = control.editable_layout().speakers[1].name.clone();
+        let taps: Vec<f32> = (0..3000)
+            .map(|i| (-(i as f32) / 400.0).exp() * 0.5)
+            .collect();
+        let samples = Arc::new(FilterSamples::new(44_100, taps.clone(), 48_000).unwrap());
+        {
+            let mut live = control.live.write();
+            let mut inline = std::collections::BTreeMap::new();
+            inline.insert(name.clone(), Arc::clone(&samples));
+            inline.insert("gone".to_string(), Arc::clone(&samples));
+            live.inline_filters = Arc::new(inline);
+        }
+        crate::osc::refresh_output_filters(&control);
+        assert!(matches!(
+            control.live.read().output_filters.source(1),
+            Some(FilterSource::Samples(_))
+        ));
+        assert!(!path.exists(), "nothing on disk before the Save");
+
+        save_live_config(&control, None).expect("save");
+        let file = dir.join(control.profiles_info().active).join(format!(
+            "{}-44100-{:016x}.wav",
+            file_stem(&name),
+            samples.hash
+        ));
+        assert!(file.exists(), "{}", file.display());
+        let file = file.to_string_lossy().into_owned();
+        assert_eq!(
+            control.editable_layout().speakers[1]
+                .correction_filter
+                .as_deref(),
+            Some(file.as_str())
+        );
+        assert!(control.live.read().inline_filters.is_empty());
+        assert_eq!(
+            control.live.read().output_filters.source(1),
+            Some(&FilterSource::File(file.as_str().into()))
+        );
+        let written = Path::new(&file).parent().unwrap();
+        assert_eq!(
+            std::fs::read_dir(written).unwrap().count(),
+            1,
+            "no temporary left"
+        );
+
+        // The next boot (or a Reload) reads the config: the same filter.
+        let config = renderer::config::Config::load_or_default(&path);
+        let layout = config
+            .render
+            .as_ref()
+            .and_then(|r| r.current_layout.as_ref())
+            .expect("layout saved");
+        let saved = layout.speakers[1].correction_filter.clone().expect("named");
+        assert_eq!(saved, file);
+        let loaded = load_filter(&FilterSource::File(saved.into()), 44_100).unwrap();
+        assert_eq!(loaded.taps, taps);
+        assert_eq!(
+            (loaded.hash, loaded.source_taps),
+            (samples.hash, taps.len())
+        );
+    }
+
+    /// A saved filter file is never rewritten: another configuration may name
+    /// it (a profile created from this one keeps the path). A new filter for
+    /// the same speaker, or for a speaker whose name maps to the same file
+    /// name, goes to a file of its own; the same filter saved again reuses
+    /// its file.
+    #[test]
+    fn a_save_never_rewrites_a_filter_file_a_configuration_may_name() {
+        use renderer::output_correction::FilterSamples;
+        let path = temp_config_path("inline-immutable");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().join(INLINE_FILTER_DIR));
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        control.with_editable_layout(|layout| {
+            layout.speakers[0].name = "A B".into();
+            layout.speakers[1].name = "A_B".into();
+        });
+        let save = |name: &str, tap: f32| -> String {
+            {
+                let mut live = control.live.write();
+                let mut inline = std::collections::BTreeMap::new();
+                inline.insert(
+                    name.to_string(),
+                    Arc::new(FilterSamples::new(48_000, vec![tap], 48_000).unwrap()),
+                );
+                live.inline_filters = Arc::new(inline);
+            }
+            save_live_config(&control, None).expect("save");
+            let layout = control.editable_layout();
+            let speaker = layout.speakers.iter().find(|s| s.name == name).unwrap();
+            speaker.correction_filter.clone().expect("named")
+        };
+        let taps = |file: &str| {
+            renderer::output_correction::load_filter(
+                &renderer::output_correction::FilterSource::File(file.into()),
+                48_000,
+            )
+            .unwrap()
+            .taps
+        };
+        let first = save("A B", 0.25);
+        let replaced = save("A B", 0.75);
+        let neighbour = save("A_B", 0.5);
+        assert_ne!(first, replaced);
+        assert_ne!(first, neighbour);
+        assert_eq!(taps(&first), [0.25], "the first file is left as saved");
+        assert_eq!(taps(&replaced), [0.75]);
+        assert_eq!(taps(&neighbour), [0.5]);
+        assert_eq!(save("A B", 0.25), first, "the same filter reuses its file");
     }
 
     /// A config.yaml that fails to parse runs the engine on defaults; neither

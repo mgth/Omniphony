@@ -1,4 +1,4 @@
-# Measurement sessions, version 7
+# Measurement sessions, version 8
 
 The companion can discover renderer outputs and play an identified finite sweep
 under an exclusive, temporary session. This increment does not acquire microphones,
@@ -286,4 +286,131 @@ wait for the speaker layout rebuild, which the renderer runs on its own. Like
 `set_outputs`, it is live only: the saved configuration changes only through the
 Studio's Save. An older renderer refuses the unknown command; a client offers it
 only on a version-7 connection.
+
+## Room correction filters, version 8
+
+Version 8 lets a client measure the speakers without their room correction
+filters, play the low band through bass management as programme audio does,
+and hand the renderer the filters it designed. The renderer applies them
+(`docs/output-correction.md`); it does not design them. Every field and
+command below is refused in a request of an older version
+(`invalid_request`), and every reply to an older version leaves them out, so
+a version-7 client sees the version-7 shapes.
+
+### Uploading a filter
+
+A filter is an impulse response at the rate it was designed at: the
+renderer's own, or any rate from 32 to 384 kHz (resampled when it is loaded),
+at most 1.5 s long at that rate, finite and not silent. It travels as
+`upload_filter` chunks, because a measurement request is one JSON string of
+at most 64 KiB (`MAX_PACKET_BYTES`; the stream transport itself carries 1 MiB
+packets):
+
+| Field | Meaning |
+| --- | --- |
+| `upload_id` | Omitted in the first chunk; the reply's `upload_id` in the next ones |
+| `sample_rate` | The filter's rate, the same in every chunk |
+| `total_taps` | The filter's length, the same in every chunk |
+| `offset` | Where this chunk starts: 0, then the reply's `received_taps` |
+| `taps` | Base64 (standard alphabet, padded) of the taps as little-endian 32-bit floats, at most 8192 taps (`MAX_UPLOAD_CHUNK_TAPS`) |
+
+The default 8192-tap filter travels in one request. The reply is
+`filter_upload: {upload: {upload_id, sample_rate, total_taps, received_taps,
+hash}}`; `hash` appears once every tap arrived: the 64-bit FNV-1a hash of the
+taps' little-endian bytes, as 16 lowercase hex digits (`taps_hash_hex`). A
+chunk out of order, past the end, or with another rate or length is refused
+(`invalid_filter`) and the upload stays as it was, to be sent again. A filter
+found silent once complete is refused and forgotten. The renderer keeps at
+most 64 uploads (64 MiB of taps) that no `set_output_filters` has used yet
+(`upload_limit` past that), and forgets one no request touched for two
+minutes (`unknown_upload` afterwards). Uploading is accepted in and out of a
+session: it only stores the taps. The contract crate provides `encode_taps`,
+`decode_taps` and `taps_hash_hex`.
+
+### Setting filters
+
+`set_output_filters: {expected_revision, outputs: [{output_id, filter}]}`
+replaces the filters of the outputs it names, as `set_outputs` does their
+gains and delays: the revision is checked under the live-state writer lock,
+an unknown output, a duplicate, or an unknown or incomplete upload refuses
+the whole command, and the outputs it names change together in one
+publication. `filter` is an upload's `upload_id`, or `null` for no filter at
+all (a file the layout names included). It is refused during any session,
+the caller's own included (`busy`): the session's snapshot would no longer
+describe what plays. An applied upload is consumed.
+
+The filters are live state, like `set_outputs`: they light the Studio's Save
+button and reach the saved configuration only through it. The Save writes
+each one as a mono 32-bit float WAV file under `room-correction/<profile>/`
+next to `config.yaml`, named after the output, the rate and the hash
+(`<output>-<rate>-<hash>.wav`), and names it in the speaker's
+`correction_filter`; the speaker then plays that file, the same taps (same
+hash). A saved file is never rewritten, so a configuration that names it
+(another profile, an earlier Save) keeps the filter it was saved with.
+Creating a profile from the current state gives the new profile files of
+its own for the filters not saved yet, and leaves them unsaved in the active
+profile. A Reload or a profile switch drops filters that were not saved, as it drops every unsaved
+edit, and so does an engine handoff (a restart, mpv taking over). The
+Studio shows a live filter as "Measured filter, not saved". A filter follows
+its output's name: layout edits that move, add, remove or replace speakers
+keep it on the speaker of that name, and choosing a file for that speaker
+in the Studio replaces it.
+
+### Filters in the snapshot
+
+From version 8 each output carries `filter` when it has one:
+
+| Field | Meaning |
+| --- | --- |
+| `origin` | `file` (a file the layout names) or `live` (an upload not saved yet) |
+| `file` | The file, for `origin: file` |
+| `state` | `pending` (being read and prepared), `loaded`, or `error` (the output plays unfiltered) |
+| `sample_rate`, `taps`, `hash` | The filter at its own rate, as uploaded or read; a file's once loaded |
+| `error` | Why it could not be used |
+
+A client checks that an output plays what it uploaded by comparing `hash`.
+The snapshot revision follows the filters themselves, not their loading: a
+filter that finishes loading does not end a session.
+
+### Measuring without the filters
+
+`begin` takes `bypass_output_filters: true` (omitted when false): while the
+session holds, every output plays unfiltered, through the correction stage's
+identity bank, as with the `output_correction` option off: the outputs keep
+their latency, so a measurement without the filters lines up with one
+through them. The filters come back when the session ends, however it ends:
+`end`, the connection closing, a configuration change, or the lease running
+out, which the audio thread checks on its own. The session's snapshot reports
+`output_filters_bypassed: true` (omitted when false), and the Studio shows
+that a measurement session holds the filters off.
+
+A change of filters reaches the longest part of a filter (its 8192-sample
+partitions) only after up to two of their periods, about 340 ms at 48 kHz:
+longer than the 250 ms of silence before a sweep. So in a version-8 session
+a `start` is refused with `filters_settling`, before anything plays, until
+every output plays through the filters the session asked for alone (the
+upload loaded, the bypass in place); start again shortly with the same
+`signal_id`. A version-7 session is never refused this way.
+
+### Bass-managed sweeps
+
+`start` takes `bass_managed: true` (omitted when false; echoed in the
+progress): each target's sweep then plays as a source at that output's
+layout position, split by the crossover and panned with each band's gains
+like programme audio, so bass management gives a subwoofer the low band. The
+reference sweeps stay direct. The source sits on its speaker, so what is
+meant for objects moving through the room is left out: the distance
+diffusion is off, and each band's gains are scaled to unit energy, which
+takes out the distance model's attenuation; the speaker's band then plays at
+the sweep's peak, as a direct sweep would. A target's sweep may start below
+its own `freq_low_hz` (down to 20 Hz), since the crossover gives that part to
+the subwoofers, and the -6 dBFS ceiling is checked against the loudest
+unmuted output's gain, which the sweep may reach through the panning. The
+sweep still goes through every output's gain, delay and mute, and through
+the filters unless the session bypasses them. The segment timing is the
+same as a direct sweep's, but the crossover's response is in the target
+segments and not in the direct reference sweeps around them: the LR4
+crossover's phase, and the FIR crossover's whole latency (the crossover part
+of the renderer's reported output latency) as a delay of the target.
+
 

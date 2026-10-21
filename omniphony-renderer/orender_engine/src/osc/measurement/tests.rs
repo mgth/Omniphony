@@ -89,6 +89,7 @@ fn begin(service: &mut Service, peer: &Peer, now: Instant) -> (String, Snapshot)
         1,
         Command::Begin {
             expected_revision: snapshot.revision.clone(),
+            bypass_output_filters: false,
         },
         now,
     );
@@ -99,6 +100,7 @@ fn begin(service: &mut Service, peer: &Peer, now: Instant) -> (String, Snapshot)
 }
 fn sweep(session_id: &str, snapshot: &Snapshot, id: u64) -> Command {
     Command::Start {
+        bass_managed: false,
         sequence_outputs: Vec::new(),
         reference_output_id: None,
         session_id: session_id.into(),
@@ -122,6 +124,7 @@ fn sequence_acknowledges_order_and_rejects_duplicate_or_unsafe_later_outputs() {
         let (id, snapshot) = begin(&mut service, &owner, now);
         let mut request = sweep(&id, &snapshot, 1);
         if let Command::Start {
+            bass_managed: false,
             reference_output_id,
             sequence_outputs,
             ..
@@ -180,6 +183,7 @@ fn sessions_preserve_settings_and_refuse_stale_snapshots() {
             1,
             Command::Begin {
                 expected_revision: before.revision,
+                bypass_output_filters: false,
             },
             now,
         ),
@@ -237,6 +241,7 @@ fn measurement_rejects_layouts_that_do_not_match_the_running_output() {
                 1,
                 Command::Begin {
                     expected_revision: snapshot.revision,
+                    bypass_output_filters: false,
                 },
                 Instant::now(),
             ),
@@ -287,6 +292,7 @@ fn owner_and_request_ids_prevent_replayed_or_overlapping_signals() {
             2,
             Command::Begin {
                 expected_revision: snapshot.revision.clone(),
+                bypass_output_filters: false,
             },
             now,
         ),
@@ -453,6 +459,7 @@ fn referenced_start_validates_the_reference_and_reports_three_segments() {
         }
         let mut request = sweep(&id, &snapshot, 1);
         if let Command::Start {
+            bass_managed: false,
             reference_output_id,
             ..
         } = &mut request
@@ -472,6 +479,7 @@ fn referenced_start_validates_the_reference_and_reports_three_segments() {
     let (id, snapshot) = begin(&mut service, &owner, now);
     let mut request = sweep(&id, &snapshot, 1);
     if let Command::Start {
+        bass_managed: false,
         reference_output_id,
         ..
     } = &mut request
@@ -961,7 +969,7 @@ fn version_4_clients_get_their_own_reply_shape_without_positions() {
     let (owner, _client) = peer();
 
     let current = request(&mut service, &owner, VERSION, Command::Discover {});
-    assert_eq!(current.version, 7);
+    assert_eq!(current.version, 8);
     assert!(!version_4_shaped(&current), "version 5 adds fields");
     let five = request(&mut service, &owner, 5, Command::Discover {});
     assert_eq!(five.version, 5);
@@ -981,6 +989,7 @@ fn version_4_clients_get_their_own_reply_shape_without_positions() {
         4,
         Command::Begin {
             expected_revision: revision,
+            bypass_output_filters: false,
         },
     );
     assert!(
@@ -1002,12 +1011,782 @@ fn version_4_clients_get_their_own_reply_shape_without_positions() {
 }
 
 #[test]
-fn versions_outside_4_to_7_are_refused_in_the_current_version() {
+fn versions_outside_4_to_8_are_refused_in_the_current_version() {
     let mut service = Service::new(fixture_control(), 42, None);
     let (owner, _client) = peer();
-    for version in [3, 8] {
+    for version in [3, 9] {
         let response = request(&mut service, &owner, version, Command::Discover {});
         assert_eq!(response.version, VERSION);
         assert_error(response.reply, "unsupported_version");
     }
+}
+
+// ── Protocol 8: room correction filters ──────────────────────────────────
+
+/// Upload `taps` at `rate` in chunks of `chunk` taps; the upload's ID.
+fn upload(
+    service: &mut Service,
+    peer: &Peer,
+    first_id: u64,
+    rate: u32,
+    taps: &[f32],
+    chunk: usize,
+) -> FilterUpload {
+    let mut upload_id = None;
+    let mut last = None;
+    for (i, part) in taps.chunks(chunk).enumerate() {
+        let reply = command(
+            service,
+            peer,
+            first_id + i as u64,
+            Command::UploadFilter {
+                upload_id: upload_id.clone(),
+                sample_rate: rate,
+                total_taps: taps.len() as u32,
+                offset: (i * chunk) as u32,
+                taps: encode_taps(part),
+            },
+            Instant::now(),
+        );
+        let Reply::FilterUpload { upload } = reply else {
+            panic!("{reply:?}")
+        };
+        upload_id = Some(upload.upload_id.clone());
+        last = Some(upload);
+    }
+    last.expect("one chunk at least")
+}
+
+fn decaying(len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|i| (-(i as f32) / 900.0).exp() * if i % 3 == 0 { 0.6 } else { -0.2 })
+        .collect()
+}
+
+#[test]
+fn taps_travel_as_base64_of_little_endian_floats_and_hash_alike_on_both_ends() {
+    let taps = [1.0f32, -0.5, 0.25, f32::MIN_POSITIVE, 3.0e-9];
+    for n in 0..taps.len() {
+        let text = encode_taps(&taps[..n]);
+        assert_eq!(text.len() % 4, 0);
+        assert_eq!(decode_taps(&text).unwrap(), taps[..n].to_vec());
+    }
+    assert_eq!(encode_taps(&[1.0]), "AACAPw==");
+    for bad in ["AACAPw=", "AACA*w==", "AA==AACA", "AACAPwA="] {
+        assert!(decode_taps(bad).is_err(), "{bad}");
+    }
+    // FNV-1a over the bytes: the empty filter is the offset basis.
+    assert_eq!(taps_hash_hex(&[]), "cbf29ce484222325");
+    let samples = FilterSamples::new(48_000, taps.to_vec(), 48_000).unwrap();
+    assert_eq!(format!("{:016x}", samples.hash), taps_hash_hex(&taps));
+    // The default 8192-tap filter fits one request.
+    let request = Request {
+        version: VERSION,
+        request_id: 1,
+        command: Command::UploadFilter {
+            upload_id: Some("x".repeat(64)),
+            sample_rate: 384_000,
+            total_taps: 576_000,
+            offset: 0,
+            taps: encode_taps(&vec![-1.234_567e-12; MAX_UPLOAD_CHUNK_TAPS]),
+        },
+    };
+    assert!(serde_json::to_string(&request).unwrap().len() <= MAX_PACKET_BYTES);
+}
+
+#[test]
+fn version_8_requests_round_trip_and_older_clients_keep_their_shapes() {
+    let commands = [
+        Command::Begin {
+            expected_revision: "r".into(),
+            bypass_output_filters: true,
+        },
+        Command::Start {
+            session_id: "s".into(),
+            signal_id: 2,
+            output_id: "L".into(),
+            reference_output_id: Some("C".into()),
+            sequence_outputs: vec!["L".into()],
+            signal: Sweep {
+                duration_ms: 500,
+                peak_dbfs: -20.0,
+                start_hz: 20.0,
+                end_hz: 20_000.0,
+            },
+            bass_managed: true,
+        },
+        Command::UploadFilter {
+            upload_id: None,
+            sample_rate: 48_000,
+            total_taps: 3,
+            offset: 0,
+            taps: encode_taps(&[1.0, 0.5, 0.25]),
+        },
+        Command::SetOutputFilters {
+            expected_revision: "r".into(),
+            outputs: vec![
+                OutputFilterSetting {
+                    output_id: "L".into(),
+                    filter: Some("u".into()),
+                },
+                OutputFilterSetting {
+                    output_id: "R".into(),
+                    filter: None,
+                },
+            ],
+        },
+    ];
+    for command in commands {
+        let request = Request {
+            version: VERSION,
+            request_id: 7,
+            command,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+    }
+    // A version-7 begin is exactly the old wire form.
+    let begin = serde_json::to_value(Command::Begin {
+        expected_revision: "r".into(),
+        bypass_output_filters: false,
+    })
+    .unwrap();
+    assert_eq!(
+        begin,
+        serde_json::json!({"type": "begin", "expected_revision": "r"})
+    );
+
+    // Replies: a version-8 snapshot carries the filters and the bypass, a
+    // version-7 one has neither (its client refuses unknown fields).
+    let control = fixture_control();
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let upload = upload(&mut service, &owner, 1, 48_000, &decaying(100), 64);
+    let before = service.snapshot();
+    let reply = command(
+        &mut service,
+        &owner,
+        10,
+        Command::SetOutputFilters {
+            expected_revision: before.revision,
+            outputs: vec![OutputFilterSetting {
+                output_id: before.outputs[0].id.clone(),
+                filter: Some(upload.upload_id),
+            }],
+        },
+        Instant::now(),
+    );
+    assert!(matches!(reply, Reply::Snapshot { .. }), "{reply:?}");
+    let mut snapshot = service.snapshot();
+    snapshot.output_filters_bypassed = true;
+    let progress = Progress {
+        signal_id: 1,
+        output_id: "L".into(),
+        reference_output_id: None,
+        sequence_outputs: Vec::new(),
+        signal: Sweep {
+            duration_ms: 500,
+            peak_dbfs: -20.0,
+            start_hz: 20.0,
+            end_hz: 20_000.0,
+        },
+        bass_managed: true,
+        state: SignalState::Queued,
+        rendered_frames: 0,
+        total_frames: 1,
+    };
+    let session = |version| {
+        serde_json::to_string(&Response::for_version(
+            version,
+            1,
+            Reply::Session {
+                session_id: "s".into(),
+                snapshot: snapshot.clone(),
+                lease_ms: LEASE_MS,
+                signal: Some(progress.clone()),
+            },
+        ))
+        .unwrap()
+    };
+    let eight = session(8);
+    for field in [
+        "\"filter\"",
+        "output_filters_bypassed",
+        "bass_managed",
+        "\"live\"",
+    ] {
+        assert!(eight.contains(field), "{field}: {eight}");
+    }
+    let seven = session(7);
+    for field in ["\"filter\"", "output_filters_bypassed", "bass_managed"] {
+        assert!(!seven.contains(field), "{field}: {seven}");
+    }
+    let parsed: Response = serde_json::from_str(&eight).unwrap();
+    let Reply::Session { snapshot: back, .. } = parsed.reply else {
+        panic!()
+    };
+    assert_eq!(back, snapshot);
+
+    // A version-7 request cannot use them.
+    for command in [
+        Command::UploadFilter {
+            upload_id: None,
+            sample_rate: 48_000,
+            total_taps: 1,
+            offset: 0,
+            taps: encode_taps(&[1.0]),
+        },
+        Command::Begin {
+            expected_revision: service.snapshot().revision,
+            bypass_output_filters: true,
+        },
+    ] {
+        let response = request(&mut service, &owner, 7, command);
+        assert_eq!(response.version, 7);
+        assert_error(response.reply, "invalid_request");
+    }
+    assert!(!control.measurement.armed(), "no session began");
+}
+
+#[test]
+fn uploaded_filters_are_set_atomically_against_the_revision_and_reported() {
+    use renderer::output_correction::FilterSource;
+    let control = fixture_control();
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let taps = decaying(20_000);
+    let done = upload(
+        &mut service,
+        &owner,
+        1,
+        96_000,
+        &taps,
+        MAX_UPLOAD_CHUNK_TAPS,
+    );
+    assert_eq!(
+        (done.received_taps, done.total_taps, done.hash.as_deref()),
+        (20_000, 20_000, Some(taps_hash_hex(&taps).as_str()))
+    );
+    let other = upload(&mut service, &owner, 10, 48_000, &[0.5, 0.25], 2);
+    // Speaker 1 names a file the command drops (`null`).
+    control.with_editable_layout(|l| l.speakers[1].correction_filter = Some("/f/old.wav".into()));
+    runtime_control::osc::refresh_output_filters(&control);
+
+    let before = service.snapshot();
+    let (first, second) = (before.outputs[0].id.clone(), before.outputs[1].id.clone());
+    assert_eq!(
+        before.outputs[1].filter.as_ref().map(|f| f.origin),
+        Some(FilterOrigin::File)
+    );
+    let settings = vec![
+        OutputFilterSetting {
+            output_id: first.clone(),
+            filter: Some(done.upload_id.clone()),
+        },
+        OutputFilterSetting {
+            output_id: second.clone(),
+            filter: None,
+        },
+    ];
+    // Any bad entry refuses the whole command.
+    for (bad, code) in [
+        (
+            OutputFilterSetting {
+                output_id: "nowhere".into(),
+                filter: None,
+            },
+            "unknown_output",
+        ),
+        (
+            OutputFilterSetting {
+                output_id: before.outputs[2].id.clone(),
+                filter: Some("unknown".into()),
+            },
+            "unknown_upload",
+        ),
+        (settings[0].clone(), "invalid_settings"),
+    ] {
+        let mut outputs = settings.clone();
+        outputs.push(bad);
+        assert_error(
+            command(
+                &mut service,
+                &owner,
+                20,
+                Command::SetOutputFilters {
+                    expected_revision: before.revision.clone(),
+                    outputs,
+                },
+                Instant::now(),
+            ),
+            code,
+        );
+    }
+    assert_eq!(service.snapshot(), before, "no partial write");
+    assert!(!control.config_dirty.load(Ordering::Acquire));
+
+    let apply = Command::SetOutputFilters {
+        expected_revision: before.revision.clone(),
+        outputs: settings,
+    };
+    let Reply::Snapshot { snapshot: after } =
+        command(&mut service, &owner, 21, apply.clone(), Instant::now())
+    else {
+        panic!()
+    };
+    assert_ne!(after.revision, before.revision);
+    let filter = after.outputs[0].filter.clone().expect("a live filter");
+    assert_eq!(filter.origin, FilterOrigin::Live);
+    assert_eq!(filter.file, None);
+    assert_eq!(
+        (filter.sample_rate, filter.taps, filter.hash),
+        (Some(96_000), Some(20_000), done.hash.clone())
+    );
+    assert_eq!(after.outputs[1].filter, None, "null drops the file too");
+    assert_eq!(
+        control.editable_layout().speakers[1].correction_filter,
+        None
+    );
+    let live = control.live.read();
+    assert!(matches!(
+        live.output_filters.source(0),
+        Some(FilterSource::Samples(_))
+    ));
+    assert_eq!(live.inline_filters.len(), 1);
+    drop(live);
+    assert!(
+        control.config_dirty.load(Ordering::Acquire),
+        "the Save button lights"
+    );
+    // Applied uploads are consumed; the stale revision is refused.
+    assert_error(
+        command(&mut service, &owner, 22, apply, Instant::now()),
+        "stale_snapshot",
+    );
+
+    // Another client's session refuses it, the owner's too (the snapshot
+    // the session holds would no longer describe what plays).
+    let (session_id, active) = begin(&mut service, &owner, Instant::now());
+    let (stranger, _stranger_client) = peer();
+    let change = |id: &str| Command::SetOutputFilters {
+        expected_revision: active.revision.clone(),
+        outputs: vec![OutputFilterSetting {
+            output_id: first.clone(),
+            filter: Some(id.into()),
+        }],
+    };
+    assert_error(
+        command(
+            &mut service,
+            &stranger,
+            30,
+            change(&other.upload_id),
+            Instant::now(),
+        ),
+        "busy",
+    );
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            31,
+            change(&other.upload_id),
+            Instant::now(),
+        ),
+        "busy",
+    );
+    command(
+        &mut service,
+        &owner,
+        32,
+        Command::End { session_id },
+        Instant::now(),
+    );
+    let revision = service.snapshot().revision;
+    let Reply::Snapshot { snapshot } = command(
+        &mut service,
+        &owner,
+        33,
+        Command::SetOutputFilters {
+            expected_revision: revision,
+            outputs: vec![OutputFilterSetting {
+                output_id: first,
+                filter: Some(other.upload_id),
+            }],
+        },
+        Instant::now(),
+    ) else {
+        panic!()
+    };
+    assert_eq!(snapshot.outputs[0].filter.as_ref().unwrap().taps, Some(2));
+}
+
+#[test]
+fn uploads_are_bounded_ordered_and_checked() {
+    let mut service = Service::new(fixture_control(), 42, None);
+    let (owner, _client) = peer();
+    let chunk = |upload_id: Option<String>, rate: u32, total: u32, offset: u32, taps: &[f32]| {
+        Command::UploadFilter {
+            upload_id,
+            sample_rate: rate,
+            total_taps: total,
+            offset,
+            taps: encode_taps(taps),
+        }
+    };
+    let now = Instant::now();
+    for (id, bad) in [
+        chunk(None, 8_000, 1, 0, &[1.0]),
+        chunk(None, 48_000, 72_065, 0, &[1.0]),
+        chunk(None, 48_000, 0, 0, &[1.0]),
+        chunk(None, 48_000, 4, 2, &[1.0]),
+        chunk(None, 48_000, 1, 0, &[f32::INFINITY]),
+        chunk(None, 48_000, 9000, 0, &[0.1; MAX_UPLOAD_CHUNK_TAPS + 1]),
+        Command::UploadFilter {
+            upload_id: None,
+            sample_rate: 48_000,
+            total_taps: 1,
+            offset: 0,
+            taps: "not base64!".into(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_error(
+            command(&mut service, &owner, 1 + id as u64, bad, now),
+            "invalid_filter",
+        );
+    }
+    let Reply::FilterUpload { upload } = command(
+        &mut service,
+        &owner,
+        20,
+        chunk(None, 44_100, 4, 0, &[0.5, 0.5]),
+        now,
+    ) else {
+        panic!()
+    };
+    let id = Some(upload.upload_id.clone());
+    assert_eq!((upload.received_taps, upload.hash), (2, None));
+    // Out of order, another length, past the end: refused, the upload kept.
+    for bad in [
+        chunk(id.clone(), 44_100, 4, 1, &[0.5]),
+        chunk(id.clone(), 44_100, 5, 2, &[0.5]),
+        chunk(id.clone(), 44_100, 4, 2, &[0.5, 0.5, 0.5]),
+    ] {
+        assert_error(
+            command(&mut service, &owner, 21, bad, now),
+            "invalid_filter",
+        );
+    }
+    let Reply::FilterUpload { upload } = command(
+        &mut service,
+        &owner,
+        22,
+        chunk(id.clone(), 44_100, 4, 2, &[0.25, 0.0]),
+        now,
+    ) else {
+        panic!()
+    };
+    assert_eq!(upload.hash, Some(taps_hash_hex(&[0.5, 0.5, 0.25, 0.0])));
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            23,
+            chunk(id, 44_100, 4, 4, &[0.5]),
+            now,
+        ),
+        "invalid_filter",
+    );
+    // A silent filter is refused once complete, and forgotten.
+    let Reply::FilterUpload { upload } = command(
+        &mut service,
+        &owner,
+        24,
+        chunk(None, 48_000, 2, 0, &[0.0]),
+        now,
+    ) else {
+        panic!()
+    };
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            25,
+            chunk(Some(upload.upload_id.clone()), 48_000, 2, 1, &[0.0]),
+            now,
+        ),
+        "invalid_filter",
+    );
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            26,
+            chunk(Some(upload.upload_id), 48_000, 2, 1, &[0.0]),
+            now,
+        ),
+        "unknown_upload",
+    );
+    // A refused first chunk holds no slot.
+    for i in 0..MAX_UPLOADS as u64 + 1 {
+        assert_error(
+            command(
+                &mut service,
+                &owner,
+                40 + i,
+                chunk(None, 48_000, 1, 0, &[1.0, 1.0]),
+                now,
+            ),
+            "invalid_filter",
+        );
+    }
+    assert_eq!(service.uploads.len(), 1, "only the complete upload above");
+    // At most MAX_UPLOADS kept; an unused one expires.
+    for i in 0..MAX_UPLOADS - 1 {
+        let reply = command(
+            &mut service,
+            &owner,
+            100 + i as u64,
+            chunk(None, 48_000, 2, 0, &[1.0]),
+            now,
+        );
+        assert!(
+            matches!(reply, Reply::FilterUpload { .. }),
+            "{i}: {reply:?}"
+        );
+    }
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            300,
+            chunk(None, 48_000, 2, 0, &[1.0]),
+            now,
+        ),
+        "upload_limit",
+    );
+    let later = now + UPLOAD_TTL + Duration::from_secs(1);
+    assert!(matches!(
+        command(
+            &mut service,
+            &owner,
+            301,
+            chunk(None, 48_000, 2, 0, &[1.0]),
+            later
+        ),
+        Reply::FilterUpload { .. }
+    ));
+    assert_eq!(service.uploads.len(), 1);
+}
+
+#[test]
+fn a_bypassing_session_holds_the_filters_off_until_it_ends_or_its_lease_runs_out() {
+    let control = fixture_control();
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let now = Instant::now();
+    let begin_bypassing = |service: &mut Service, id: u64, now: Instant| {
+        let snapshot = service.snapshot();
+        assert!(!snapshot.output_filters_bypassed);
+        let generation = control.live_state_generation();
+        let reply = command(
+            service,
+            &owner,
+            id,
+            Command::Begin {
+                expected_revision: snapshot.revision,
+                bypass_output_filters: true,
+            },
+            now,
+        );
+        let Reply::Session {
+            session_id,
+            snapshot,
+            ..
+        } = reply
+        else {
+            panic!("{reply:?}")
+        };
+        assert!(snapshot.output_filters_bypassed);
+        assert!(control.measurement.filters_bypassed(|| now));
+        assert_ne!(
+            control.live_state_generation(),
+            generation,
+            "clients are told"
+        );
+        session_id
+    };
+    let session_id = begin_bypassing(&mut service, 1, now);
+    assert!(service.snapshot().output_filters_bypassed);
+    command(&mut service, &owner, 2, Command::End { session_id }, now);
+    assert!(!control.measurement.filters_bypassed(|| now));
+    assert!(!control.measurement.filters_bypass_requested());
+
+    // A lease that runs out gives them back on the render thread at once…
+    begin_bypassing(&mut service, 3, now);
+    let expired = now + Duration::from_millis(LEASE_MS + 1);
+    assert!(!control.measurement.filters_bypassed(|| expired));
+    // …and the next poll ends the session and clears the request.
+    service.poll(expired);
+    assert!(!service.active());
+    assert!(!control.measurement.filters_bypass_requested());
+
+    // A session without the option leaves them alone.
+    begin(&mut service, &owner, now + Duration::from_secs(10));
+    assert!(
+        !control
+            .measurement
+            .filters_bypassed(|| now + Duration::from_secs(10))
+    );
+}
+
+#[test]
+fn a_version_8_sweep_waits_for_the_filters_to_settle() {
+    use renderer::output_correction::settled_key;
+    let control = fixture_control();
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let filter = upload(&mut service, &owner, 1, 48_000, &decaying(500), 500);
+    let snapshot = service.snapshot();
+    let reply = command(
+        &mut service,
+        &owner,
+        2,
+        Command::SetOutputFilters {
+            expected_revision: snapshot.revision,
+            outputs: vec![OutputFilterSetting {
+                output_id: snapshot.outputs[0].id.clone(),
+                filter: Some(filter.upload_id),
+            }],
+        },
+        Instant::now(),
+    );
+    assert!(matches!(reply, Reply::Snapshot { .. }), "{reply:?}");
+    let generation = control.live.read().output_filters.generation;
+    let now = Instant::now();
+    let snapshot = service.snapshot();
+    let Reply::Session { session_id, .. } = command(
+        &mut service,
+        &owner,
+        3,
+        Command::Begin {
+            expected_revision: snapshot.revision.clone(),
+            bypass_output_filters: true,
+        },
+        now,
+    ) else {
+        panic!()
+    };
+    // The stage still plays the filters (no render thread here).
+    control
+        .output_correction_settled
+        .store(settled_key(generation, true), Ordering::Release);
+    assert_error(
+        command(
+            &mut service,
+            &owner,
+            4,
+            sweep(&session_id, &snapshot, 1),
+            now,
+        ),
+        "filters_settling",
+    );
+    control
+        .output_correction_settled
+        .store(settled_key(generation, false), Ordering::Release);
+    assert!(matches!(
+        command(
+            &mut service,
+            &owner,
+            5,
+            sweep(&session_id, &snapshot, 1),
+            now
+        ),
+        Reply::Session { .. }
+    ));
+    command(&mut service, &owner, 6, Command::End { session_id }, now);
+
+    // A version-7 session plays as it always did.
+    control
+        .output_correction_settled
+        .store(0, Ordering::Release);
+    let snapshot = service.snapshot();
+    let begun = request(
+        &mut service,
+        &owner,
+        7,
+        Command::Begin {
+            expected_revision: snapshot.revision.clone(),
+            bypass_output_filters: false,
+        },
+    );
+    let Reply::Session { session_id, .. } = begun.reply else {
+        panic!("{begun:?}")
+    };
+    let started = service.handle(
+        Request {
+            version: 7,
+            request_id: 8,
+            command: sweep(&session_id, &snapshot, 1),
+        },
+        &owner,
+        Instant::now(),
+    );
+    assert!(
+        matches!(started.reply, Reply::Session { .. }),
+        "{started:?}"
+    );
+}
+
+#[test]
+fn a_bass_managed_sweep_may_start_below_the_output_band_and_is_echoed() {
+    let control = fixture_control();
+    let mut service = Service::new(control.clone(), 42, None);
+    let (owner, _client) = peer();
+    let now = Instant::now();
+    let (session_id, mut snapshot) = begin(&mut service, &owner, now);
+    // Output 0 is crossed over at 120 Hz.
+    snapshot.outputs[0].freq_low_hz = Some(120.0);
+    service.session.as_mut().unwrap().snapshot = snapshot.clone();
+    let low = |id: u64, bass_managed: bool| {
+        let Command::Start {
+            session_id,
+            signal_id,
+            output_id,
+            reference_output_id,
+            sequence_outputs,
+            mut signal,
+            ..
+        } = sweep(&session_id, &snapshot, id)
+        else {
+            unreachable!()
+        };
+        signal.start_hz = 20.0;
+        Command::Start {
+            session_id,
+            signal_id,
+            output_id,
+            reference_output_id,
+            sequence_outputs,
+            signal,
+            bass_managed,
+        }
+    };
+    assert_error(
+        command(&mut service, &owner, 2, low(1, false), now),
+        "invalid_signal",
+    );
+    let reply = command(&mut service, &owner, 3, low(1, true), now);
+    let Reply::Session {
+        signal: Some(progress),
+        ..
+    } = reply
+    else {
+        panic!("{reply:?}")
+    };
+    assert!(progress.bass_managed);
+    assert_eq!(progress.output_id, snapshot.outputs[0].id);
 }

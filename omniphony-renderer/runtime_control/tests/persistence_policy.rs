@@ -27,11 +27,14 @@ const VIEW_PERSIST_OPS: &[&str] = &[
     "DIAG_RATE",
 ];
 
-/// The whole-state writers.
+/// The whole-state writers, and what only the Save writes with them (the
+/// inline correction filters' files).
 const WRITERS: &[&str] = &[
     "save_live_config(",
     "save_live_config_to_path(",
     "commit_config(",
+    "write_inline_filters(",
+    "store_inline_filters_into(",
 ];
 
 /// Where they may be called from, outside `persist.rs` itself.

@@ -167,6 +167,8 @@ struct LayoutDomainSpeakerState {
 struct SpeakersDomainState {
     #[serde(default)]
     speakers: Vec<SpeakerRuntimeState>,
+    #[serde(default, rename = "correctionBypassed")]
+    correction_bypassed: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -185,6 +187,9 @@ struct SpeakerRuntimeState {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SpeakerCorrectionState {
+    /// `file`, or `live`: taps a measurement client set, not saved yet.
+    #[serde(default)]
+    origin: String,
     #[serde(default)]
     state: String,
     #[serde(default)]
@@ -383,6 +388,8 @@ pub fn apply_speakers_domain_state(s: &mut AppState, value: &str) -> bool {
     s.speaker_gains.clear();
     s.speaker_mutes.clear();
     s.speaker_corrections.clear();
+    s.speaker_live_corrections.clear();
+    s.correction_bypassed = parsed.correction_bypassed;
 
     if let Some(layout) = s
         .layouts
@@ -404,6 +411,9 @@ pub fn apply_speakers_domain_state(s: &mut AppState, value: &str) -> bool {
                 }
             }
             if let Some(correction) = speaker.correction {
+                if correction.origin == "live" {
+                    s.speaker_live_corrections.insert(key.clone());
+                }
                 s.speaker_corrections.insert(key, correction.into_model());
             }
         }
@@ -1376,6 +1386,32 @@ mod domain_state_tests {
             state.speaker_corrections.get("2"),
             Some(&SpeakerCorrection::Pending)
         );
+        assert!(state.speaker_live_corrections.is_empty());
+        assert!(!state.correction_bypassed);
+
+        // A measured filter a measurement client set (not saved yet), while
+        // a session holds every filter off.
+        assert!(apply_speakers_domain_state(
+            &mut state,
+            r#"{"speakers":[{"id":1,"correction":{"origin":"live","state":"loaded","taps":8192,
+                "sourceRate":48000,"sourceTaps":8192,"hash":"0123456789abcdef"}}],
+                "correctionBypassed":true}"#,
+        ));
+        assert!(state.speaker_live_corrections.contains("1"));
+        assert!(state.correction_bypassed);
+        assert_eq!(
+            state.speaker_corrections.get("1"),
+            Some(&SpeakerCorrection::Loaded {
+                taps: 8192,
+                source_rate: 48000
+            })
+        );
+        assert!(apply_speakers_domain_state(
+            &mut state,
+            r#"{"speakers":[{"id":1,"correction":{"origin":"file","file":"/f/R.wav","state":"pending"}}]}"#,
+        ));
+        assert!(state.speaker_live_corrections.is_empty());
+        assert!(!state.correction_bypassed);
     }
 
     /// The domain states arrive from the network as JSON: anything that is not

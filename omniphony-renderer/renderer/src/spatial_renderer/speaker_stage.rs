@@ -191,6 +191,11 @@ pub(super) struct SpeakerRenderStage {
     pub(super) object_test_prev_gains: BandGains,
     /// Destination gains for this block, per band.
     pub(super) object_test_end_gains: BandGains,
+    /// Crossover states for a measurement sweep played as a source
+    /// ([`Self::inject_measurement_source`]): a fourth independent source.
+    pub(super) measurement_filter_states: Option<CrossoverStates>,
+    /// That sweep's gains, per band, at its fixed position.
+    pub(super) measurement_gains: BandGains,
     /// Band samples of the source being mixed: one block per band, refilled
     /// for every object (and for the object test). The band meters read the
     /// last object's block back from here.
@@ -1359,6 +1364,8 @@ impl SpeakerRenderStage {
             object_test_filter_states: None,
             object_test_prev_gains: BandGains::new(),
             object_test_end_gains: BandGains::new(),
+            measurement_filter_states: None,
+            measurement_gains: BandGains::new(),
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
             slew_scratch: Vec::new(),
             lanes: LaneScratch::default(),
@@ -1605,6 +1612,7 @@ impl SpeakerRenderStage {
         self.test_filter_states = None;
         self.test_direct_bank = None;
         self.object_test_filter_states = None;
+        self.measurement_filter_states = None;
         self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
         self.lanes
             .bands
@@ -2050,6 +2058,86 @@ impl SpeakerRenderStage {
         self.object_test_prev_gains
             .copy_from(&self.object_test_end_gains);
         true
+    }
+
+    /// Place a measurement sweep's block (`samples`, one per frame of
+    /// `output`) as a point source at `position`, added onto `output`: split
+    /// by the crossover and each band panned with that band's gains, exactly
+    /// as [`Self::inject_object_test`] places its signal, so bass management
+    /// gives the subwoofers the low band. The source sits on a speaker, so
+    /// what is meant for objects moving through the room is left out: the
+    /// distance diffusion is off, and each band's gains are scaled to unit
+    /// energy, which takes out the distance model's attenuation (a factor
+    /// common to every gain of the position, a gain table's included), so
+    /// each band plays at the level a direct sweep would. The position is
+    /// fixed for a whole segment and the segments start and end in silence,
+    /// so the gains need no ramp. The states and gains are kept between
+    /// blocks: once the first block of a signal has sized them, nothing
+    /// allocates.
+    pub(super) fn inject_measurement_source(
+        &mut self,
+        samples: &[f32],
+        position: [f64; 3],
+        render_params: crate::ramp_strategy::RampRenderParams,
+        output: &mut [f32],
+    ) {
+        if self.num_speakers == 0 {
+            return;
+        }
+        let frames = (output.len() / self.num_speakers).min(samples.len());
+        if frames == 0 {
+            return;
+        }
+        let render_params = crate::ramp_strategy::RampRenderParams {
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+            use_distance_diffuse: false,
+            ..render_params
+        };
+        let mut gains = std::mem::take(&mut self.measurement_gains);
+        Self::fill_band_gains(
+            &self.unified_table,
+            None,
+            (&self.render_bands, &mut self.band_scratches),
+            render_params,
+            position,
+            [0.0; 3],
+            &mut gains,
+        );
+        for band in gains.bands_mut() {
+            let energy = band.iter().map(|g| g * g).sum();
+            crate::render_backend::normalize_to_unit_energy(band, energy);
+        }
+        self.measurement_gains = gains;
+        if self.measurement_gains.is_empty() {
+            return;
+        }
+        let n_bands = match self.crossover_filter_bank.as_ref() {
+            Some(bank) => {
+                let states = bank.ensure_states(&mut self.measurement_filter_states);
+                bank.process_block(frames, states, &mut self.crossover_band_scratch, |i| {
+                    samples[i]
+                });
+                bank.num_bands().min(self.crossover_band_scratch.len())
+            }
+            None => {
+                let band = &mut self.crossover_band_scratch[0];
+                band.clear();
+                band.extend_from_slice(&samples[..frames]);
+                1
+            }
+        };
+        self.mix_bus.clear();
+        self.mix_bus.resize(self.num_speakers * frames, 0.0);
+        let mut bus = MixBus::over(&mut self.mix_bus, output, frames, self.num_speakers);
+        block_fractions(&mut self.block_fractions, frames);
+        bus.add_lerp(
+            &self.crossover_band_scratch[..n_bands],
+            &self.measurement_gains,
+            &self.measurement_gains,
+            &self.block_fractions,
+            0..frames,
+        );
+        bus.finish();
     }
 
     /// Forget the gains the last mix pass left for the next one. For a frame

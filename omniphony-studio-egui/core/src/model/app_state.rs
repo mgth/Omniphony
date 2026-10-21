@@ -747,6 +747,15 @@ pub struct AppState {
     /// like [`Self::speaker_gains`]; absent where the speaker has none.
     #[serde(rename = "speakerCorrections", default)]
     pub speaker_corrections: HashMap<String, SpeakerCorrection>,
+    /// The speakers (keyed like [`Self::speaker_corrections`]) whose filter
+    /// is a measured one a measurement client set, live and not saved yet
+    /// (`origin: "live"`): the Save writes it to a file.
+    #[serde(rename = "speakerLiveCorrections", default)]
+    pub speaker_live_corrections: std::collections::HashSet<String>,
+    /// A measurement session holds every correction filter off
+    /// (`correctionBypassed` in `/state/speakers`).
+    #[serde(rename = "correctionBypassed", default)]
+    pub correction_bypassed: bool,
     #[serde(rename = "roomRatio")]
     pub room_ratio: RoomRatio,
     pub spread: SpreadState,
@@ -1335,6 +1344,8 @@ impl Default for AppState {
             source_bounds: SourceBounds::default(),
             speaker_mutes: HashMap::new(),
             speaker_corrections: HashMap::new(),
+            speaker_live_corrections: Default::default(),
+            correction_bypassed: false,
             room_ratio: RoomRatio::default(),
             spread: SpreadState::default(),
             loudness: None,

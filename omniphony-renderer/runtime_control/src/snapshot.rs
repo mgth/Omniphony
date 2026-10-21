@@ -610,10 +610,14 @@ mod capability_tests {
     }
 }
 
+/// `/omniphony/state/speakers`: each speaker's live gain, delay, mute and
+/// correction filter, and whether a measurement session holds the filters
+/// off (`correctionBypassed`).
 pub fn build_speakers_state_json(
     live: &LiveParams,
     layout: &renderer::speaker_layout::SpeakerLayout,
     correction: &renderer::output_correction::OutputCorrectionStatus,
+    correction_bypassed: bool,
 ) -> String {
     // The status describes the filters it was prepared for; until the set
     // asked for lands, the speakers that name a filter read as pending.
@@ -635,36 +639,53 @@ pub fn build_speakers_state_json(
                     .unwrap_or(speaker.delay_ms)
                     .max(0.0),
                 "muted": live_state.map(|state| state.muted).unwrap_or(false),
-                "correction": speaker
-                    .correction_filter
-                    .as_ref()
-                    .map(|file| correction_json(file, current.then(|| {
+                "correction": live
+                    .output_filters
+                    .source(idx)
+                    .map(|source| correction_json(source, current.then(|| {
                         correction.outputs.get(idx).and_then(Option::as_ref)
                     }).flatten())),
             })
         })
         .collect::<Vec<_>>();
-    json!({ "speakers": speakers }).to_string()
+    json!({ "speakers": speakers, "correctionBypassed": correction_bypassed }).to_string()
 }
 
-/// One speaker's correction filter in `/state/speakers`: the file, and how
-/// it loaded (`pending` until the stage has prepared it).
+/// One speaker's correction filter in `/state/speakers`: where it comes from
+/// (`origin`: a `file`, or `live` taps a measurement client uploaded and no
+/// Save has written yet), and how it loaded (`pending` until the stage has
+/// prepared it).
 fn correction_json(
-    file: &str,
+    source: &renderer::output_correction::FilterSource,
     status: Option<&renderer::output_correction::FilterStatus>,
 ) -> serde_json::Value {
-    match status {
-        None => json!({ "file": file, "state": "pending" }),
+    use renderer::output_correction::FilterSource;
+    let mut value = match source {
+        FilterSource::File(file) => json!({ "origin": "file", "file": &**file }),
+        FilterSource::Samples(samples) => json!({
+            "origin": "live",
+            "sourceRate": samples.sample_rate,
+            "sourceTaps": samples.taps.len(),
+            "hash": format!("{:016x}", samples.hash),
+        }),
+    };
+    let fields = match status {
+        None => json!({ "state": "pending" }),
         Some(status) => match &status.error {
-            Some(error) => json!({ "file": file, "state": "error", "error": error }),
+            Some(error) => json!({ "state": "error", "error": error }),
             None => json!({
-                "file": file,
                 "state": "loaded",
                 "taps": status.taps,
                 "sourceRate": status.source_rate,
+                "sourceTaps": status.source_taps,
+                "hash": format!("{:016x}", status.hash),
             }),
         },
+    };
+    if let (Some(value), serde_json::Value::Object(fields)) = (value.as_object_mut(), fields) {
+        value.extend(fields);
     }
+    value
 }
 
 /// Build the core OSC messages for a live-state snapshot.
@@ -723,8 +744,12 @@ pub fn build_live_state_bundle_with_host(
     let active_topology = control.active_topology();
     let editable_layout = control.editable_layout();
     let layout_json = serde_json::to_string(&editable_layout).unwrap_or_else(|_| "{}".to_string());
-    let speakers_state_json =
-        build_speakers_state_json(&live, &editable_layout, &control.output_correction_status());
+    let speakers_state_json = build_speakers_state_json(
+        &live,
+        &editable_layout,
+        &control.output_correction_status(),
+        control.measurement.filters_bypass_requested(),
+    );
     let loudness_gain: f32 = match (live.options.use_loudness, live.dialogue_level) {
         (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
         _ => 1.0,
