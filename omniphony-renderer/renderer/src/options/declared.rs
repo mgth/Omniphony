@@ -745,9 +745,9 @@ mod tests {
         assert_eq!(extra, ["not_an_option"]);
     }
 
-    /// The default ramp is per sample: `frame` steps a moving object's speaker
-    /// gains once per block, a click per step through a BRIR room or any
-    /// speaker layout. Choosing `frame` now has to be explicit, so it is saved.
+    /// The default ramp is per sample, the mode that has been listened to.
+    /// `frame` was the default once; choosing it now has to be explicit, so it
+    /// is saved.
     #[test]
     fn the_default_ramp_is_per_sample_and_frame_is_saved() {
         assert_eq!(defaults::ramp_mode, RampMode::Sample);

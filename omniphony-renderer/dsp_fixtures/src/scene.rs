@@ -229,9 +229,8 @@ pub fn drift_events(n_objects: usize, seed_round: u64) -> Vec<SpatialChannelEven
 /// registration events so subsequent steady frames find populated channel state.
 ///
 /// `ramp_mode` is forced explicitly (the constructor seeds the declared default,
-/// `Sample`): the primary sweeps pin `Frame`, the cheapest smoothing path their
-/// baselines were measured on, and a dedicated group contrasts it against
-/// `Sample`.
+/// `Sample`): the primary sweeps pin `Frame`, the mode their baselines were
+/// measured on, and a dedicated group contrasts it against `Sample`.
 pub fn prepared(
     preset: &str,
     n_objects: usize,

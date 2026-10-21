@@ -188,18 +188,7 @@ fn reference_mix_channels(
                 for sample_idx in 0..sample_length {
                     mix_sample(output, sample_idx, &band_gains);
                 }
-            }
-            RampMode::Frame => {
-                let progress = ramp.current_progress().unwrap_or(idle);
-                frame
-                    .ramp_strategy
-                    .evaluate(ramp, progress, frame.ramp_context);
-                lookup(ramp.output_position, ramp.current_size, &mut band_gains);
-                for sample_idx in 0..sample_length {
-                    mix_sample(output, sample_idx, &band_gains);
-                }
-                ramp.commit_output_position();
-                ramp.advance_ramp(sample_length as u64);
+                channel.last_block_gains = flat(&band_gains);
             }
             RampMode::Sample => {
                 band_gains.resize(stage.render_bands.len(), zeroed(num_speakers));
@@ -221,19 +210,33 @@ fn reference_mix_channels(
                     ramp.commit_output_position();
                     ramp.advance_ramp(1);
                 }
+                if sample_length > 0 {
+                    channel.last_block_gains = flat(&band_gains);
+                }
             }
-            RampMode::Interp => {
-                ramp.remaining_ramp_units = None;
-                ramp.current_position = ramp.target_position;
-                ramp.current_size = ramp.target_size;
-                ramp.output_position = ramp.target_position;
+            RampMode::Frame | RampMode::Interp => {
+                if frame.ramp_mode == RampMode::Frame {
+                    // The ramp's position on the block's last sample.
+                    for _ in 1..sample_length {
+                        ramp.advance_ramp(1);
+                    }
+                    let progress = ramp.current_progress().unwrap_or(idle);
+                    frame
+                        .ramp_strategy
+                        .evaluate(ramp, progress, frame.ramp_context);
+                } else {
+                    ramp.remaining_ramp_units = None;
+                    ramp.current_position = ramp.target_position;
+                    ramp.current_size = ramp.target_size;
+                    ramp.output_position = ramp.target_position;
+                }
                 lookup(
-                    ramp.target_position,
-                    ramp.target_size,
+                    ramp.output_position,
+                    ramp.current_size,
                     &mut state.interp_end,
                 );
                 let n_bands = state.interp_end.len();
-                let mut prev = band_sets(&channel.interp_prev_gains);
+                let mut prev = band_sets(&channel.last_block_gains);
                 if prev.len() != n_bands {
                     prev = state.interp_end.clone();
                 }
@@ -249,7 +252,13 @@ fn reference_mix_channels(
                     }
                     mix_sample(output, sample_idx, &band_gains);
                 }
-                channel.interp_prev_gains = flat(&state.interp_end);
+                channel.last_block_gains = flat(&state.interp_end);
+                if frame.ramp_mode == RampMode::Frame {
+                    ramp.commit_output_position();
+                    if sample_length > 0 {
+                        ramp.advance_ramp(1);
+                    }
+                }
             }
         }
         last_gains.push((ch, band_gains, band_sq));

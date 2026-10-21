@@ -148,7 +148,7 @@ pub(super) fn reseed_interp_on_width_change(
         return;
     }
     for state in channel_states {
-        state.interp_prev_gains.clear();
+        state.last_block_gains.clear();
     }
     *last_mix_num_speakers = mix_width;
 }

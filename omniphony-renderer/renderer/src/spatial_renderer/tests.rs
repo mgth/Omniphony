@@ -1064,8 +1064,9 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
 }
 
 /// Guard rail: the four ramp modes must stay wired and each keep its own
-/// behaviour. `Off` snaps to the target, `Frame` holds the block-start
-/// position, `Sample` interpolates the position per sample, and `Interp`
+/// behaviour. `Off` snaps to the target, `Frame` interpolates the gains per
+/// sample from the previous block's end to the ramp's position at this
+/// block's end, `Sample` interpolates the position per sample, and `Interp`
 /// interpolates the gains per sample from the previous block's end. We render
 /// TWO blocks per mode with a position change in between (the first block
 /// seeds `Interp`'s start gains, so its ramp only shows on the second) and
@@ -1149,6 +1150,105 @@ fn all_four_ramp_modes_render_distinctly() {
     assert!(
         max_diff(&sample, &interp) > 1e-3,
         "Sample vs Interp collapsed"
+    );
+}
+
+/// `Frame` evaluates a moving object's gains once per block, where the
+/// stream's ramp is on the block's last sample, and interpolates them across
+/// the block from the gains the previous block ended on. Its gains used to be
+/// held over the block at the block-start position: they stepped at every
+/// block boundary, a click per block on any moving object (heard through BRIR
+/// rooms on the Kodi port). Now a boundary moves the gains by no more than a
+/// sample inside the block does, and each block ends on the ramp's own
+/// position — the gains `Sample` has there — not on the target.
+#[test]
+fn frame_ramp_follows_the_ramp_without_steps_at_block_boundaries() {
+    const BLOCK: usize = 64;
+    const SPEAKERS: usize = 12;
+    const SETTLE_BLOCKS: usize = 20; // past the gain slew's fade-in
+    const MOVING_BLOCKS: usize = 8;
+    let event = |position: [f64; 3], ramp_length: u32| {
+        vec![SpatialChannelEvent {
+            channel_idx: 0,
+            is_bed: false,
+            gain_db: Some(0.0),
+            ramp_length: Some(ramp_length),
+            size: Some([0.0, 0.0, 0.0]),
+            position: Some(position),
+            sample_pos: Some(0),
+        }]
+    };
+    // A constant input of one: each output sample is the gain it was mixed with.
+    let pcm = vec![1.0f32; BLOCK];
+    let render = |mode: RampMode| -> Vec<f32> {
+        let mut r = SpatialRenderer::new(RendererSpec {
+            vbap_position_interpolation: true,
+            ..test_support::spec(SpeakerLayout::preset("7.1.4").unwrap())
+        })
+        .unwrap();
+        r.control.live.write().options.ramp_mode = mode;
+        let mut out = Vec::new();
+        for block in 0..SETTLE_BLOCKS + MOVING_BLOCKS + 2 {
+            let events = match block {
+                0 => event([-0.8, 0.6, 0.0], 0),
+                // The ramp spans six blocks and a half.
+                SETTLE_BLOCKS => event([0.8, -0.6, 0.4], (13 * BLOCK / 2) as u32),
+                _ => Vec::new(),
+            };
+            let frame = r.render_frame(&pcm, 1, &events, Vec::new(), false).unwrap();
+            if block >= SETTLE_BLOCKS {
+                out.extend_from_slice(&frame.samples);
+            }
+        }
+        out
+    };
+    let frame = render(RampMode::Frame);
+    let sample = render(RampMode::Sample);
+    fn at(out: &[f32], sample_idx: usize) -> &[f32] {
+        &out[sample_idx * SPEAKERS..][..SPEAKERS]
+    }
+    let step = |out: &[f32], sample_idx: usize| {
+        at(out, sample_idx)
+            .iter()
+            .zip(at(out, sample_idx - 1))
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max)
+    };
+
+    // What a sample of the ramp moves the gains by, at most: `Sample`'s path.
+    let moving = 1..MOVING_BLOCKS * BLOCK;
+    let largest_sample_step = moving
+        .clone()
+        .map(|i| step(&sample, i))
+        .fold(0.0f32, f32::max);
+    let largest_boundary = moving
+        .filter(|i| i % BLOCK == 0)
+        .map(|i| step(&frame, i))
+        .fold(0.0f32, f32::max);
+    assert!(largest_sample_step > 1e-4, "the object did not move");
+    assert!(
+        largest_boundary <= 1.5 * largest_sample_step,
+        "the gains step at a block boundary: {largest_boundary}, against at most \
+         {largest_sample_step} per sample along the ramp"
+    );
+
+    let target = at(&frame, (MOVING_BLOCKS + 2) * BLOCK - 1);
+    for block in 0..MOVING_BLOCKS {
+        let last = (block + 1) * BLOCK - 1;
+        for (spk, (f, s)) in at(&frame, last).iter().zip(at(&sample, last)).enumerate() {
+            assert!(
+                (f - s).abs() < 1e-5,
+                "block {block}, speaker {spk}: Frame ends on {f}, the ramp is at {s}"
+            );
+        }
+    }
+    let first_end = at(&frame, BLOCK - 1);
+    assert!(
+        first_end
+            .iter()
+            .zip(target)
+            .any(|(a, b)| (a - b).abs() > 1e-2),
+        "Frame reached the target on the ramp's first block"
     );
 }
 
