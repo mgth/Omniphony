@@ -342,9 +342,14 @@ describe what plays. An applied upload is consumed.
 The filters are live state, like `set_outputs`: they light the Studio's Save
 button and reach the saved configuration only through it. The Save writes
 each one as a mono 32-bit float WAV file under `room-correction/<profile>/`
-next to `config.yaml` and names it in the speaker's `correction_filter`; the
-speaker then plays that file, the same taps (same hash). A Reload or a
-profile switch drops filters that were not saved, as it drops every unsaved
+next to `config.yaml`, named after the output, the rate and the hash
+(`<output>-<rate>-<hash>.wav`), and names it in the speaker's
+`correction_filter`; the speaker then plays that file, the same taps (same
+hash). A saved file is never rewritten, so a configuration that names it
+(another profile, an earlier Save) keeps the filter it was saved with.
+Creating a profile from the current state gives the new profile files of
+its own for the filters not saved yet, and leaves them unsaved in the active
+profile. A Reload or a profile switch drops filters that were not saved, as it drops every unsaved
 edit, and so does an engine handoff (a restart, mpv taking over). The
 Studio shows a live filter as "Measured filter, not saved". A filter follows
 its output's name: layout edits that move, add, remove or replace speakers

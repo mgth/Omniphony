@@ -487,6 +487,11 @@ impl Service {
                         &format!("a filter is 1 tap to {MAX_FILTER_SECONDS} s long"),
                     );
                 }
+                // Checked before the upload exists: a refused first chunk
+                // must not hold a slot its caller never learns the ID of.
+                if chunk.len() > total {
+                    return error("invalid_filter", "the chunk runs past the filter's length");
+                }
                 let held: usize = self.uploads.iter().map(|u| u.total_taps).sum();
                 if self.uploads.len() >= MAX_UPLOADS || held + total > MAX_UPLOAD_TAPS {
                     return error(

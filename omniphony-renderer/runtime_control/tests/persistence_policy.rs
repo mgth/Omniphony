@@ -34,6 +34,7 @@ const WRITERS: &[&str] = &[
     "save_live_config_to_path(",
     "commit_config(",
     "write_inline_filters(",
+    "store_inline_filters_into(",
 ];
 
 /// Where they may be called from, outside `persist.rs` itself.

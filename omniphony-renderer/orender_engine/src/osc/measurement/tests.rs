@@ -1530,6 +1530,20 @@ fn uploads_are_bounded_ordered_and_checked() {
         ),
         "unknown_upload",
     );
+    // A refused first chunk holds no slot.
+    for i in 0..MAX_UPLOADS as u64 + 1 {
+        assert_error(
+            command(
+                &mut service,
+                &owner,
+                40 + i,
+                chunk(None, 48_000, 1, 0, &[1.0, 1.0]),
+                now,
+            ),
+            "invalid_filter",
+        );
+    }
+    assert_eq!(service.uploads.len(), 1, "only the complete upload above");
     // At most MAX_UPLOADS kept; an unused one expires.
     for i in 0..MAX_UPLOADS - 1 {
         let reply = command(

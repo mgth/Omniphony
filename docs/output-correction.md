@@ -70,10 +70,13 @@ the renderer, so it hands its filters over as samples rather than files
 (`set_output_filters`, protocol 8). Such a filter is live state, kept by
 output name over the layout: it takes the place of the speaker's file until
 the Save writes it as a mono 32-bit float WAV file under
-`room-correction/<profile>/` next to `config.yaml` and names it in the
-speaker's `correction_filter`. Layout edits carry it with its speaker as they
-carry a file; choosing a file for the speaker replaces it; a Reload, a
-profile switch or an engine handoff drops it unsaved.
+`room-correction/<profile>/<output>-<rate>-<hash>.wav` next to `config.yaml`
+and names it in the speaker's `correction_filter`. Such a file is never
+rewritten: a new filter gets a new file, and every configuration naming an
+older one keeps it. A profile created from the current state gets files of
+its own for these filters. Layout edits carry an unsaved filter with its
+speaker as they carry a file; choosing a file for the speaker replaces it; a
+Reload, a profile switch or an engine handoff drops it unsaved.
 
 ## Control and state
 

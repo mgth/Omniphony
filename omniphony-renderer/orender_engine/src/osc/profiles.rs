@@ -145,14 +145,26 @@ pub(crate) fn handle_profile_message(
             }
         };
     }
-    let created_from_live = (addr == osc_contract::CONTROL_PROFILE_CREATE).then(|| {
+    let created_from_live = if addr == osc_contract::CONTROL_PROFILE_CREATE {
         let mut live = config.clone();
         // Without the host amend, as a switch-in re-seeds: host-owned fields
         // (output device, live input, resampling, latency) only take effect
         // at engine start, so the new profile keeps the file's.
         runtime_control::persist::store_live_into_config(control, None, &mut live);
-        live.render.unwrap_or_default()
-    });
+        let mut render = live.render.unwrap_or_default();
+        // What the user hears includes the measured filters no Save has
+        // written yet: the new profile gets files of its own, and the
+        // active profile keeps them unsaved.
+        if let Err(e) =
+            runtime_control::persist::store_inline_filters_into(control, &path, &name, &mut render)
+        {
+            refuse(e);
+            return true;
+        }
+        Some(render)
+    } else {
+        None
+    };
 
     let rename_to = match msg.args.get(1) {
         Some(OscType::String(new)) => Some(new.clone()),
@@ -757,6 +769,51 @@ mod tests {
         run(&control, osc_contract::CONTROL_PROFILE_CREATE, &["c"]);
         assert!(saved_back(&path, "c"));
         assert!(!saved_back(&path, "a"));
+        assert!(control.config_dirty.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A measured filter no Save has written is part of what the user hears:
+    /// the created profile gets it as a file of its own, while the active
+    /// profile's file is untouched and the filter stays live and unsaved.
+    #[test]
+    fn create_copies_unsaved_inline_filters_into_the_new_profile() {
+        use renderer::output_correction::{FilterSamples, FilterSource, load_filter};
+        let (path, control) = two_profiles_with_an_unsaved_edit("create-inline");
+        let name = control.editable_layout().speakers[2].name.clone();
+        {
+            let mut live = control.live.write();
+            let mut inline = std::collections::BTreeMap::new();
+            inline.insert(
+                name.clone(),
+                Arc::new(FilterSamples::new(48_000, vec![0.5, 0.25], 48_000).unwrap()),
+            );
+            live.inline_filters = Arc::new(inline);
+        }
+        runtime_control::osc::refresh_output_filters(&control);
+        run(&control, osc_contract::CONTROL_PROFILE_CREATE, &["c"]);
+
+        let config = Config::load_or_default(&path);
+        let filter = |render: Option<&RenderConfig>| {
+            render
+                .and_then(|r| r.current_layout.as_ref())
+                .and_then(|l| l.speakers.iter().find(|s| s.name == name))
+                .and_then(|s| s.correction_filter.clone())
+        };
+        let file = filter(config.profiles.get("c")).expect("the new profile names a file");
+        assert!(file.contains("room-correction"), "{file}");
+        let loaded = load_filter(&FilterSource::File(file.as_str().into()), 48_000).unwrap();
+        assert_eq!(loaded.taps, [0.5, 0.25]);
+        assert_eq!(
+            filter(config.render.as_ref()),
+            None,
+            "the active profile as saved"
+        );
+        assert_eq!(control.live.read().inline_filters.len(), 1, "still live");
+        assert!(matches!(
+            control.live.read().output_filters.source(2),
+            Some(FilterSource::Samples(_))
+        ));
         assert!(control.config_dirty.load(Ordering::Relaxed));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
