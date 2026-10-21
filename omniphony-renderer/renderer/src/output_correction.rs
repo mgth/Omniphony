@@ -511,23 +511,96 @@ const REQUEST_CAPACITY: usize = 4;
 const RETIRE_CAPACITY: usize = 64;
 
 /// Retirements the stage keeps, in storage allocated with it, while the
-/// reclaimer's queue is full; sent on as it drains. Only a reclaimer starved
-/// for this many retirements in a row would leave one to be freed on the
-/// audio thread.
-const DEFERRED_CAPACITY: usize = 256;
+/// reclaimer's queue is full; sent on as it drains.
+const DEFERRED_CAPACITY: usize = 64;
 
-/// Hand `retired` to the reclaimer, or keep it in `deferred` while its queue
-/// is full.
-fn retire_to(tx: &mpsc::SyncSender<Retired>, deferred: &mut Vec<Retired>, retired: Retired) {
-    match tx.try_send(retired) {
-        Ok(()) => {}
-        Err(mpsc::TrySendError::Full(retired)) => {
-            if deferred.len() < deferred.capacity() {
-                deferred.push(retired);
+/// Room [`Reclaim::has_room`] keeps free before the stage takes a new set:
+/// what adopting one retires (the outgoing streams and bank, a bank on its
+/// way out, the prepared set), what follows it (the fade's bank, one outgoing
+/// bank per tail level) and what a deactivation then retires (bank, fade,
+/// streams, a set in the slot), with margin. Past it, the stage keeps playing
+/// the set it has until the reclaimer catches up, so a retirement never has
+/// to be freed on the audio thread, however long the reclaimer stalls.
+const RETIRE_RESERVE: usize = 16;
+
+/// Where the audio thread hands what it replaces: the reclaimer's queue,
+/// overflowing into storage allocated with the stage, with a count of what
+/// has not been freed yet.
+struct Reclaim {
+    tx: mpsc::SyncSender<Retired>,
+    /// Retired and not yet freed by the reclaimer (queued or deferred).
+    pending: Arc<AtomicUsize>,
+    /// Waiting for room in the queue (capacity [`DEFERRED_CAPACITY`], never
+    /// grown).
+    deferred: Vec<Retired>,
+    /// Retirements freed on the audio thread for want of room. Zero by
+    /// construction ([`RETIRE_RESERVE`]); kept to be checked.
+    freed_here: u64,
+}
+
+impl Reclaim {
+    /// The reclaimer's end and the receiver it drains.
+    fn new() -> (Self, mpsc::Receiver<Retired>, Arc<AtomicUsize>) {
+        let (tx, rx) = mpsc::sync_channel::<Retired>(RETIRE_CAPACITY);
+        let pending = Arc::new(AtomicUsize::new(0));
+        let reclaim = Self {
+            tx,
+            pending: Arc::clone(&pending),
+            deferred: Vec::with_capacity(DEFERRED_CAPACITY),
+            freed_here: 0,
+        };
+        (reclaim, rx, pending)
+    }
+
+    /// The reclaimer: frees what it receives and counts it out.
+    fn drain(rx: mpsc::Receiver<Retired>, pending: &AtomicUsize) {
+        for retired in rx {
+            drop(retired);
+            pending.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Whether the stage may take a new set: its retirements, and those of a
+    /// deactivation after it, fit in what is left ([`RETIRE_RESERVE`]).
+    fn has_room(&self) -> bool {
+        self.pending.load(Ordering::Acquire) + RETIRE_RESERVE <= RETIRE_CAPACITY + DEFERRED_CAPACITY
+    }
+
+    /// Hand `retired` to the reclaimer, or keep it while its queue is full.
+    fn retire(&mut self, retired: Retired) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        match self.tx.try_send(retired) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(retired)) => {
+                if self.deferred.len() < self.deferred.capacity() {
+                    self.deferred.push(retired);
+                } else {
+                    // Unreachable while the stage keeps to `has_room`.
+                    self.pending.fetch_sub(1, Ordering::AcqRel);
+                    self.freed_here += 1;
+                    drop(retired);
+                }
+            }
+            // The reclaimer is gone: the stage is being torn down.
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.pending.fetch_sub(1, Ordering::AcqRel);
             }
         }
-        // The reclaimer is gone: the stage is being torn down.
-        Err(mpsc::TrySendError::Disconnected(_)) => {}
+    }
+
+    /// Send on what waited for room in the queue.
+    fn flush(&mut self) {
+        while let Some(retired) = self.deferred.pop() {
+            match self.tx.try_send(retired) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(retired)) => {
+                    // Back where it was: within the capacity it came from.
+                    self.deferred.push(retired);
+                    return;
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => return,
+            }
+        }
     }
 }
 
@@ -544,10 +617,7 @@ pub struct OutputCorrectionStage {
     request_tx: mpsc::SyncSender<Request>,
     /// Requests sent and not yet taken by the worker.
     requests_in_flight: Arc<AtomicUsize>,
-    retire_tx: mpsc::SyncSender<Retired>,
-    /// Retirements waiting for room in the reclaimer's queue (capacity
-    /// [`DEFERRED_CAPACITY`], never grown).
-    deferred: Vec<Retired>,
+    reclaim: Reclaim,
     streams: Streams,
     /// The head's partition of a one-tap unit filter: what an output without
     /// a filter ramps from or to.
@@ -570,6 +640,25 @@ impl OutputCorrectionStage {
     }
 
     fn with_ladder(sample_rate: u32, sink: OutputCorrectionStatusSink, ladder: &[usize]) -> Self {
+        let (stage, rx, pending) = Self::unreclaimed(sample_rate, sink, ladder);
+        std::thread::Builder::new()
+            .name("output-correction-reclaim".into())
+            .spawn(move || {
+                crate::background_pool::enter_background();
+                Reclaim::drain(rx, &pending)
+            })
+            .expect("spawn output correction reclaimer");
+        stage
+    }
+
+    /// The stage without its reclaimer: the receiver and the pending count
+    /// it would drain, for [`Self::with_ladder`] to hand to one (and the
+    /// tests, to stall it).
+    fn unreclaimed(
+        sample_rate: u32,
+        sink: OutputCorrectionStatusSink,
+        ladder: &[usize],
+    ) -> (Self, mpsc::Receiver<Retired>, Arc<AtomicUsize>) {
         debug_assert_eq!(ladder[0], CORRECTION_BLOCK);
         let plan = NonUniformPlan::new(ladder);
         let incoming: Arc<ArcSwapOption<Prepared>> = Arc::new(ArcSwapOption::empty());
@@ -588,17 +677,8 @@ impl OutputCorrectionStage {
                 })
                 .expect("spawn output correction worker");
         }
-        let (retire_tx, retire_rx) = mpsc::sync_channel::<Retired>(RETIRE_CAPACITY);
-        std::thread::Builder::new()
-            .name("output-correction-reclaim".into())
-            .spawn(move || {
-                crate::background_pool::enter_background();
-                for retired in retire_rx {
-                    drop(retired);
-                }
-            })
-            .expect("spawn output correction reclaimer");
-        Self {
+        let (reclaim, retire_rx, pending) = Reclaim::new();
+        let stage = Self {
             sample_rate,
             identity: plan.head().partition(&[1.0]),
             scratch: plan.head().make_scratch(),
@@ -609,13 +689,13 @@ impl OutputCorrectionStage {
             incoming,
             request_tx,
             requests_in_flight,
-            retire_tx,
-            deferred: Vec::with_capacity(DEFERRED_CAPACITY),
+            reclaim,
             streams: Streams::empty(),
             read_pos: 0,
             sink,
             synchronous_builds: false,
-        }
+        };
+        (stage, retire_rx, pending)
     }
 
     /// Prepare filter sets on the calling thread, inside [`Self::ensure`],
@@ -646,24 +726,9 @@ impl OutputCorrectionStage {
         }
     }
 
-    /// Hand `retired` to the reclaimer (see [`retire_to`]).
+    /// Hand `retired` to the reclaimer (see [`Reclaim::retire`]).
     fn retire(&mut self, retired: Retired) {
-        retire_to(&self.retire_tx, &mut self.deferred, retired);
-    }
-
-    /// Send on what waited for room in the reclaimer's queue.
-    fn flush_deferred(&mut self) {
-        while let Some(retired) = self.deferred.pop() {
-            match self.retire_tx.try_send(retired) {
-                Ok(()) => {}
-                Err(mpsc::TrySendError::Full(retired)) => {
-                    // Back where it was: within the capacity it came from.
-                    self.deferred.push(retired);
-                    return;
-                }
-                Err(mpsc::TrySendError::Disconnected(_)) => return,
-            }
-        }
+        self.reclaim.retire(retired);
     }
 
     /// The worker: reads and partitions filter sets. Only the latest request
@@ -786,8 +851,10 @@ impl OutputCorrectionStage {
     /// before [`Self::process`]. Steady state is one compare. A change asks
     /// the worker for the new set; the stage keeps the current one until it
     /// lands. Without any filter the stage stops at once. Nothing here
-    /// allocates: sets are built on the worker, and what is replaced goes
-    /// back to it.
+    /// allocates or frees: sets are built on the worker, what is replaced
+    /// goes to the reclaimer, and while the reclaimer is behind the stage
+    /// keeps the set it has rather than run out of room for what it would
+    /// replace.
     pub fn ensure(&mut self, filters: &OutputFilters, enabled: bool, outputs: usize) {
         if !filters.any() || outputs == 0 {
             if self.key.is_some() {
@@ -800,8 +867,13 @@ impl OutputCorrectionStage {
             enabled,
             outputs,
         };
-        if !self.deferred.is_empty() {
-            self.flush_deferred();
+        if !self.reclaim.deferred.is_empty() {
+            self.reclaim.flush();
+        }
+        // While the reclaimer is behind, the stage keeps the set it plays:
+        // a new one is asked for and taken once its retirements fit.
+        if !self.reclaim.has_room() {
+            return;
         }
         // A request the queue could not take is asked again next frame.
         if self.key != Some(key) && self.request(key, filters) {
@@ -992,7 +1064,7 @@ impl OutputCorrectionStage {
             if tails[0].period_starts(segment) {
                 if let Some(old) = banks.outgoing.take() {
                     // What `retire` does, without borrowing the whole stage.
-                    retire_to(&self.retire_tx, &mut self.deferred, Retired::Bank(old));
+                    self.reclaim.retire(Retired::Bank(old));
                 }
                 if !Arc::ptr_eq(&banks.current, bank) {
                     banks.outgoing = Some(std::mem::replace(&mut banks.current, Arc::clone(bank)));
@@ -1016,7 +1088,7 @@ impl OutputCorrectionStage {
             }
         }
         if let Some(old) = self.fade_from.take() {
-            retire_to(&self.retire_tx, &mut self.deferred, Retired::Bank(old));
+            self.reclaim.retire(Retired::Bank(old));
         }
         let outputs = blocks.len();
         for (o, block) in blocks.iter().enumerate() {
@@ -1347,6 +1419,73 @@ mod tests {
             (ok.taps, ok.source_rate, ok.error.as_deref()),
             (1, RATE, None)
         );
+    }
+
+    /// The reclaimer stalled (starved, or held up in the allocator) while the
+    /// user keeps switching the correction: the stage stops taking new sets
+    /// before its retirements could run out of room, keeps playing the one it
+    /// has, never frees anything itself, still leaves the speaker path
+    /// cleanly, and catches up with the last switch once the reclaimer runs
+    /// again.
+    #[test]
+    fn a_stalled_reclaimer_holds_the_resident_set_instead_of_freeing_here() {
+        let (_d, src) = filter_file("stalled-reclaim", RATE, &[0.5, 0.25, 0.125]);
+        let filters = OutputFilters::new(vec![Some(src)]);
+        let (mut s, rx, pending) =
+            OutputCorrectionStage::unreclaimed(RATE, Arc::new(|_| {}), &CORRECTION_LADDER);
+        s.set_synchronous_builds(true);
+        let mut buf = vec![0.5f32; 256];
+        s.ensure(&filters, true, 1);
+        s.process(&mut buf, 1);
+        assert!(s.is_active());
+        for i in 0..300 {
+            let mut block = vec![0.5f32; 256];
+            s.ensure(&filters, i % 2 == 1, 1);
+            s.process(&mut block, 1);
+            assert!(
+                block.iter().any(|&v| v != 0.0),
+                "the resident set keeps playing"
+            );
+        }
+        assert!(
+            pending.load(Ordering::Acquire) + RETIRE_RESERVE > RETIRE_CAPACITY + DEFERRED_CAPACITY,
+            "the stage stopped at the reserve"
+        );
+        assert!(
+            pending.load(Ordering::Acquire) <= RETIRE_CAPACITY + DEFERRED_CAPACITY,
+            "retirements fit"
+        );
+        assert_eq!(s.reclaim.freed_here, 0, "nothing freed on the audio thread");
+        // A switch now waits for the reclaimer.
+        let held = s.key.map(|k| k.enabled).unwrap();
+        let last = !held;
+        for _ in 0..10 {
+            s.ensure(&filters, last, 1);
+            s.process(&mut buf, 1);
+        }
+        assert_eq!(s.key.map(|k| k.enabled), Some(held), "the switch waits");
+        // The reclaimer runs again: everything retired reaches it, and the
+        // stage takes the last switch.
+        let mut freed = 0;
+        for _ in 0..50 {
+            while let Ok(retired) = rx.try_recv() {
+                drop(retired);
+                pending.fetch_sub(1, Ordering::AcqRel);
+                freed += 1;
+            }
+            s.ensure(&filters, last, 1);
+            s.process(&mut buf, 1);
+        }
+        assert!(freed > 0);
+        assert_eq!(s.key.map(|k| k.enabled), Some(last));
+        // Stalled again, leaving the speaker path still frees nothing here.
+        for i in 0..300 {
+            s.ensure(&filters, i % 2 == 0, 1);
+            s.process(&mut buf, 1);
+        }
+        s.deactivate();
+        assert!(!s.is_active());
+        assert_eq!(s.reclaim.freed_here, 0);
     }
 
     #[test]

@@ -88,4 +88,6 @@ and partitioned on a background thread, which also builds the buffers the
 stage plays through; the audio thread swaps them in with a one-block
 crossfade and hands what it replaces to a second thread that only frees, so
 it neither allocates nor frees, live transitions included and even while
-the first thread is busy preparing a set.
+the first thread is busy preparing a set. Should that second thread fall
+behind, the stage keeps playing the filters it has and takes the latest
+change once it catches up, rather than free anything itself.
