@@ -378,13 +378,20 @@ How it renders:
 - **Scale**: `unit_scale_m` sets how far "1 ADM unit" is in metres. At the
   default 1.0 the far wall of the mix is one metre from your nose — try 3–4
   for a room-sized stage. The reflection room grows on its own to contain
-  the scene: each half-extent is floored at `unit_scale_m + 0.35 m` (6.7 m
-  on every axis at a scale of 3, capped at 20 m), so the dimensions you set
-  are a minimum — a room smaller than the scene it holds has no physical
-  reading. Past the 20 m cap the image-source model pulls a source that
-  sits outside the room back inside before mirroring it, which keeps the
-  geometry valid but puts the reflections where the wall is, not where the
-  object is.
+  the scene, with 0.35 m between the scene and every wall: it is scaled
+  *uniformly*, keeping its proportions, until the scene fits or its longest
+  side reaches 20 m, and only then are the sides still too short raised one
+  by one (the default 4 × 5 × 2.7 m becomes 11.2 × 14.0 × 7.5 m at a scale
+  of 3). Flooring each side on its own made a cube of most rooms, and a
+  cube puts the side walls', floor's and ceiling's echoes on one delay. The
+  dimensions you set are a minimum — a room smaller than the scene it holds
+  has no physical reading. The listener is centred across the room but
+  their ears sit 0.444 of the height above the floor (1.2 m in a 2.7 m
+  room), not at mid-height: otherwise the floor and the ceiling echoes of
+  any source at ear height coincide. Past the 20 m cap the image-source
+  model pulls a source that sits outside the room back inside before
+  mirroring it, which keeps the geometry valid but puts the reflections
+  where the wall is, not where the object is.
 - **ITD fit**: `head_radius_m` defaults to a KEMAR-ish 8.75 cm. If
   localisation feels smeared, measure ear-to-ear width and set half of it.
 - **HRTF**: the embedded measured KEMAR (`saf`) is the best generic default —
