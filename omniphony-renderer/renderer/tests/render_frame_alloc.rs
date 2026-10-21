@@ -420,3 +420,74 @@ fn measurement_burst_does_not_allocate_in_the_audio_path() {
     assert_eq!(count_steady_state_of(r, false, 5600, 5500), 0);
     assert_eq!(signal.rendered_frames(), signal.total_frames());
 }
+
+/// A mono 32-bit float WAV file of `taps` in the system temporary directory.
+fn filter_file(name: &str, taps: &[f32]) -> std::path::PathBuf {
+    let data = taps.len() * 4;
+    let mut b = Vec::new();
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&((36 + data) as u32).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&3u16.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&48_000u32.to_le_bytes());
+    b.extend_from_slice(&(48_000u32 * 4).to_le_bytes());
+    b.extend_from_slice(&4u16.to_le_bytes());
+    b.extend_from_slice(&32u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&(data as u32).to_le_bytes());
+    for t in taps {
+        b.extend_from_slice(&t.to_le_bytes());
+    }
+    let path =
+        std::env::temp_dir().join(format!("orender-alloc-{name}-{}.wav", std::process::id()));
+    std::fs::write(&path, b).unwrap();
+    path
+}
+
+/// Room correction filters on some outputs (one long enough to reach the
+/// largest partition level, one on the head only), the others unfiltered,
+/// with the correction on and off: the stage convolves every output without
+/// touching the heap once its filters are resident.
+#[test]
+fn a_warmed_up_render_with_output_correction_does_not_allocate() {
+    use renderer::output_correction::{FilterSource, OutputFilters};
+    let long: Vec<f32> = (0..20_000)
+        .map(|i| (-(i as f32) / 3000.0).exp() * if i % 2 == 0 { 0.5 } else { -0.4 })
+        .collect();
+    let long_path = filter_file("long", &long);
+    let short_path = filter_file("short", &[0.7, 0.2, 0.1]);
+    for enabled in [true, false] {
+        let mut r = renderer();
+        r.set_synchronous_stage_builds(true);
+        let control = r.renderer_control();
+        {
+            let mut live = control.live.write();
+            live.options.output_correction = enabled;
+            let file = |p: &std::path::Path| Some(FilterSource::File(p.to_string_lossy().into()));
+            live.output_filters =
+                OutputFilters::new(vec![file(&long_path), None, file(&short_path)]);
+        }
+        // Past two periods of the 8192-sample level before counting.
+        let allocations = count_steady_state_of(r, true, 1200, 400);
+        assert_eq!(
+            allocations, 0,
+            "correction {enabled}: {allocations} allocation(s) in 400 warmed-up blocks"
+        );
+        // The filters were read: the stage ran on them.
+        let status = control.output_correction_status();
+        assert_eq!(
+            status.generation,
+            control.live.read().output_filters.generation
+        );
+        let taps: Vec<usize> = status
+            .outputs
+            .iter()
+            .map(|o| o.as_ref().map_or(0, |o| o.taps))
+            .collect();
+        assert_eq!(&taps[..3], &[20_000, 0, 3]);
+    }
+    let _ = std::fs::remove_file(long_path);
+    let _ = std::fs::remove_file(short_path);
+}

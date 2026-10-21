@@ -222,6 +222,8 @@ struct LayoutAddSpeakerPatch {
     delay_ms: Option<f32>,
     /// The speaker's saved output gain, when the layout carries one.
     gain_db: Option<f32>,
+    /// The speaker's room correction filter, when the layout carries one.
+    correction_filter: Option<String>,
     #[serde(default, deserialize_with = "double_option")]
     freq_low: Option<Option<f32>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -264,6 +266,9 @@ struct SpeakersRuntimePatch {
     id: usize,
     muted: Option<bool>,
     delay_ms: Option<f32>,
+    /// Room correction filter file; `null` or an empty path removes it.
+    #[serde(default, deserialize_with = "double_option")]
+    correction_filter: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -645,6 +650,9 @@ fn build_layout_speaker_from_patch(
     if let Some(gain_db) = patch.gain_db.filter(|value| value.is_finite()) {
         speaker.gain_db = gain_db.max(renderer::live_params::SPEAKER_GAIN_FLOOR_DB);
     }
+    speaker.correction_filter = patch
+        .correction_filter
+        .filter(|path| !path.trim().is_empty());
     if patch.coord_mode.as_deref().is_some() {
         speaker.coord_mode = normalize_coord_mode(patch.coord_mode.as_deref()).to_string();
     }
@@ -1221,6 +1229,56 @@ mod persistence_class_tests {
         assert!(effects.mark_dirty);
     }
 
+    /// A correction filter is a saved speaker setting applied live: the
+    /// layout keeps the path for Save, the live filters follow it, `null`
+    /// removes it, and moving the speaker carries its filter along.
+    #[test]
+    fn a_correction_filter_follows_its_speaker() {
+        use renderer::output_correction::FilterSource;
+        let (effects, ctx) = apply(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            vec![OscType::String(
+                r#"{"speakerEdits":[{"id":1,"correctionFilter":"/f/one.wav"}]}"#.into(),
+            )],
+        );
+        assert!(effects.mark_dirty);
+        assert_eq!(
+            ctx.renderer.editable_layout().speakers[1]
+                .correction_filter
+                .as_deref(),
+            Some("/f/one.wav")
+        );
+        let one = Some(FilterSource::File("/f/one.wav".into()));
+        assert_eq!(
+            ctx.renderer.live.read().output_filters.source(1),
+            one.as_ref()
+        );
+
+        let send = |addr: &str, json: &str| {
+            let msg = OscMessage {
+                addr: addr.to_string(),
+                args: vec![OscType::String(json.into())],
+            };
+            apply_simple_osc_control(&msg, &ctx).expect("handled")
+        };
+        send(
+            osc_contract::CONTROL_CONFIG_LAYOUT,
+            r#"{"moveSpeaker":{"from":1,"to":0}}"#,
+        );
+        let live = ctx.renderer.live.read().output_filters.clone();
+        assert_eq!((live.source(0), live.source(1)), (one.as_ref(), None));
+
+        send(
+            osc_contract::CONTROL_CONFIG_SPEAKERS,
+            r#"{"speakerEdits":[{"id":0,"correctionFilter":null}]}"#,
+        );
+        assert!(!ctx.renderer.live.read().output_filters.any());
+        assert_eq!(
+            ctx.renderer.editable_layout().speakers[0].correction_filter,
+            None
+        );
+    }
+
     /// A replaced layout seeds the live output gains from the speakers it
     /// carries, as a boot does.
     #[test]
@@ -1269,6 +1327,7 @@ fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Contro
             });
             ctx.renderer.live.write().speakers = speakers;
             ctx.renderer.mark_speaker_params_dirty();
+            sync_output_filters(ctx);
             changed = true;
         }
 
@@ -1301,6 +1360,7 @@ fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Contro
                     .delay_ms = delay_ms;
                 ctx.renderer.mark_speaker_params_dirty();
             }
+            sync_output_filters(ctx);
             changed = true;
         }
 
@@ -1319,6 +1379,7 @@ fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Contro
                     remap_live_speakers_remove(&mut live.speakers, remove_idx);
                 }
                 ctx.renderer.mark_speaker_params_dirty();
+                sync_output_filters(ctx);
                 changed = true;
             }
         }
@@ -1347,6 +1408,7 @@ fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Contro
                     );
                 }
                 ctx.renderer.mark_speaker_params_dirty();
+                sync_output_filters(ctx);
                 changed = true;
             }
         }
@@ -1372,6 +1434,19 @@ fn config_layout(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Contro
         let _ = changed;
     }
     Some(effects)
+}
+
+/// The live correction filters follow the editable layout's
+/// `correction_filter` entries: after an edit that moved, added or removed
+/// speakers, or named a filter. Left alone when they already match, so the
+/// stage reloads nothing.
+fn sync_output_filters(ctx: &RuntimeControlContext) {
+    let next =
+        renderer::output_correction::OutputFilters::from_layout(&ctx.renderer.editable_layout());
+    let mut live = ctx.renderer.live.write();
+    if *live.output_filters.sources != *next.sources {
+        live.output_filters = next;
+    }
 }
 
 fn config_layout_apply(_msg: &OscMessage, _ctx: &RuntimeControlContext) -> Option<ControlEffects> {
@@ -1405,6 +1480,22 @@ fn config_speakers(msg: &OscMessage, ctx: &RuntimeControlContext) -> Option<Cont
                     });
                     ctx.renderer.mark_speaker_params_dirty();
                     changed = true;
+                }
+                if let Some(filter) = speaker_patch.correction_filter.clone() {
+                    let filter = filter.filter(|path| !path.trim().is_empty());
+                    let edited = ctx.renderer.with_editable_layout(|layout| {
+                        match layout.speakers.get_mut(speaker_patch.id) {
+                            Some(speaker) if speaker.correction_filter != filter => {
+                                speaker.correction_filter = filter;
+                                true
+                            }
+                            _ => false,
+                        }
+                    });
+                    if edited {
+                        sync_output_filters(ctx);
+                        changed = true;
+                    }
                 }
                 // A mute is a listening gesture, not a setting: it is
                 // published, never saved (docs/persistence-policy.md).

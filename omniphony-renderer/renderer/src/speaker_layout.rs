@@ -114,6 +114,11 @@ pub struct Speaker {
 
     /// Highest frequency this speaker can reproduce, in Hz (default: None = +∞ Hz).
     pub freq_high: Option<f32>,
+
+    /// Room correction filter of this output: a mono WAV impulse response
+    /// the output is convolved with (`output_correction`). `None`: no
+    /// filter.
+    pub correction_filter: Option<String>,
 }
 
 /// How far a BRIR emitter may sit from a standard position and still take its
@@ -197,6 +202,8 @@ struct RawSpeaker {
     freq_low: Option<f32>,
     #[serde(default)]
     freq_high: Option<f32>,
+    #[serde(default)]
+    correction_filter: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for Speaker {
@@ -245,6 +252,7 @@ impl<'de> Deserialize<'de> for Speaker {
             delay_ms: raw.delay_ms,
             freq_low: raw.freq_low.filter(|value| *value > 0.0),
             freq_high: raw.freq_high.filter(|value| *value > 0.0),
+            correction_filter: raw.correction_filter.filter(|path| !path.trim().is_empty()),
         })
     }
 }
@@ -255,7 +263,7 @@ impl Serialize for Speaker {
         S: Serializer,
     {
         let cartesian = self.coord_mode.eq_ignore_ascii_case("cartesian");
-        let field_count = 9;
+        let field_count = 10;
         let mut state = serializer.serialize_struct("Speaker", field_count)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("coord_mode", if cartesian { "cartesian" } else { "polar" })?;
@@ -280,6 +288,9 @@ impl Serialize for Speaker {
         }
         if self.freq_high.is_some() {
             state.serialize_field("freq_high", &self.freq_high)?;
+        }
+        if self.correction_filter.is_some() {
+            state.serialize_field("correction_filter", &self.correction_filter)?;
         }
         state.end()
     }
@@ -310,6 +321,7 @@ impl Speaker {
             delay_ms: delay_ms.max(0.0),
             freq_low: None,
             freq_high: None,
+            correction_filter: None,
         }
     }
 
@@ -342,6 +354,7 @@ impl Speaker {
             delay_ms: delay_ms.max(0.0),
             freq_low: None,
             freq_high: None,
+            correction_filter: None,
         }
     }
 

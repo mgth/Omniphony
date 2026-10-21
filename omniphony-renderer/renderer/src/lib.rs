@@ -17,6 +17,7 @@ pub mod measurement;
 pub mod metering;
 pub mod object_test;
 pub mod options;
+pub mod output_correction;
 pub mod partitioned_conv;
 pub mod placement;
 pub mod plugin;

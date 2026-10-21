@@ -250,7 +250,11 @@ fn start_recompute(
                         let speakers_state_json = {
                             let live = control_clone.live.read();
                             let layout = control_clone.editable_layout();
-                            build_speakers_state_json(&live, &layout)
+                            build_speakers_state_json(
+                                &live,
+                                &layout,
+                                &control_clone.output_correction_status(),
+                            )
                         };
                         let message = |addr: &str, json: String| OscMessage {
                             addr: addr.to_string(),

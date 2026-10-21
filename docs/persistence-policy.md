@@ -22,7 +22,7 @@ class decides the plumbing.
 |---|---|---|---|---|
 | **View** | How Studio (or the mpv overlay) shows things: layout, camera, toggles, colours, plots, tabs, test-tool settings, monitoring cadences | Studio: `studio-egui-prefs.json`. Engine: `config.yaml` for the cadences, `overlay-prefs.conf` for the overlay | At once (Studio debounces 600 ms) | Never lights it |
 | **App** | How Studio reaches and launches the engine: host, ports, auto-start, keep-alive, last folders | `osc_config.json` | At once (200 ms debounce) | Never lights it |
-| **Render / engine** | Anything that changes what is heard or how the engine behaves: backend, layout, gains, delays, binaural, placement, input, output, latency, options, profiles | `config.yaml` | **Only** on `/control/save_config` | Lights it on a real change |
+| **Render / engine** | Anything that changes what is heard or how the engine behaves: backend, layout, gains, delays, room correction filters, binaural, placement, input, output, latency, options, profiles | `config.yaml` | **Only** on `/control/save_config` | Lights it on a real change |
 | **Action** | A button that writes a file it names: layout export, backend script save, SOFA upload, installing the service | The file the action names | On the click | Never lights it |
 | **Transient** | Gestures and live-only state: mutes, the source bounds box, a manual head pose, test signals, subscriptions, resets, selections, open modals | Nowhere | Never | Never lights it |
 

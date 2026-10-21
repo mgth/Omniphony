@@ -395,6 +395,7 @@ fn apply_switched_profile(
         {
             let mut live = control.live.write();
             live.speakers = renderer::live_params::speaker_live_from_layout(&layout);
+            live.output_filters = renderer::output_correction::OutputFilters::from_layout(&layout);
         }
         control.with_editable_layout(|l| *l = layout);
     }

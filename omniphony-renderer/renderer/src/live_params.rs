@@ -1346,6 +1346,12 @@ pub struct LiveParams {
     /// Absent entries use `SpeakerLiveParams::default()` (gain=1.0, muted=false, delay=0 ms).
     pub speakers: HashMap<usize, SpeakerLiveParams>,
 
+    /// Per-output correction filters (`output_correction`), seeded from the
+    /// layout's `correction_filter` entries like [`Self::speakers`] is from
+    /// its gains and delays. The on/off switch is the `output_correction`
+    /// option.
+    pub output_filters: crate::output_correction::OutputFilters,
+
     /// Speaker test signal, `None` when no test is running. Transient by
     /// design: never persisted to the config, and cleared on a fresh start, so
     /// a saved session can never come up making noise.
@@ -1893,6 +1899,11 @@ pub struct RendererControl {
     /// file asked for, what is resident, or why it failed. Written by the
     /// BRIR stage's worker, read by the state snapshot.
     pub binaural_brir_status: ArcSwap<crate::binaural::BrirStatus>,
+
+    /// What the output correction stage last prepared: per output, the
+    /// filter file, its length, or why it plays unfiltered. Written by the
+    /// stage's worker, read by the state snapshot.
+    pub output_correction_status: ArcSwap<crate::output_correction::OutputCorrectionStatus>,
     /// Bumped with every [`Self::set_binaural_brir_status`]: identifies the
     /// set a BRIR layout was derived from (never 0, which names the user's
     /// layout in [`Self::render_layout_key`]).
@@ -2118,6 +2129,9 @@ impl RendererControl {
             config_dirty: AtomicBool::new(false),
             binaural_hrir_status: ArcSwap::from_pointee(crate::binaural::HrirStatus::default()),
             binaural_brir_status: ArcSwap::from_pointee(crate::binaural::BrirStatus::default()),
+            output_correction_status: ArcSwap::from_pointee(
+                crate::output_correction::OutputCorrectionStatus::default(),
+            ),
             brir_status_generation: std::sync::atomic::AtomicU64::new(0),
             render_layout_key: std::sync::atomic::AtomicU64::new(0),
             speaker_stage_width: std::sync::atomic::AtomicUsize::new(0),
@@ -2653,6 +2667,23 @@ impl RendererControl {
     pub fn set_binaural_brir_status(&self, status: crate::binaural::BrirStatus) {
         self.binaural_brir_status.store(Arc::new(status));
         self.brir_status_generation.fetch_add(1, Ordering::Release);
+        self.bump_live_state();
+    }
+
+    /// The last filter set the output correction stage prepared.
+    pub fn output_correction_status(
+        &self,
+    ) -> Arc<crate::output_correction::OutputCorrectionStatus> {
+        self.output_correction_status.load_full()
+    }
+
+    /// Record a prepared filter set (the stage's status sink) and get it
+    /// broadcast.
+    pub fn set_output_correction_status(
+        &self,
+        status: crate::output_correction::OutputCorrectionStatus,
+    ) {
+        self.output_correction_status.store(Arc::new(status));
         self.bump_live_state();
     }
 

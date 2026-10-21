@@ -90,6 +90,7 @@ Declared options (`renderer::options::LIVE_OPTIONS`):
 | `sample_ramp_stride` | int [1, 32] | `8` | — | — | — |
 | `drc_mode` | string | `"Off"` | — | — | `/control/input/drc_mode` |
 | `drc_weight` | float [0, 1], step 0.01 | `1` | — | — | `/control/input/drc_weight` |
+| `output_correction` | bool | `true` | — | — | — |
 | `dialogue_gain_db` | float [-12, 12], step 0.5 | `0` | — | — | — |
 | `hrir_update_lattice` | `exact` \| `fine` \| `balanced` \| `coarse` | `"exact"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_update_lattice` |
 | `room_ratio` | 3 floats [0.01, 100], step 0.01 | `[1, 2, 1]` | `room` (live, topology) | — | `/control/room_ratio` |
