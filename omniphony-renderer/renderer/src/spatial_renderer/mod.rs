@@ -303,6 +303,10 @@ pub struct SpatialRenderer {
     /// what keeps the level contract and the restart behaviour identical
     /// between them.
     object_test_source: crate::object_test::ObjectTestSource,
+    /// The block of a bass-managed measurement sweep, placed as a source
+    /// ([`crate::measurement::MeasurementControl::render_with_source`]).
+    /// Grown by the first such signal, then reused.
+    measurement_source: Vec<f32>,
 }
 
 /// Fold one frame's measured crossover time into the duty-cycle EMA and
@@ -862,9 +866,16 @@ impl SpatialRenderer {
             self.output_correction.deactivate();
         } else {
             let g = self.control.live.read();
+            // A measurement session may hold the filters off: the same
+            // identity bank as the option off, so the latency stays.
+            let enabled = g.options.output_correction
+                && !self
+                    .control
+                    .measurement
+                    .filters_bypassed(std::time::Instant::now);
             self.output_correction.ensure(
                 &g.output_filters,
-                g.options.output_correction,
+                enabled,
                 self.speaker_stage.num_speakers,
             );
         }
@@ -1458,10 +1469,13 @@ impl SpatialRenderer {
         ) || object_test_active;
 
         // Measurement samples are prepared off-thread and sent directly to
-        // the selected physical output, through its existing gain and delay.
-        let measurement_active = self.control.measurement.armed()
-            && self.control.measurement.render(
+        // the selected physical output, through its existing gain and delay;
+        // a bass-managed sweep is placed at its speaker's position instead,
+        // through the crossover, like an object.
+        let measurement_active = self.control.measurement.armed() && {
+            let rendered = self.control.measurement.render_with_source(
                 &mut output,
+                &mut self.measurement_source,
                 crate::measurement::Configuration {
                     sample_rate: self.sample_rate,
                     width: self.speaker_stage.num_speakers,
@@ -1474,6 +1488,16 @@ impl SpatialRenderer {
                 },
                 std::time::Instant::now(),
             );
+            if let Some(position) = rendered.source_at {
+                self.speaker_stage.inject_measurement_source(
+                    &self.measurement_source,
+                    position,
+                    ramp_context.render_params(),
+                    &mut output,
+                );
+            }
+            rendered.owned
+        };
         // Programme loudness metadata must not rescale a measurement.
         let total_gain = if measurement_active {
             live.master_gain

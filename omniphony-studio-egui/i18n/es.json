@@ -724,6 +724,8 @@
   "speaker.correction.pending": "Cargando…",
   "speaker.correction.error": "No aplicado: {error}",
   "speaker.correction.off": "La corrección de sala está desactivada: este altavoz suena sin filtro.",
+  "speaker.correction.live": "Filtro medido, sin guardar",
+  "speaker.correction.bypassed": "Suspendida por una sesión de medición: los altavoces suenan sin filtro hasta que termine.",
   "speaker.filter.full": "Banda completa",
   "speaker.filter.low": "Paso bajo",
   "speaker.filter.high": "Paso alto",

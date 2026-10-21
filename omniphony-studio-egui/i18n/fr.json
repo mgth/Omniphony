@@ -724,6 +724,8 @@
   "speaker.correction.pending": "Chargement…",
   "speaker.correction.error": "Non appliqué : {error}",
   "speaker.correction.off": "La correction de pièce est désactivée : cette enceinte joue sans filtre.",
+  "speaker.correction.live": "Filtre mesuré, non enregistré",
+  "speaker.correction.bypassed": "Suspendue par une session de mesure : les enceintes jouent sans filtre jusqu’à sa fin.",
   "speaker.filter.full": "Pleine bande",
   "speaker.filter.low": "Passe-bas",
   "speaker.filter.high": "Passe-haut",

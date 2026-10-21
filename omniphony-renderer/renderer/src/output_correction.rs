@@ -30,6 +30,8 @@
 //! filter longer than the streams were sized for rebuild the streams, which
 //! restarts the outputs from silence for one block.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
@@ -49,8 +51,8 @@ pub const CORRECTION_LADDER: [usize; 4] = [CORRECTION_BLOCK, 512, 2048, 8192];
 /// Longest filter accepted, in seconds at the engine rate. A bass
 /// correction rarely needs half of it; the bound keeps a wrong file (a
 /// recording picked instead of a filter) from costing seconds of
-/// convolution per output.
-pub const MAX_FILTER_SECONDS: f64 = 1.5;
+/// convolution per output. The measurement protocol's bound on uploads.
+pub const MAX_FILTER_SECONDS: f64 = omniphony_osc_contract::measurement::MAX_FILTER_SECONDS;
 
 /// Largest filter file read, bytes.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -60,16 +62,92 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub enum FilterSource {
     /// A mono WAV file (PCM or float) holding the impulse response.
     File(Arc<str>),
+    /// An impulse response handed over as samples (a measurement client's
+    /// upload): live state, written to a file only by a Save.
+    Samples(Arc<FilterSamples>),
 }
 
 impl FilterSource {
     /// How the source is shown to the user.
-    pub fn describe(&self) -> &str {
+    pub fn describe(&self) -> Cow<'_, str> {
         match self {
-            Self::File(path) => path,
+            Self::File(path) => Cow::Borrowed(path),
+            Self::Samples(samples) => Cow::Owned(format!(
+                "live filter ({} taps at {} Hz)",
+                samples.taps.len(),
+                samples.sample_rate
+            )),
         }
     }
 }
+
+/// A filter's impulse response, at the rate it was designed at.
+pub struct FilterSamples {
+    pub sample_rate: u32,
+    pub taps: Box<[f32]>,
+    /// [`omniphony_osc_contract::measurement::taps_hash`] of `taps`.
+    pub hash: u64,
+}
+
+impl FilterSamples {
+    /// `taps` at `sample_rate`, checked as a file's would be against an
+    /// engine at `engine_rate`: a rate the stage can use, within
+    /// [`MAX_FILTER_SECONDS`], finite and not silent.
+    pub fn new(sample_rate: u32, taps: Vec<f32>, engine_rate: u32) -> Result<Self, String> {
+        check_source_rate(sample_rate, engine_rate)?;
+        if taps.len() > max_source_taps(sample_rate) {
+            return Err(format!(
+                "the filter is {:.2} s long; the limit is {MAX_FILTER_SECONDS} s",
+                taps.len() as f64 / sample_rate as f64
+            ));
+        }
+        if taps.iter().any(|t| !t.is_finite()) {
+            return Err("the filter holds non-finite samples".to_string());
+        }
+        if taps.iter().all(|&t| t == 0.0) {
+            return Err("the filter is silent".to_string());
+        }
+        Ok(Self {
+            sample_rate,
+            hash: omniphony_osc_contract::measurement::taps_hash(&taps),
+            taps: taps.into_boxed_slice(),
+        })
+    }
+}
+
+impl PartialEq for FilterSamples {
+    fn eq(&self, other: &Self) -> bool {
+        self.sample_rate == other.sample_rate
+            && self.hash == other.hash
+            && self.taps.len() == other.taps.len()
+            && self
+                .taps
+                .iter()
+                .zip(other.taps.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+}
+
+impl Eq for FilterSamples {}
+
+impl std::fmt::Debug for FilterSamples {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterSamples")
+            .field("sample_rate", &self.sample_rate)
+            .field("taps", &self.taps.len())
+            .field("hash", &format_args!("{:016x}", self.hash))
+            .finish()
+    }
+}
+
+/// Filters handed over as samples and not saved yet, by output name (the
+/// layout's speaker name, the measurement protocol's output ID). Kept apart
+/// from the layout, which names files, and laid over it by
+/// [`OutputFilters::for_layout`]: a layout edit that moves, adds, removes or
+/// replaces speakers then carries each one with its speaker, as it carries a
+/// file. A Save turns them into files; a Reload or a profile switch drops
+/// them.
+pub type InlineFilters = Arc<BTreeMap<String, Arc<FilterSamples>>>;
 
 /// Source of fresh [`OutputFilters::generation`] values: one counter for the
 /// whole process, so two different filter sets never share a generation.
@@ -103,14 +181,25 @@ impl OutputFilters {
     /// renderer construction, a layout replacement and the live profile
     /// switch, like `live_params::speaker_live_from_layout`.
     pub fn from_layout(layout: &crate::speaker_layout::SpeakerLayout) -> Self {
+        Self::for_layout(layout, &BTreeMap::new())
+    }
+
+    /// The filters a layout names, with the `inline` ones (by speaker name)
+    /// taking the place of a speaker's file.
+    pub fn for_layout(
+        layout: &crate::speaker_layout::SpeakerLayout,
+        inline: &BTreeMap<String, Arc<FilterSamples>>,
+    ) -> Self {
         Self::new(
             layout
                 .speakers
                 .iter()
-                .map(|s| {
-                    s.correction_filter
+                .map(|s| match inline.get(&s.name) {
+                    Some(samples) => Some(FilterSource::Samples(Arc::clone(samples))),
+                    None => s
+                        .correction_filter
                         .as_deref()
-                        .map(|path| FilterSource::File(path.into()))
+                        .map(|path| FilterSource::File(path.into())),
                 })
                 .collect(),
         )
@@ -150,6 +239,11 @@ pub struct FilterStatus {
     pub taps: usize,
     /// Rate the filter was designed at (the file's).
     pub source_rate: u32,
+    /// Length at that rate, as read (0 when it could not be used).
+    pub source_taps: usize,
+    /// [`omniphony_osc_contract::measurement::taps_hash`] of the taps as
+    /// read, at that rate (0 when it could not be used).
+    pub hash: u64,
     /// Why the output plays unfiltered, when the filter could not be used.
     pub error: Option<String>,
 }
@@ -175,6 +269,10 @@ pub struct LoadedFilter {
     pub taps: Vec<f32>,
     /// Rate the filter was designed at (the file's).
     pub source_rate: u32,
+    /// Length at that rate, as read.
+    pub source_taps: usize,
+    /// Content hash of the taps as read ([`FilterStatus::hash`]).
+    pub hash: u64,
     /// Samples the response was moved later by to keep the whole of it
     /// through a rate change ([`resample_filter`]); 0 at the engine rate.
     pub delay: usize,
@@ -198,7 +296,33 @@ pub fn load_filter(source: &FilterSource, sample_rate: u32) -> Result<LoadedFilt
             let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
             filter_from_wav(&bytes, sample_rate)
         }
+        FilterSource::Samples(samples) => {
+            filter_from_samples(samples.taps.to_vec(), samples.sample_rate, sample_rate)
+        }
     }
+}
+
+/// Whether a filter at `source_rate` can play at `sample_rate`.
+fn check_source_rate(source_rate: u32, sample_rate: u32) -> Result<(), String> {
+    if source_rate == 0 {
+        return Err("the filter declares a sample rate of 0 Hz".to_string());
+    }
+    if source_rate != sample_rate && !FILTER_SOURCE_RATES.contains(&source_rate) {
+        return Err(format!(
+            "a filter at {source_rate} Hz cannot be used at {sample_rate} Hz: a filter at \
+             another rate than the engine's must be designed between {} and {} Hz",
+            FILTER_SOURCE_RATES.start(),
+            FILTER_SOURCE_RATES.end()
+        ));
+    }
+    Ok(())
+}
+
+/// Most taps a filter designed at `source_rate` may have: bounded at its own
+/// rate, before resampling, so a header claiming a few hertz cannot expand a
+/// short file a thousandfold.
+pub fn max_source_taps(source_rate: u32) -> usize {
+    omniphony_osc_contract::measurement::max_filter_taps(source_rate) + 64
 }
 
 /// [`load_filter`] on a WAV file's bytes.
@@ -210,35 +334,32 @@ fn filter_from_wav(bytes: &[u8], sample_rate: u32) -> Result<LoadedFilter, Strin
             wav.channels
         ));
     }
-    let source_rate = wav.sample_rate;
-    if source_rate == 0 {
-        return Err("the file declares a sample rate of 0 Hz".to_string());
-    }
-    if source_rate != sample_rate && !FILTER_SOURCE_RATES.contains(&source_rate) {
-        return Err(format!(
-            "a filter at {source_rate} Hz cannot be used at {sample_rate} Hz: a filter at \
-             another rate than the engine's must be designed between {} and {} Hz",
-            FILTER_SOURCE_RATES.start(),
-            FILTER_SOURCE_RATES.end()
-        ));
-    }
+    filter_from_samples(wav.samples, wav.sample_rate, sample_rate)
+}
+
+/// A filter's taps at `source_rate`, brought to `sample_rate`.
+fn filter_from_samples(
+    samples: Vec<f32>,
+    source_rate: u32,
+    sample_rate: u32,
+) -> Result<LoadedFilter, String> {
+    check_source_rate(source_rate, sample_rate)?;
     let max_taps = (MAX_FILTER_SECONDS * sample_rate as f64) as usize;
-    // Bounded before resampling too: a header claiming a few hertz would
-    // otherwise expand a short file a thousandfold.
-    let max_source_taps = (MAX_FILTER_SECONDS * source_rate as f64) as usize + 64;
-    if wav.samples.len() > max_source_taps {
+    if samples.len() > max_source_taps(source_rate) {
         return Err(format!(
             "the filter is {:.2} s long; the limit is {MAX_FILTER_SECONDS} s",
-            wav.samples.len() as f64 / source_rate as f64
+            samples.len() as f64 / source_rate as f64
         ));
     }
-    if wav.samples.iter().any(|t| !t.is_finite()) {
+    if samples.iter().any(|t| !t.is_finite()) {
         return Err("the filter holds non-finite samples".to_string());
     }
+    let source_taps = samples.len();
+    let hash = omniphony_osc_contract::measurement::taps_hash(&samples);
     let (mut taps, delay) = if source_rate == sample_rate {
-        (wav.samples, 0)
+        (samples, 0)
     } else {
-        resample_filter(&wav.samples, source_rate, sample_rate)
+        resample_filter(&samples, source_rate, sample_rate)
     };
     taps.truncate(max_taps + delay);
     // Trailing zeros cost partitions for nothing.
@@ -250,6 +371,8 @@ fn filter_from_wav(bytes: &[u8], sample_rate: u32) -> Result<LoadedFilter, Strin
     Ok(LoadedFilter {
         taps,
         source_rate,
+        source_taps,
+        hash,
         delay,
     })
 }
@@ -276,7 +399,8 @@ const FILTER_KERNEL_OVERSAMPLING: usize = 256;
 /// one. Below, a correction filter has no treble to correct; above, nothing
 /// records or designs at. The bounds also bound the resampling: its delay
 /// (the kernel's half-width at the lower rate, at most 2 ms) and its table.
-pub const FILTER_SOURCE_RATES: std::ops::RangeInclusive<u32> = 32_000..=384_000;
+pub const FILTER_SOURCE_RATES: std::ops::RangeInclusive<u32> =
+    omniphony_osc_contract::measurement::FILTER_SOURCE_RATES;
 
 /// A filter designed at `from` Hz as the same response at `to` Hz, and the
 /// samples it was moved later by.
@@ -626,6 +750,24 @@ pub struct OutputCorrectionStage {
     read_pos: usize,
     sink: OutputCorrectionStatusSink,
     synchronous_builds: bool,
+    /// The key of the bank the stage plays (since [`Self::adopt`]).
+    resident: Option<Key>,
+    /// Where the stage says which set every output plays through alone
+    /// ([`settled_key`]), 0 while a change is still on its way through the
+    /// tail segments or the stage is out of the way.
+    settled: Arc<AtomicU64>,
+    /// `settled` holds the resident key.
+    settled_published: bool,
+    /// The resident set ran alone on the last block.
+    settle_seen: bool,
+}
+
+/// What [`OutputCorrectionStage::set_settled_flag`]'s flag holds once every
+/// output plays through filter set `generation` alone, with the correction
+/// `enabled` or not: no fade and no tail segment still convolving with the
+/// set before it. Never 0 (generations start at 1).
+pub fn settled_key(generation: u64, enabled: bool) -> u64 {
+    (generation << 1) | u64::from(enabled)
 }
 
 impl OutputCorrectionStage {
@@ -694,6 +836,10 @@ impl OutputCorrectionStage {
             read_pos: 0,
             sink,
             synchronous_builds: false,
+            resident: None,
+            settled: Arc::new(AtomicU64::new(0)),
+            settled_published: false,
+            settle_seen: false,
         };
         (stage, retire_rx, pending)
     }
@@ -704,6 +850,22 @@ impl OutputCorrectionStage {
     /// leaves it off (a set reads files).
     pub fn set_synchronous_builds(&mut self, on: bool) {
         self.synchronous_builds = on;
+    }
+
+    /// Report on `flag` which set the outputs play through alone
+    /// ([`settled_key`]): a measurement waits for it after switching the
+    /// filters off, which reaches the longest tail segment only after up to
+    /// two of its periods.
+    pub fn set_settled_flag(&mut self, flag: Arc<AtomicU64>) {
+        flag.store(self.settled.load(Ordering::Acquire), Ordering::Release);
+        self.settled = flag;
+    }
+
+    /// The resident set is no longer the one `settled` names.
+    fn unsettle(&mut self) {
+        self.settled_published = false;
+        self.settle_seen = false;
+        self.settled.store(0, Ordering::Release);
     }
 
     /// Engine rate the stage was built for.
@@ -778,13 +940,15 @@ impl OutputCorrectionStage {
                 continue;
             };
             let mut status = FilterStatus {
-                source: source.describe().to_string(),
+                source: source.describe().into_owned(),
                 ..FilterStatus::default()
             };
             match load_filter(source, sample_rate) {
                 Ok(filter) => {
                     status.taps = filter.taps.len() - filter.delay.min(filter.taps.len());
                     status.source_rate = filter.source_rate;
+                    status.source_taps = filter.source_taps;
+                    status.hash = filter.hash;
                     loaded.push(Some(filter));
                 }
                 Err(e) => {
@@ -936,6 +1100,12 @@ impl OutputCorrectionStage {
     /// running streams ramps in over the next block.
     fn adopt(&mut self, prepared: &Prepared, filters: &OutputFilters) {
         let bank = Arc::clone(&prepared.bank);
+        let landed = (prepared.streams.lock().is_some() || bank.geometry == self.streams.geometry)
+            .then_some(prepared.key);
+        if landed.is_some() {
+            self.resident = landed;
+            self.unsettle();
+        }
         if let Some(streams) = prepared.streams.lock().take() {
             let old = std::mem::replace(&mut self.streams, streams);
             if !old.inputs.is_empty() {
@@ -981,6 +1151,8 @@ impl OutputCorrectionStage {
     /// Drop the filters and the streams: the outputs leave the stage.
     fn stop(&mut self) {
         self.key = None;
+        self.resident = None;
+        self.unsettle();
         if let Some(old) = self.bank.take() {
             self.retire(Retired::Bank(old));
         }
@@ -1090,6 +1262,22 @@ impl OutputCorrectionStage {
         if let Some(old) = self.fade_from.take() {
             self.reclaim.retire(Retired::Bank(old));
         }
+        // The block just computed still carries tail output the previous
+        // period computed ahead: the outputs are the new set's alone from
+        // the block after the one every segment first runs on it.
+        if !self.settled_published
+            && let Some(key) = self.resident
+            && tail_banks
+                .iter()
+                .all(|b| b.outgoing.is_none() && Arc::ptr_eq(&b.current, bank))
+        {
+            if self.settle_seen {
+                self.settled
+                    .store(settled_key(key.generation, key.enabled), Ordering::Release);
+                self.settled_published = true;
+            }
+            self.settle_seen = true;
+        }
         let outputs = blocks.len();
         for (o, block) in blocks.iter().enumerate() {
             for (i, &v) in block.iter().enumerate() {
@@ -1100,9 +1288,9 @@ impl OutputCorrectionStage {
     }
 }
 
-/// A canonical mono 32-bit float WAV file of `samples` (tests).
-#[cfg(test)]
-pub(crate) fn test_wav(rate: u32, samples: &[f32]) -> Vec<u8> {
+/// A canonical mono 32-bit float WAV file of `samples`: how a Save writes an
+/// inline filter, which [`load_filter`] reads back sample for sample.
+pub fn filter_wav(rate: u32, samples: &[f32]) -> Vec<u8> {
     let data = samples.len() * 4;
     let mut b = Vec::new();
     b.extend_from_slice(b"RIFF");
@@ -1121,6 +1309,11 @@ pub(crate) fn test_wav(rate: u32, samples: &[f32]) -> Vec<u8> {
         b.extend_from_slice(&s.to_le_bytes());
     }
     b
+}
+
+#[cfg(test)]
+pub(crate) fn test_wav(rate: u32, samples: &[f32]) -> Vec<u8> {
+    filter_wav(rate, samples)
 }
 
 #[cfg(test)]
@@ -1354,6 +1547,100 @@ mod tests {
             (max_step as f64) < 2.0 * wet_step.max(2.0),
             "{max_step} vs {wet_step}"
         );
+    }
+
+    /// Taps handed over as samples (a measurement client's upload) filter
+    /// exactly like the same taps read from a file, and report the same
+    /// length, rate and content hash.
+    #[test]
+    fn inline_samples_filter_like_the_same_file() {
+        let h = filter(3000, 21);
+        let (_d, file) = filter_file("inline-twin", RATE, &h);
+        let samples = Arc::new(FilterSamples::new(RATE, h.clone(), RATE).unwrap());
+        let x = noise(12_000, 4);
+        let from_file = run(
+            &mut stage(&SMALL_LADDER),
+            &OutputFilters::new(vec![Some(file.clone())]),
+            true,
+            &x,
+            1,
+            256,
+        );
+        let inline = OutputFilters::new(vec![Some(FilterSource::Samples(Arc::clone(&samples)))]);
+        let from_samples = run(&mut stage(&SMALL_LADDER), &inline, true, &x, 1, 256);
+        assert_eq!(from_file, from_samples);
+        let a = load_filter(&file, RATE).unwrap();
+        let b = load_filter(&FilterSource::Samples(Arc::clone(&samples)), RATE).unwrap();
+        assert_eq!((a.source_taps, a.hash), (b.source_taps, b.hash));
+        assert_eq!(b.hash, samples.hash);
+        // Checked as a file is.
+        assert!(
+            FilterSamples::new(RATE, vec![0.0; 10], RATE).is_err(),
+            "silent"
+        );
+        assert!(FilterSamples::new(RATE, vec![f32::NAN], RATE).is_err());
+        assert!(FilterSamples::new(8_000, vec![1.0], RATE).is_err(), "rate");
+        assert!(FilterSamples::new(RATE, vec![1.0; max_source_taps(RATE) + 1], RATE).is_err());
+    }
+
+    /// The settled flag names the set the outputs play through alone: not
+    /// before the switch has reached the longest tail segment (up to two of
+    /// its periods), and from then on the output is that set's alone.
+    #[test]
+    fn the_settled_flag_waits_for_the_longest_tail_after_a_switch() {
+        for len in [600, 3_000, 40_000] {
+            settles_after_a_switch(len);
+        }
+    }
+
+    fn settles_after_a_switch(len: usize) {
+        let h = filter(len, 13);
+        let (_d, src) = filter_file(&format!("settle-{len}"), RATE, &h);
+        let filters = OutputFilters::new(vec![Some(src)]);
+        let flag = Arc::new(AtomicU64::new(0));
+        let mut s = stage(&CORRECTION_LADDER);
+        s.set_settled_flag(Arc::clone(&flag));
+        let x = noise(120_000, 3);
+        let mut out = x.clone();
+        let chunk = 256;
+        let switch = 60_000;
+        let (mut on_at, mut off_at) = (None, None);
+        for (i, block) in out.chunks_mut(chunk).enumerate() {
+            let at = i * chunk;
+            let enabled = at < switch;
+            s.ensure(&filters, enabled, 1);
+            s.process(block, 1);
+            let value = flag.load(Ordering::Acquire);
+            if on_at.is_none() && value == settled_key(filters.generation, true) {
+                on_at = Some(at);
+            }
+            if enabled {
+                continue;
+            }
+            assert_ne!(value, settled_key(filters.generation, true), "{at}");
+            if off_at.is_none() && value == settled_key(filters.generation, false) {
+                off_at = Some(at + chunk);
+            }
+        }
+        assert!(on_at.is_some(), "the first set settles too");
+        let off_at = off_at.expect("the switch settles");
+        assert!(
+            off_at > switch + CORRECTION_BLOCK
+                && off_at <= switch + 2 * 8192 + 2 * CORRECTION_BLOCK,
+            "{off_at}"
+        );
+        let lat = CORRECTION_BLOCK - 1;
+        for n in off_at..x.len() {
+            assert!((out[n] - x[n - lat]).abs() < 1e-5, "sample {n}");
+        }
+        // A change of set clears it at once; taking the outputs out too.
+        let other = OutputFilters::new(vec![Some(FilterSource::Samples(Arc::new(
+            FilterSamples::new(RATE, vec![0.5], RATE).unwrap(),
+        )))]);
+        s.ensure(&other, true, 1);
+        assert_eq!(flag.load(Ordering::Acquire), 0);
+        s.ensure(&OutputFilters::default(), true, 1);
+        assert_eq!(flag.load(Ordering::Acquire), 0);
     }
 
     #[test]

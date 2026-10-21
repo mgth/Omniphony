@@ -724,6 +724,8 @@
   "speaker.correction.pending": "Caricamento…",
   "speaker.correction.error": "Non applicato: {error}",
   "speaker.correction.off": "La correzione ambientale è disattivata: questo diffusore suona senza filtro.",
+  "speaker.correction.live": "Filtro misurato, non salvato",
+  "speaker.correction.bypassed": "Sospesa da una sessione di misura: gli altoparlanti suonano senza filtro fino alla sua fine.",
   "speaker.filter.full": "Banda intera",
   "speaker.filter.low": "Passa-basso",
   "speaker.filter.high": "Passa-alto",

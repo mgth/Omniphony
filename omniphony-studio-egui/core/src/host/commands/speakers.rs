@@ -209,6 +209,8 @@ pub fn control_speaker_correction_filter(state: &SharedState, id: i32, path: Opt
             speaker.correction_filter = path.clone();
         }
         let key = id.to_string();
+        // A file (or none) replaces a measured filter that was not saved.
+        live.app.speaker_live_corrections.remove(&key);
         if path.is_some() {
             live.app
                 .speaker_corrections

@@ -724,6 +724,8 @@
   "speaker.correction.pending": "正在加载…",
   "speaker.correction.error": "未应用：{error}",
   "speaker.correction.off": "房间校正已关闭：此扬声器不经滤波播放。",
+  "speaker.correction.live": "测得的滤波器，未保存",
+  "speaker.correction.bypassed": "测量会话期间已暂停：会话结束前扬声器不经滤波播放。",
   "speaker.filter.full": "全频带",
   "speaker.filter.low": "低通",
   "speaker.filter.high": "高通",

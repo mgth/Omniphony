@@ -20,8 +20,10 @@ alignment to the output gain and delay. The headphone paths (binaural, BRIR)
 never use the filters: they belong to the room's speakers.
 
 Measurement signals (`docs/measurement-protocol.md`) are injected before this
-stage, so they currently go through the filters like programme audio. A
-measurement client that needs the raw speaker turns the correction off first.
+stage, so they go through the filters like programme audio. A measurement
+client that needs the raw speaker begins its session with
+`bypass_output_filters` (protocol 8): the outputs then play through the
+identity, at the same latency, until the session ends.
 
 ## Files
 
@@ -61,6 +63,18 @@ latency does not change, so switching is a fair A/B comparison.
 Both are render settings: they reach `config.yaml` only through Save
 (`docs/persistence-policy.md`).
 
+### Filters from a measurement client
+
+A measurement client (Omniphony Companion) may run on another machine than
+the renderer, so it hands its filters over as samples rather than files
+(`set_output_filters`, protocol 8). Such a filter is live state, kept by
+output name over the layout: it takes the place of the speaker's file until
+the Save writes it as a mono 32-bit float WAV file under
+`room-correction/<profile>/` next to `config.yaml` and names it in the
+speaker's `correction_filter`. Layout edits carry it with its speaker as they
+carry a file; choosing a file for the speaker replaces it; a Reload, a
+profile switch or an engine handoff drops it unsaved.
+
 ## Control and state
 
 - `/omniphony/control/config/speakers s {"speakerEdits":[{"id":0,"correctionFilter":"/path/FL.wav"}]}`
@@ -69,8 +83,11 @@ Both are render settings: they reach `config.yaml` only through Save
   with their speakers.
 - `/omniphony/control/option output_correction <0|1>` switches the correction.
 - `/omniphony/state/speakers` reports, per speaker with a filter,
-  `"correction": {"file", "state": "pending" | "loaded" | "error", "taps",
-  "sourceRate", "error"}`.
+  `"correction": {"origin": "file" | "live", "file", "state": "pending" |
+  "loaded" | "error", "taps", "sourceRate", "sourceTaps", "hash", "error"}`
+  (`file` for a file only; `taps` at the engine rate, `sourceTaps` and
+  `hash` at the filter's own rate), and `"correctionBypassed": true` while a
+  measurement session holds every filter off.
 
 ## Latency and cost
 

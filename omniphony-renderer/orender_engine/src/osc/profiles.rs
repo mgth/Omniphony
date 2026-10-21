@@ -396,8 +396,19 @@ fn apply_switched_profile(
             let mut live = control.live.write();
             live.speakers = renderer::live_params::speaker_live_from_layout(&layout);
             live.output_filters = renderer::output_correction::OutputFilters::from_layout(&layout);
+            live.inline_filters = Default::default();
         }
         control.with_editable_layout(|l| *l = layout);
+    } else {
+        // The unsaved inline filters belong to the state being left, like
+        // every other unsaved edit: the files the layout names take over.
+        let had_inline = {
+            let mut live = control.live.write();
+            !std::mem::take(&mut live.inline_filters).is_empty()
+        };
+        if had_inline {
+            runtime_control::osc::refresh_output_filters(control);
+        }
     }
 
     if let Err(e) = crate::renderer_build::apply_render_config_live(control, render) {
@@ -465,6 +476,60 @@ mod tests {
         assert!(!control.config_dirty.load(Ordering::Relaxed));
         assert_eq!(control.config_status().as_deref(), Some("loaded"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Reload discards unsaved edits, the inline correction filters a
+    /// measurement client set included: the speakers play the files the
+    /// saved layout names again.
+    #[test]
+    fn reload_drops_unsaved_inline_filters_for_the_saved_files() {
+        use renderer::output_correction::{FilterSamples, FilterSource};
+        let dir =
+            std::env::temp_dir().join(format!("orender-reload-inline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        let mut config = config_with_layout("7.1.4");
+        let layout = config
+            .render
+            .as_mut()
+            .unwrap()
+            .current_layout
+            .as_mut()
+            .unwrap();
+        layout.speakers[0].correction_filter = Some("/saved/FL.wav".into());
+        let name = layout.speakers[0].name.clone();
+        config.save(&path).unwrap();
+
+        let control = fixture_control();
+        control.set_config_path(path.clone());
+        {
+            let mut live = control.live.write();
+            let mut inline = std::collections::BTreeMap::new();
+            inline.insert(
+                name,
+                Arc::new(FilterSamples::new(48_000, vec![0.5], 48_000).unwrap()),
+            );
+            live.inline_filters = Arc::new(inline);
+        }
+        runtime_control::osc::refresh_output_filters(&control);
+        assert!(matches!(
+            control.live.read().output_filters.source(0),
+            Some(FilterSource::Samples(_))
+        ));
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let clients = Arc::new(OscClientRegistry::new(Duration::from_secs(5)));
+        let gaintable_cache = Arc::new(GaintableCache::new());
+
+        reload_config_in_place(&control, None, &socket, &clients, &gaintable_cache);
+
+        let live = control.live.read();
+        assert!(live.inline_filters.is_empty());
+        assert_eq!(
+            live.output_filters.source(0),
+            Some(&FilterSource::File("/saved/FL.wav".into()))
+        );
+        drop(live);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

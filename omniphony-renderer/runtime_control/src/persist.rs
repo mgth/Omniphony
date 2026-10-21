@@ -36,6 +36,7 @@ pub fn save_live_config(
 
     refuse_live_state_from_defaults(control, &path)?;
     let mut config = renderer::config::Config::load_for_update(&path)?;
+    write_inline_filters(control, &path)?;
     store_live_into_config(control, host, &mut config);
     // A deliberate save supersedes any pending live-handoff overlay.
     commit_config(&path, &config)?;
@@ -45,6 +46,98 @@ pub fn save_live_config(
         path,
         restart_required: false,
     })
+}
+
+/// Directory, next to the config file, where a Save writes the inline
+/// correction filters of the active profile.
+pub const INLINE_FILTER_DIR: &str = "room-correction";
+
+/// Write every unsaved inline correction filter (`LiveParams::inline_filters`,
+/// a measurement client's upload) as a mono float WAV file under
+/// `room-correction/<profile>/` next to the config file at `config_path`,
+/// point its speaker's `correction_filter` at it, and drop the inline filter:
+/// the speaker then plays the file, the same taps. Only the Save does this
+/// (docs/persistence-policy.md): inline filters are render state. An inline
+/// filter whose speaker no longer exists (renamed or removed) is dropped
+/// without a file. Fails before touching the layout if a file cannot be
+/// written.
+pub fn write_inline_filters(control: &RendererControl, config_path: &Path) -> Result<()> {
+    let inline = control.live.read().inline_filters.clone();
+    if inline.is_empty() {
+        return Ok(());
+    }
+    let dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(INLINE_FILTER_DIR)
+        .join(file_stem(&control.profiles_info().active));
+    let layout = control.editable_layout();
+    let mut written: Vec<(String, String)> = Vec::new();
+    let mut stems = std::collections::HashSet::new();
+    for speaker in &layout.speakers {
+        let Some(samples) = inline.get(&speaker.name) else {
+            continue;
+        };
+        let base = file_stem(&speaker.name);
+        let mut stem = base.clone();
+        let mut n = 2;
+        while !stems.insert(stem.clone()) {
+            stem = format!("{base}-{n}");
+            n += 1;
+        }
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| anyhow!("cannot create {}: {e}", dir.display()))?;
+        let file = dir.join(format!("{stem}.wav"));
+        let temp = dir.join(format!(".{stem}.wav.tmp"));
+        let bytes = renderer::output_correction::filter_wav(samples.sample_rate, &samples.taps);
+        std::fs::write(&temp, bytes)
+            .and_then(|()| std::fs::rename(&temp, &file))
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                anyhow!(
+                    "cannot write the correction filter of {} to {}: {e}",
+                    speaker.name,
+                    file.display()
+                )
+            })?;
+        written.push((speaker.name.clone(), file.to_string_lossy().into_owned()));
+    }
+    control.with_editable_layout(|layout| {
+        for speaker in &mut layout.speakers {
+            if let Some((_, file)) = written.iter().find(|(name, _)| *name == speaker.name) {
+                speaker.correction_filter = Some(file.clone());
+            }
+        }
+    });
+    control.live.write().inline_filters = Default::default();
+    crate::osc::refresh_output_filters(control);
+    log::info!(
+        "saved {} inline correction filter(s) under {}",
+        written.len(),
+        dir.display()
+    );
+    Ok(())
+}
+
+/// `name` as a file name: letters, digits, `-`, `_` and `.` kept, anything
+/// else `_`; never empty or hidden.
+fn file_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem = stem.trim_start_matches('.');
+    if stem.is_empty() {
+        "output".to_string()
+    } else {
+        stem.to_string()
+    }
 }
 
 /// Refuse to write the live state over `path` while it is the defaults the
@@ -367,6 +460,80 @@ mod tests {
         assert!((seeded[&2].gain - 0.501).abs() < 1e-3);
         assert_eq!(seeded[&3].gain, 0.0);
         assert!(!seeded.contains_key(&0), "unity speakers need no entry");
+    }
+
+    /// Inline correction filters reach the disk only through the Save: each
+    /// becomes a mono float WAV under `room-correction/<profile>/` next to
+    /// config.yaml, its speaker's `correction_filter` names it, the live
+    /// state plays the file instead (the same taps), and reading the saved
+    /// config back finds the same filter, sample for sample. One whose
+    /// speaker is gone is dropped.
+    #[test]
+    fn a_save_writes_inline_filters_as_files_the_config_reads_back() {
+        use renderer::output_correction::{FilterSamples, FilterSource, load_filter};
+        let path = temp_config_path("inline-filters");
+        let dir = path.parent().unwrap().join(INLINE_FILTER_DIR);
+        let _ = std::fs::remove_dir_all(&dir);
+        let control = crate::test_support::fixture_control();
+        *control.config_path.lock() = Some(path.clone());
+        let name = control.editable_layout().speakers[1].name.clone();
+        let taps: Vec<f32> = (0..3000)
+            .map(|i| (-(i as f32) / 400.0).exp() * 0.5)
+            .collect();
+        let samples = Arc::new(FilterSamples::new(44_100, taps.clone(), 48_000).unwrap());
+        {
+            let mut live = control.live.write();
+            let mut inline = std::collections::BTreeMap::new();
+            inline.insert(name.clone(), Arc::clone(&samples));
+            inline.insert("gone".to_string(), Arc::clone(&samples));
+            live.inline_filters = Arc::new(inline);
+        }
+        crate::osc::refresh_output_filters(&control);
+        assert!(matches!(
+            control.live.read().output_filters.source(1),
+            Some(FilterSource::Samples(_))
+        ));
+        assert!(!path.exists(), "nothing on disk before the Save");
+
+        save_live_config(&control, None).expect("save");
+        let file = dir
+            .join(control.profiles_info().active)
+            .join(format!("{}.wav", file_stem(&name)));
+        assert!(file.exists(), "{}", file.display());
+        let file = file.to_string_lossy().into_owned();
+        assert_eq!(
+            control.editable_layout().speakers[1]
+                .correction_filter
+                .as_deref(),
+            Some(file.as_str())
+        );
+        assert!(control.live.read().inline_filters.is_empty());
+        assert_eq!(
+            control.live.read().output_filters.source(1),
+            Some(&FilterSource::File(file.as_str().into()))
+        );
+        let written = Path::new(&file).parent().unwrap();
+        assert_eq!(
+            std::fs::read_dir(written).unwrap().count(),
+            1,
+            "no temporary left"
+        );
+
+        // The next boot (or a Reload) reads the config: the same filter.
+        let config = renderer::config::Config::load_or_default(&path);
+        let layout = config
+            .render
+            .as_ref()
+            .and_then(|r| r.current_layout.as_ref())
+            .expect("layout saved");
+        let saved = layout.speakers[1].correction_filter.clone().expect("named");
+        assert_eq!(saved, file);
+        let loaded = load_filter(&FilterSource::File(saved.into()), 44_100).unwrap();
+        assert_eq!(loaded.taps, taps);
+        assert_eq!(
+            (loaded.hash, loaded.source_taps),
+            (samples.hash, taps.len())
+        );
     }
 
     /// A config.yaml that fails to parse runs the engine on defaults; neither

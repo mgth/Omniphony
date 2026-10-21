@@ -664,3 +664,125 @@ fn output_correction_with_a_stalled_worker_keeps_off_the_heap() {
     drop(stage);
     let _ = std::fs::remove_file(path);
 }
+
+/// A measurement session holds an inline filter (a client's upload) off and
+/// gives it back, at the end of the session and when its lease runs out:
+/// each switch reaches the longest tail segment without the render thread
+/// allocating or freeing anything.
+#[test]
+fn a_session_bypass_of_inline_filters_stays_off_the_heap() {
+    use renderer::output_correction::{FilterSamples, FilterSource, OutputFilters, settled_key};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    let long: Vec<f32> = (0..20_000)
+        .map(|i| (-(i as f32) / 3000.0).exp() * if i % 2 == 0 { 0.5 } else { -0.4 })
+        .collect();
+    let inline = Arc::new(FilterSamples::new(48_000, long, 48_000).unwrap());
+    let filters = OutputFilters::new(vec![None, Some(FilterSource::Samples(inline)), None]);
+
+    let mut r = renderer();
+    let control = r.renderer_control();
+    let pcm: Vec<f32> = (0..BLOCK * CHANNELS)
+        .map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 16) as f32 / 65535.0 - 0.5)
+        .collect();
+    let mut evs = Vec::with_capacity(CHANNELS);
+    let mut buf = Vec::new();
+    let mut block = 0;
+    let mut run = |r: &mut SpatialRenderer, done: &dyn Fn() -> bool| -> u64 {
+        let mut heap = 0;
+        for i in 0..8000 {
+            events(block, &mut evs);
+            block += 1;
+            let ((), allocs, frees) = count_heap_events(|| {
+                let frame = r
+                    .render_frame(&pcm, CHANNELS, &evs, std::mem::take(&mut buf), true)
+                    .unwrap();
+                buf = r.recycle_frame(frame);
+            });
+            heap += allocs + frees;
+            if done() {
+                return heap;
+            }
+            if i % 20 == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        panic!("the switch never settled");
+    };
+    run(&mut r, &|| true);
+    let settled = |enabled: bool| {
+        let control = control.clone();
+        let key = settled_key(filters.generation, enabled);
+        move || control.output_correction_settled.load(Ordering::Acquire) == key
+    };
+    control.live.write().output_filters = filters.clone();
+    run(&mut r, &settled(true));
+
+    let begin = |lease: Duration| {
+        control.measurement.renew(Instant::now(), lease);
+        control.measurement.bypass_filters(true);
+    };
+    begin(Duration::from_secs(30));
+    assert_eq!(run(&mut r, &settled(false)), 0, "bypass on");
+    control.measurement.end();
+    assert_eq!(run(&mut r, &settled(true)), 0, "session ended");
+    begin(Duration::from_millis(300));
+    assert_eq!(run(&mut r, &settled(false)), 0, "bypass on again");
+    // Nobody ends this session: the lease runs out on the render thread.
+    assert_eq!(run(&mut r, &settled(true)), 0, "lease expired");
+    assert!(!control.measurement.filters_bypassed(Instant::now));
+    control.measurement.end();
+}
+
+/// A bass-managed sequence (protocol 8): references straight to an output,
+/// targets placed at their speakers through the crossover. Once its first
+/// blocks have sized the source's buffers, nothing allocates.
+#[test]
+fn a_bass_managed_measurement_does_not_allocate_in_the_audio_path() {
+    use renderer::live_params::RendererControl;
+    use renderer::measurement::{Configuration, Route, Signal};
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    let r = renderer();
+    let control: std::sync::Arc<RendererControl> = r.renderer_control();
+    let topology = control.active_topology();
+    let place = |i: usize| {
+        let s = &topology.speaker_layout.speakers[i];
+        Route::Source([s.x as f64, s.y as f64, s.z as f64])
+    };
+    let now = Instant::now();
+    let signal = Signal::prepare_routes(
+        omniphony_osc_contract::measurement::Sweep {
+            duration_ms: 300,
+            peak_dbfs: -30.0,
+            start_hz: 20.0,
+            end_hz: 10000.0,
+        },
+        1,
+        &[
+            Route::Direct(4),
+            place(0),
+            Route::Direct(4),
+            place(1),
+            Route::Direct(4),
+        ],
+        Configuration {
+            sample_rate: 48000,
+            width: topology.speaker_layout.speakers.len(),
+            speaker_generation: control.speaker_params_generation.load(Ordering::Acquire),
+            geometry_generation: control.geometry_generation.load(Ordering::Acquire),
+            master_gain_bits: control.live.read().master_gain.to_bits(),
+        },
+        now,
+    )
+    .unwrap();
+    control.measurement.install(signal.clone());
+    control.measurement.renew(now, Duration::from_secs(30));
+    let total = signal.total_frames() as usize;
+    assert_eq!(
+        count_steady_state_of(r, false, total / BLOCK + 100, total / BLOCK),
+        0
+    );
+    assert_eq!(signal.rendered_frames(), signal.total_frames());
+}

@@ -724,6 +724,8 @@
   "speaker.correction.pending": "Wird geladen…",
   "speaker.correction.error": "Nicht angewendet: {error}",
   "speaker.correction.off": "Die Raumkorrektur ist aus: Dieser Lautsprecher spielt ungefiltert.",
+  "speaker.correction.live": "Gemessener Filter, nicht gespeichert",
+  "speaker.correction.bypassed": "Von einer Messsitzung ausgesetzt: Die Lautsprecher spielen bis zu ihrem Ende ungefiltert.",
   "speaker.filter.full": "Vollband",
   "speaker.filter.low": "Tiefpass",
   "speaker.filter.high": "Hochpass",

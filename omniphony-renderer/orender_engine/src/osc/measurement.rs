@@ -1,7 +1,8 @@
 //! Control-thread measurement sessions, owned by one local TCP connection.
 use super::peer::Peer;
 use renderer::live_params::{OutputMode, RendererControl};
-use renderer::measurement::{Configuration, Signal};
+use renderer::measurement::{Configuration, Route, Signal};
+use renderer::output_correction::{FilterSamples, FilterSource};
 use runtime_control::HostControlHandler;
 use runtime_control::osc_contract::measurement::*;
 use std::sync::{Arc, atomic::Ordering};
@@ -41,6 +42,9 @@ pub(super) fn send_noise_to(
 struct Session {
     id: String,
     owner: Peer,
+    /// The version of the request that began it: from [`FILTERS_VERSION`],
+    /// a sweep waits for the filters to settle.
+    version: u32,
     snapshot: Snapshot,
     configuration: Configuration,
     last_request: u64,
@@ -48,6 +52,41 @@ struct Session {
     signal: Option<(Progress, Arc<Signal>)>,
     noise: Option<(NoiseProgress, Arc<Signal>)>,
 }
+
+/// A filter arriving in [`Command::UploadFilter`] chunks.
+struct Upload {
+    id: String,
+    sample_rate: u32,
+    total_taps: usize,
+    received: usize,
+    taps: Vec<f32>,
+    /// The checked filter, once every tap arrived.
+    complete: Option<Arc<FilterSamples>>,
+    touched: Instant,
+}
+
+impl Upload {
+    fn state(&self) -> FilterUpload {
+        FilterUpload {
+            upload_id: self.id.clone(),
+            sample_rate: self.sample_rate,
+            total_taps: self.total_taps as u32,
+            received_taps: self.received as u32,
+            hash: self
+                .complete
+                .as_ref()
+                .map(|filter| format!("{:016x}", filter.hash)),
+        }
+    }
+}
+
+/// Uploads kept at once: complete ones waiting for `set_output_filters`, and
+/// those still arriving.
+const MAX_UPLOADS: usize = 64;
+/// Taps kept across every upload (64 MiB of `f32`).
+const MAX_UPLOAD_TAPS: usize = 16 << 20;
+/// An upload no request touched for this long is dropped.
+const UPLOAD_TTL: Duration = Duration::from_secs(120);
 
 pub(super) struct Service {
     control: Arc<RendererControl>,
@@ -59,6 +98,8 @@ pub(super) struct Service {
     configuration: Option<Configuration>,
     session: Option<Session>,
     ended_reason: String,
+    uploads: Vec<Upload>,
+    upload_sequence: u64,
 }
 
 impl Service {
@@ -83,6 +124,8 @@ impl Service {
             configuration: None,
             session: None,
             ended_reason: "no active measurement session".into(),
+            uploads: Vec::new(),
+            upload_sequence: 0,
         }
     }
 
@@ -129,6 +172,8 @@ impl Service {
         }
         let mut names = std::collections::HashSet::new();
         let radius_m = layout.speaker_layout.radius_m;
+        let correction = self.control.output_correction_status();
+        let correction_current = correction.generation == live.output_filters.generation;
         let outputs: Vec<_> = layout
             .speaker_layout
             .speakers
@@ -159,6 +204,14 @@ impl Service {
                     || matches!((speaker.freq_low, speaker.freq_high), (Some(lo), Some(hi)) if lo >= hi)
                 { reason = Some("invalid output frequency range"); }
                 let position = position(&layout.room, radius_m, speaker);
+                let filter = live.output_filters.source(index).map(|source| {
+                    output_filter(
+                        source,
+                        correction_current
+                            .then(|| correction.outputs.get(index).and_then(Option::as_ref))
+                            .flatten(),
+                    )
+                });
                 Output {
                     id: speaker.name.clone(),
                     index: index as u32,
@@ -171,6 +224,7 @@ impl Service {
                     azimuth_deg: position.map(|p| p.0),
                     elevation_deg: position.map(|p| p.1),
                     distance_m: position.map(|p| p.2),
+                    filter,
                 }
             })
             .collect();
@@ -201,10 +255,20 @@ impl Service {
         };
         self.configuration = Some(configuration);
         // All fields affecting this direct-output signal, plus conservative
-        // epochs for changes made outside this OSC listener.
+        // epochs for changes made outside this OSC listener. The filters by
+        // their set's generation, not their load state: a filter that
+        // finishes loading is the same configuration.
+        let filterless: Vec<Output> = outputs
+            .iter()
+            .map(|output| Output {
+                filter: None,
+                ..output.clone()
+            })
+            .collect();
         let signature = serde_json::to_string(&(
             &layout.speaker_layout,
-            &outputs,
+            &filterless,
+            live.output_filters.generation,
             live.master_gain.to_bits(),
             sample_rate,
             live.binaural.output_mode.as_str(),
@@ -227,6 +291,7 @@ impl Service {
             max_delay_ms: MAX_DELAY_MS,
             outputs,
             unavailable_reason: reason,
+            output_filters_bypassed: self.control.measurement.filters_bypass_requested(),
         }
     }
 
@@ -261,13 +326,37 @@ impl Service {
     }
 
     fn close(&mut self, reason: &str) {
+        let bypassed = self.control.measurement.filters_bypass_requested();
         self.control.measurement.end();
         self.session = None;
         self.ended_reason = reason.to_owned();
+        if bypassed {
+            // The filters are back: clients showing the bypass are told.
+            self.control.bump_live_state();
+        }
+    }
+
+    /// Whether every output plays through the filters a sweep would now go
+    /// through alone: the set asked for (or none) loaded, the bypass on or
+    /// off as the session asked, and no tail segment still convolving with
+    /// what came before (`OutputCorrectionStage::set_settled_flag`).
+    fn filters_settled(&self) -> bool {
+        let live = self.control.live.read();
+        if !live.output_filters.any() {
+            return true;
+        }
+        let enabled =
+            live.options.output_correction && !self.control.measurement.filters_bypass_requested();
+        self.control
+            .output_correction_settled
+            .load(Ordering::Acquire)
+            == renderer::output_correction::settled_key(live.output_filters.generation, enabled)
     }
 
     pub fn handle(&mut self, request: Request, owner: &Peer, now: Instant) -> Response {
         self.poll(now);
+        self.uploads
+            .retain(|upload| now.saturating_duration_since(upload.touched) < UPLOAD_TTL);
         let request_id = request.request_id;
         let version = reply_version(request.version);
         let reply = if !supported(request.version) {
@@ -350,6 +439,242 @@ impl Service {
         }
     }
 
+    /// Store one chunk of a filter ([`Command::UploadFilter`]). A chunk that
+    /// is refused leaves its upload as it was, to be sent again.
+    fn upload_filter(
+        &mut self,
+        upload_id: Option<String>,
+        sample_rate: u32,
+        total_taps: u32,
+        offset: u32,
+        taps: &str,
+        now: Instant,
+    ) -> Reply {
+        let engine_rate = self.control.sample_rate.load(Ordering::Acquire);
+        let chunk = match decode_taps(taps) {
+            Ok(chunk) => chunk,
+            Err(reason) => return error("invalid_filter", reason),
+        };
+        if chunk.is_empty() || chunk.len() > MAX_UPLOAD_CHUNK_TAPS {
+            return error(
+                "invalid_filter",
+                &format!("a chunk carries 1 to {MAX_UPLOAD_CHUNK_TAPS} taps"),
+            );
+        }
+        if chunk.iter().any(|t| !t.is_finite()) {
+            return error("invalid_filter", "the filter holds non-finite samples");
+        }
+        let total = total_taps as usize;
+        let index = match upload_id {
+            None => {
+                if offset != 0 {
+                    return error("invalid_filter", "a new upload starts at offset 0");
+                }
+                if sample_rate != engine_rate && !FILTER_SOURCE_RATES.contains(&sample_rate) {
+                    return error(
+                        "invalid_filter",
+                        &format!(
+                            "a filter is designed at the renderer's rate ({engine_rate} Hz) \
+                             or between {} and {} Hz",
+                            FILTER_SOURCE_RATES.start(),
+                            FILTER_SOURCE_RATES.end()
+                        ),
+                    );
+                }
+                if total == 0 || total > renderer::output_correction::max_source_taps(sample_rate) {
+                    return error(
+                        "invalid_filter",
+                        &format!("a filter is 1 tap to {MAX_FILTER_SECONDS} s long"),
+                    );
+                }
+                let held: usize = self.uploads.iter().map(|u| u.total_taps).sum();
+                if self.uploads.len() >= MAX_UPLOADS || held + total > MAX_UPLOAD_TAPS {
+                    return error(
+                        "upload_limit",
+                        "too many filters uploaded and not applied; apply them or wait \
+                         for the unused ones to expire",
+                    );
+                }
+                self.upload_sequence += 1;
+                self.uploads.push(Upload {
+                    id: format!("{}:filter:{}", self.instance_id, self.upload_sequence),
+                    sample_rate,
+                    total_taps: total,
+                    received: 0,
+                    taps: Vec::with_capacity(total),
+                    complete: None,
+                    touched: now,
+                });
+                self.uploads.len() - 1
+            }
+            Some(id) => {
+                let Some(index) = self.uploads.iter().position(|u| u.id == id) else {
+                    return error(
+                        "unknown_upload",
+                        "no such upload; it may have expired or been applied",
+                    );
+                };
+                let upload = &self.uploads[index];
+                if upload.sample_rate != sample_rate || upload.total_taps != total {
+                    return error(
+                        "invalid_filter",
+                        "every chunk repeats its upload's sample rate and length",
+                    );
+                }
+                if upload.complete.is_some() {
+                    return error("invalid_filter", "the upload is already complete");
+                }
+                if offset as usize != upload.received {
+                    return error(
+                        "invalid_filter",
+                        &format!(
+                            "chunks arrive in order: the next one starts at {}",
+                            upload.received
+                        ),
+                    );
+                }
+                index
+            }
+        };
+        let upload = &mut self.uploads[index];
+        if upload.received + chunk.len() > upload.total_taps {
+            return error("invalid_filter", "the chunk runs past the filter's length");
+        }
+        upload.taps.extend_from_slice(&chunk);
+        upload.received += chunk.len();
+        upload.touched = now;
+        if upload.received == upload.total_taps {
+            let taps = std::mem::take(&mut upload.taps);
+            match FilterSamples::new(upload.sample_rate, taps, engine_rate) {
+                Ok(filter) => upload.complete = Some(Arc::new(filter)),
+                Err(reason) => {
+                    self.uploads.remove(index);
+                    return error("invalid_filter", &reason);
+                }
+            }
+        }
+        Reply::FilterUpload {
+            upload: self.uploads[index].state(),
+        }
+    }
+
+    /// Replace some outputs' filters ([`Command::SetOutputFilters`]): checked
+    /// against the snapshot revision under the live-state writer lock, all
+    /// published together, live only. An uploaded filter becomes the
+    /// output's inline filter (over a file its speaker names, until a Save
+    /// writes it); `null` leaves the output unfiltered, a file included.
+    fn set_output_filters(
+        &mut self,
+        expected_revision: &str,
+        settings: &[OutputFilterSetting],
+    ) -> Reply {
+        if self.session.is_some() {
+            return error(
+                "busy",
+                "end the measurement session before changing filters",
+            );
+        }
+        // Read before the live lock, which never nests inside the layout's.
+        let layout = self.control.editable_layout();
+        let engine_rate = self.control.sample_rate.load(Ordering::Acquire);
+        let control = self.control.clone();
+        let mut live = control.live.write();
+        let snapshot = self.snapshot();
+        if snapshot.revision != expected_revision {
+            return error(
+                "stale_snapshot",
+                "renderer settings changed; discover again",
+            );
+        }
+        if let Some(reason) = &snapshot.unavailable_reason {
+            return error("unavailable", reason);
+        }
+        if settings.is_empty() || settings.len() > snapshot.outputs.len() {
+            return error(
+                "invalid_settings",
+                "expected a nonempty subset of physical outputs",
+            );
+        }
+        let mut chosen: Vec<(String, Option<Arc<FilterSamples>>)> =
+            Vec::with_capacity(settings.len());
+        for setting in settings {
+            if !snapshot.outputs.iter().any(|o| o.id == setting.output_id) {
+                return error("unknown_output", "output is absent from this configuration");
+            }
+            if chosen.iter().any(|(id, _)| *id == setting.output_id) {
+                return error("invalid_settings", "duplicate output");
+            }
+            let filter = match &setting.filter {
+                None => None,
+                Some(id) => {
+                    let Some(upload) = self.uploads.iter().find(|u| u.id == *id) else {
+                        return error(
+                            "unknown_upload",
+                            "no such upload; it may have expired or been applied",
+                        );
+                    };
+                    let Some(filter) = &upload.complete else {
+                        return error("incomplete_upload", "the upload is still missing taps");
+                    };
+                    if filter.sample_rate != engine_rate
+                        && !FILTER_SOURCE_RATES.contains(&filter.sample_rate)
+                    {
+                        return error(
+                            "invalid_filter",
+                            "the filter's rate cannot play at the renderer's",
+                        );
+                    }
+                    Some(Arc::clone(filter))
+                }
+            };
+            chosen.push((setting.output_id.clone(), filter));
+        }
+        let mut inline = (*live.inline_filters).clone();
+        let mut next_layout = layout;
+        let mut changed = false;
+        for (name, filter) in &chosen {
+            match filter {
+                Some(filter) => {
+                    changed |= inline.get(name) != Some(filter);
+                    inline.insert(name.clone(), Arc::clone(filter));
+                }
+                None => {
+                    changed |= inline.remove(name).is_some();
+                    for speaker in &mut next_layout.speakers {
+                        if speaker.name == *name && speaker.correction_filter.take().is_some() {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if changed {
+            let next =
+                renderer::output_correction::OutputFilters::for_layout(&next_layout, &inline);
+            live.inline_filters = Arc::new(inline);
+            if *live.output_filters.sources != *next.sources {
+                live.output_filters = next;
+            }
+        }
+        drop(live);
+        if changed {
+            control.with_editable_layout(|layout| {
+                for (speaker, next) in layout.speakers.iter_mut().zip(&next_layout.speakers) {
+                    if speaker.name == next.name {
+                        speaker.correction_filter = next.correction_filter.clone();
+                    }
+                }
+            });
+            control.config_dirty.store(true, Ordering::Release);
+            control.bump_live_state();
+        }
+        let applied: Vec<&String> = settings.iter().filter_map(|s| s.filter.as_ref()).collect();
+        self.uploads.retain(|u| !applied.contains(&&u.id));
+        Reply::Snapshot {
+            snapshot: self.snapshot(),
+        }
+    }
+
     /// Switch the live output from headphones to the speakers, as the Studio's
     /// output mode does: through the option registry, then a live-state bump for
     /// the other clients. The listener rebuilds the layout if a BRIR set was in use.
@@ -375,6 +700,38 @@ impl Service {
     }
 
     fn command(&mut self, request: Request, owner: &Peer, now: Instant) -> Reply {
+        let needs_filters_version = match &request.command {
+            Command::UploadFilter { .. } | Command::SetOutputFilters { .. } => true,
+            Command::Begin {
+                bypass_output_filters,
+                ..
+            } => *bypass_output_filters,
+            Command::Start { bass_managed, .. } => *bass_managed,
+            _ => false,
+        };
+        if needs_filters_version && request.version < FILTERS_VERSION {
+            return error(
+                "invalid_request",
+                &format!("this command needs measurement protocol version {FILTERS_VERSION}"),
+            );
+        }
+        if let Command::UploadFilter {
+            upload_id,
+            sample_rate,
+            total_taps,
+            offset,
+            taps,
+        } = request.command
+        {
+            return self.upload_filter(upload_id, sample_rate, total_taps, offset, &taps, now);
+        }
+        if let Command::SetOutputFilters {
+            expected_revision,
+            outputs,
+        } = &request.command
+        {
+            return self.set_output_filters(expected_revision, outputs);
+        }
         if let Command::SetOutputs {
             expected_revision,
             settings,
@@ -390,7 +747,11 @@ impl Service {
         if let Command::UseSpeakerOutput {} = request.command {
             return self.use_speaker_output();
         }
-        if let Command::Begin { expected_revision } = &request.command {
+        if let Command::Begin {
+            expected_revision,
+            bypass_output_filters,
+        } = &request.command
+        {
             if self.session.is_some() {
                 return error("busy", "another measurement session owns the renderer");
             }
@@ -405,9 +766,12 @@ impl Service {
                 return error("unavailable", reason);
             }
             self.sequence += 1;
+            let mut snapshot = snapshot;
+            snapshot.output_filters_bypassed = *bypass_output_filters;
             self.session = Some(Session {
                 id: format!("{}:session:{}", self.instance_id, self.sequence),
                 owner: owner.clone(),
+                version: request.version,
                 snapshot,
                 configuration: self.configuration.expect("snapshot captured configuration"),
                 last_request: request.request_id,
@@ -418,8 +782,14 @@ impl Service {
             self.control
                 .measurement
                 .renew(now, Duration::from_millis(LEASE_MS));
+            if *bypass_output_filters {
+                self.control.measurement.bypass_filters(true);
+                // Clients showing the filters are told they are held off.
+                self.control.bump_live_state();
+            }
             return self.session_reply();
         }
+        let filters_settled = self.filters_settled();
         let Some(session) = self.session.as_mut() else {
             return error("session_ended", &self.ended_reason);
         };
@@ -448,6 +818,7 @@ impl Service {
                 reference_output_id,
                 sequence_outputs,
                 signal,
+                bass_managed,
                 ..
             } => {
                 if signal_id <= session.last_signal {
@@ -479,7 +850,33 @@ impl Service {
                 if let Err(reason) = signal.validate(session.snapshot.sample_rate) {
                     return error("invalid_signal", reason);
                 }
-                if signal.start_hz < output.freq_low_hz.unwrap_or(20.0)
+                // A bass-managed sweep may start below the output's own
+                // band: the crossover gives that part to the subwoofers.
+                let low_limit = |o: &Output| {
+                    if bass_managed {
+                        20.0
+                    } else {
+                        o.freq_low_hz.unwrap_or(20.0)
+                    }
+                };
+                // Its sweep may reach any output through the panning and the
+                // crossover (each band at most at the sweep's peak), so it is
+                // held under the ceiling on the loudest unmuted one.
+                let loudest_db = session
+                    .snapshot
+                    .outputs
+                    .iter()
+                    .filter(|o| !o.muted)
+                    .map(|o| o.gain_db)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let target_gain_db = |o: &Output| {
+                    if bass_managed {
+                        loudest_db.max(o.gain_db)
+                    } else {
+                        o.gain_db
+                    }
+                };
+                if signal.start_hz < low_limit(output)
                     || signal.end_hz > output.freq_high_hz.unwrap_or(f32::MAX)
                 {
                     return error(
@@ -487,10 +884,19 @@ impl Service {
                         "sweep must stay inside the output's declared frequency range",
                     );
                 }
-                if signal.peak_dbfs + output.gain_db + session.snapshot.master_gain_db > -6.0 {
+                if signal.peak_dbfs + target_gain_db(output) + session.snapshot.master_gain_db
+                    > -6.0
+                {
                     return error(
                         "level_limit",
                         "existing gains would exceed the -6 dBFS measurement output ceiling",
+                    );
+                }
+                if session.version >= FILTERS_VERSION && !filters_settled {
+                    return error(
+                        "filters_settling",
+                        "the output filters are still loading or switching; start again \
+                         in a moment",
                     );
                 }
                 let reference = if let Some(id) = &reference_output_id {
@@ -523,7 +929,28 @@ impl Service {
                 } else {
                     None
                 };
-                let prepared = if sequence_outputs.is_empty() {
+                let topology = self.control.active_topology();
+                let place = |index: u32| {
+                    let speaker = &topology.speaker_layout.speakers[index as usize];
+                    Route::Source([speaker.x as f64, speaker.y as f64, speaker.z as f64])
+                };
+                let prepared = if bass_managed && sequence_outputs.is_empty() {
+                    let routes = match reference {
+                        Some(reference) => vec![
+                            Route::Direct(reference),
+                            place(output.index),
+                            Route::Direct(reference),
+                        ],
+                        None => vec![place(output.index)],
+                    };
+                    Signal::prepare_routes(
+                        signal,
+                        output.index as usize,
+                        &routes,
+                        session.configuration,
+                        now,
+                    )
+                } else if sequence_outputs.is_empty() {
                     Signal::prepare_referenced(
                         signal,
                         output.index as usize,
@@ -561,9 +988,11 @@ impl Service {
                             return error("invalid_signal", "sequence outputs must be unique");
                         }
                         if target.muted
-                            || signal.start_hz < target.freq_low_hz.unwrap_or(20.0)
+                            || signal.start_hz < low_limit(target)
                             || signal.end_hz > target.freq_high_hz.unwrap_or(f32::MAX)
-                            || signal.peak_dbfs + target.gain_db + session.snapshot.master_gain_db
+                            || signal.peak_dbfs
+                                + target_gain_db(target)
+                                + session.snapshot.master_gain_db
                                 > -6.0
                         {
                             return error(
@@ -573,13 +1002,29 @@ impl Service {
                         }
                         indices.push(target.index as usize);
                     }
-                    Signal::prepare_sequence(
-                        signal,
-                        &indices,
-                        reference,
-                        session.configuration,
-                        now,
-                    )
+                    if bass_managed {
+                        let mut routes = Vec::with_capacity(2 * indices.len() + 1);
+                        routes.push(Route::Direct(reference));
+                        for &index in &indices {
+                            routes.push(place(index as u32));
+                            routes.push(Route::Direct(reference));
+                        }
+                        Signal::prepare_routes(
+                            signal,
+                            indices[0],
+                            &routes,
+                            session.configuration,
+                            now,
+                        )
+                    } else {
+                        Signal::prepare_sequence(
+                            signal,
+                            &indices,
+                            reference,
+                            session.configuration,
+                            now,
+                        )
+                    }
                 };
                 let prepared = match prepared {
                     Ok(prepared) => prepared,
@@ -592,6 +1037,7 @@ impl Service {
                     reference_output_id,
                     sequence_outputs,
                     signal,
+                    bass_managed,
                     state: SignalState::Queued,
                     rendered_frames: 0,
                     total_frames: prepared.total_frames(),
@@ -752,6 +1198,51 @@ fn position(
     let distance = distance * radius_m;
     (azimuth.is_finite() && elevation.is_finite() && distance.is_finite())
         .then_some((azimuth, elevation, distance))
+}
+
+/// One output's filter as a snapshot reports it: a live filter's taps are
+/// known at once, a file's once the stage has read it (`status`, for the
+/// set the live state names, `None` while it is being prepared).
+fn output_filter(
+    source: &FilterSource,
+    status: Option<&renderer::output_correction::FilterStatus>,
+) -> OutputFilter {
+    let mut filter = match source {
+        FilterSource::File(path) => OutputFilter {
+            origin: FilterOrigin::File,
+            file: Some(path.to_string()),
+            state: FilterLoadState::Pending,
+            sample_rate: None,
+            taps: None,
+            hash: None,
+            error: None,
+        },
+        FilterSource::Samples(samples) => OutputFilter {
+            origin: FilterOrigin::Live,
+            file: None,
+            state: FilterLoadState::Pending,
+            sample_rate: Some(samples.sample_rate),
+            taps: Some(samples.taps.len() as u32),
+            hash: Some(format!("{:016x}", samples.hash)),
+            error: None,
+        },
+    };
+    match status {
+        None => {}
+        Some(status) => match &status.error {
+            Some(reason) => {
+                filter.state = FilterLoadState::Error;
+                filter.error = Some(reason.clone());
+            }
+            None => {
+                filter.state = FilterLoadState::Loaded;
+                filter.sample_rate = Some(status.source_rate);
+                filter.taps = Some(status.source_taps as u32);
+                filter.hash = Some(format!("{:016x}", status.hash));
+            }
+        },
+    }
+    filter
 }
 
 /// Below this output gain, noise without it would need more than 60 dB of

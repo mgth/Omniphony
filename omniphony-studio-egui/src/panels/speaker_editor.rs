@@ -380,30 +380,37 @@ impl StudioSpike {
         });
     }
 
-    /// Room correction: the filter file this output is convolved with and
-    /// how the renderer loaded it, with the switch that turns every filter
-    /// off at once (an A/B comparison at the same latency) in the bar. Last
-    /// in the tab: its status line is the one thing here whose height moves.
+    /// Room correction: the filter file this output is convolved with, or
+    /// the measured filter a measurement client set and no Save has written
+    /// yet, and how the renderer loaded it, with the switch that turns every
+    /// filter off at once (an A/B comparison at the same latency) in the
+    /// bar. Last in the tab: its status line is the one thing here whose
+    /// height moves.
     fn correction_group(&mut self, ui: &mut Ui, index: usize, speaker: &Speaker) {
         use crate::model::app_state::SpeakerCorrection;
-        let (state, mut enabled) = {
+        let (state, measured, bypassed, mut enabled) = {
             let live = self.host.read();
+            let key = index.to_string();
             (
-                live.app
-                    .speaker_corrections
-                    .get(&index.to_string())
-                    .cloned(),
+                live.app.speaker_corrections.get(&key).cloned(),
+                live.app.speaker_live_corrections.contains(&key),
+                live.app.correction_bypassed,
                 live.option_bool("output_correction").unwrap_or(true),
             )
         };
         let file = speaker.correction_filter.as_deref();
         // The file's name only: a full path would push the buttons out of a
         // narrow panel, and the name is what tells two filters apart.
-        let name = file.map(|path| {
-            std::path::Path::new(path)
-                .file_name()
-                .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
-        });
+        let name = if measured {
+            Some(t("speaker.correction.live").to_owned())
+        } else {
+            file.map(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
+            })
+        };
+        let has_filter = measured || file.is_some();
         let shown_enabled = enabled;
         let mut toggled = false;
         let mut action = None;
@@ -420,10 +427,10 @@ impl StudioSpike {
                     "help.outputCorrection.enabled",
                     &[
                         (t("speaker.correction.choose"), true),
-                        (t("speaker.correction.remove"), file.is_some()),
+                        (t("speaker.correction.remove"), has_filter),
                     ],
                 );
-                if file.is_none() {
+                if !has_filter {
                     return;
                 }
                 match state {
@@ -450,6 +457,8 @@ impl StudioSpike {
                 }
                 if !shown_enabled {
                     widgets::note(ui, t("speaker.correction.off"));
+                } else if bypassed {
+                    widgets::note(ui, t("speaker.correction.bypassed"));
                 }
             });
         if toggled {

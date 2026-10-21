@@ -724,6 +724,8 @@
   "speaker.correction.pending": "Loading…",
   "speaker.correction.error": "Not applied: {error}",
   "speaker.correction.off": "Room correction is off: this speaker plays unfiltered.",
+  "speaker.correction.live": "Measured filter, not saved",
+  "speaker.correction.bypassed": "Held off by a measurement session: the speakers play unfiltered until it ends.",
   "speaker.filter.full": "Full band",
   "speaker.filter.low": "Low-pass",
   "speaker.filter.high": "High-pass",
