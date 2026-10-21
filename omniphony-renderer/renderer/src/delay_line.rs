@@ -4,7 +4,7 @@
 //!
 //! # `DelayLine` design
 //!
-//! Each `DelayLine` holds a fixed-size circular buffer sized for 100 ms at the
+//! Each `DelayLine` holds a fixed-size circular buffer sized by its caller at the
 //! renderer's sample rate.  The read pointer is fractional and ramps toward the
 //! target at a capped velocity of **1 delay-sample per output sample**, so a
 //! 100 ms delay change takes at most 100 ms to complete with no discontinuity.

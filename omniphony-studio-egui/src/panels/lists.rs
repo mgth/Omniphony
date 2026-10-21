@@ -32,6 +32,9 @@ struct Row {
     colour: Color32,
     /// Extra note shown after the label (bed channels, gain).
     detail: Option<String>,
+    /// The detail is a gain that acts on nothing right now (a measurement
+    /// companion's noise skips it): struck through, the hover says why.
+    detail_struck: bool,
     /// The name of the stream's tag on this channel (`Dialogue`), on a line
     /// of its own above the meter line.
     tag: Option<String>,
@@ -195,6 +198,7 @@ impl StudioSpike {
                     soloed: self.ear_solo == Some(ear),
                     colour: theme::TEXT,
                     detail: None,
+                    detail_struck: false,
                     tag: None,
                     position: None,
                     spatialize: true,
@@ -529,6 +533,7 @@ impl StudioSpike {
                     // thumbnail, which is drawn at the destination speaker
                     // and framed in black.
                     detail: None,
+                    detail_struck: false,
                     // A dialogue element coded apart has an L, an R and a C
                     // beside the bed's: the stream's tag tells them apart.
                     tag: live.app.channel_tag_of(id).map(view::objects::tag_name),
@@ -684,6 +689,9 @@ impl StudioSpike {
                     detail: gain
                         .filter(|g| (*g - 1.0).abs() > 1e-3)
                         .map(|g| crate::panels::audio::format_linear_as_db(Some(g))),
+                    detail_struck: live
+                        .measurement_noise
+                        .is_some_and(|noise| noise.speaker == index && noise.gain_bypassed),
                     position: Some([speaker.x, speaker.y, speaker.z]),
                     tag: None,
                     spatialize: speaker.spatialize != 0,
@@ -1359,11 +1367,16 @@ fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
                 row_glyphs::size_gauges(ui, size);
             }
             if let Some(detail) = &row.detail {
-                ui.label(
-                    RichText::new(detail)
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_MUTED),
-                );
+                let mut text = RichText::new(detail)
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED);
+                if row.detail_struck {
+                    text = text.strikethrough();
+                }
+                let label = ui.label(text);
+                if row.detail_struck {
+                    label.on_hover_text(t("speaker.gainBypassed"));
+                }
             }
             let peak = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
             let hold = row.hold.unwrap_or(peak);
@@ -1422,6 +1435,7 @@ mod tests {
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
+            detail_struck: false,
             tag: None,
             position: None,
             spatialize: true,
@@ -1485,6 +1499,7 @@ mod tests {
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
+            detail_struck: false,
             tag: tag.map(str::to_owned),
             position: Some([0.0, 1.0, 0.0]),
             spatialize: true,
@@ -1564,6 +1579,7 @@ mod tests {
             soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
+            detail_struck: false,
             tag: None,
             position: None,
             spatialize: true,

@@ -444,6 +444,23 @@ impl HostControlHandler for HostAudio {
                 .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn measurement_state(&self) -> runtime_control::host_control::MeasurementHostState {
+        runtime_control::host_control::MeasurementHostState {
+            // Requested output settings also catch writes outside OSC. Applied
+            // input settings catch a staged source change taking effect. Opening
+            // the output for an idle measurement only publishes status, as do
+            // device enumeration and the sync loop's held-latency updates.
+            configuration: json!({
+                "requested": self.options_json(),
+                "applied_input": self.options_applied_json(),
+            }),
+            unavailable_reason: self
+                .audio
+                .audio_error()
+                .map(|error| format!("audio output unavailable: {error}")),
+        }
+    }
+
     fn option_kind(&self, key: &str) -> Option<OptionKind> {
         renderer::options::find_host(self.rows(), key).map(|spec| spec.kind)
     }
@@ -585,6 +602,43 @@ mod tests {
             Arc::new(AudioControl::default()),
             Arc::new(InputControl::default()),
         )
+    }
+
+    #[test]
+    fn measurement_configuration_survives_idle_output_startup_and_telemetry() {
+        let host = host();
+        host.audio
+            .set_requested_output_device(Some("test-output".into()));
+        let before = host.measurement_state();
+        let generation = host.state_generation();
+        // The sync host publishes these when a measurement wakes the output.
+        host.audio.set_audio_state(48_000, "f32");
+        host.audio
+            .set_effective_output_device(Some("test-output".into()));
+        host.audio.set_audio_error(None);
+        host.mark_output_changed();
+        host.audio.set_latency_held_ms(Some(235.0));
+        host.mark_output_changed();
+        assert_ne!(host.state_generation(), generation);
+        assert_eq!(host.measurement_state(), before);
+    }
+
+    #[test]
+    fn measurement_tracks_output_settings_and_reports_output_failure() {
+        let host = host();
+        let before = host.measurement_state();
+        host.audio
+            .set_requested_output_device(Some("another-output".into()));
+        assert_ne!(host.measurement_state().configuration, before.configuration);
+        let routed = host.measurement_state();
+        host.audio.set_requested_output_sample_rate(Some(96_000));
+        assert_ne!(host.measurement_state().configuration, routed.configuration);
+        host.audio
+            .set_audio_error(Some("test device disconnected".into()));
+        assert_eq!(
+            host.measurement_state().unavailable_reason.as_deref(),
+            Some("audio output unavailable: test device disconnected")
+        );
     }
 
     fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {

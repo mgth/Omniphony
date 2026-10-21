@@ -15,6 +15,7 @@ mod dispatch;
 mod export;
 mod gaintable;
 mod inbound;
+mod measurement;
 mod metadata_emit;
 mod peer;
 mod playout;
@@ -662,6 +663,8 @@ impl OscSender {
             .name("osc-listener".into())
             .spawn(move || {
                 let mut realtime_seq = RealtimeSeqState::default();
+                let mut measurement = control.as_ref().map(|ctrl|
+                    measurement::Service::new(Arc::clone(ctrl), instance_epoch, host_handler.clone()));
                 // Serialized gain table is cached here and shared with the
                 // recompute threads this loop spawns, so it's re-serialized only
                 // when the topology actually changes (not per push/heartbeat).
@@ -678,6 +681,9 @@ impl OscSender {
                 // mpv shim flips them through the FFI toggles, so a client that
                 // only ever hears its own OSC pushes would drift.
                 let mut last_overlay_generation: Option<u64> = None;
+                // The output a companion's level noise plays on, as last told
+                // to the clients: Studio strikes through a gain it skips.
+                let mut last_noise: Option<measurement::NoiseOutput> = None;
 
                 // Resuming from standby: take over the live state the departing
                 // host left in the sidecar. Deliberately *after* the generation
@@ -718,6 +724,19 @@ impl OscSender {
                 loop {
                     if stop.load(Ordering::Relaxed) {
                         break;
+                    }
+                    if let Some(service) = measurement.as_mut() {
+                        service.poll(std::time::Instant::now());
+                        let noise = service.noise_output();
+                        if noise != last_noise {
+                            last_noise = noise;
+                            transport::publish_state(&socket, &clients, || {
+                                vec![OscMessage {
+                                    addr: osc_contract::STATE_MEASUREMENT_NOISE.to_string(),
+                                    args: measurement::noise_args(noise),
+                                }]
+                            });
+                        }
                     }
                     decode_errors.flush("undecodable datagram(s) dropped");
                     control_errors.flush("control message(s) not applied");
@@ -830,6 +849,7 @@ impl OscSender {
                                     }
                                     send_buffered_logs_to_client(&socket, &client, 0);
                                     send_metering_state(&socket, &client, metering_enabled);
+                                    measurement::send_noise_to(&socket, &client, last_noise);
                                 }
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr == osc_contract::HEARTBEAT =>
@@ -881,6 +901,7 @@ impl OscSender {
                                         log::debug!("OSC state refresh → {client}");
                                         send_live_state_to(ctrl, host_handler.as_ref(), &socket, &clients, &client);
                                     }
+                                    measurement::send_noise_to(&socket, &client, last_noise);
                                 }
 
                                 // A barrier: everything this client sent before
@@ -900,12 +921,39 @@ impl OscSender {
                                     }
                                 }
 
+                                Ok((_, OscPacket::Message(msg)))
+                                    if msg.addr == osc_contract::measurement::REQUEST_ADDRESS =>
+                                {
+                                    use osc_contract::measurement as protocol;
+                                    let response = match msg.args.as_slice() {
+                                        [rosc::OscType::String(json)] if json.len() <= protocol::MAX_PACKET_BYTES => {
+                                            match serde_json::from_str::<protocol::Request>(json) {
+                                                Ok(request) => match measurement.as_mut() {
+                                                    Some(service) => service.handle(request, src, std::time::Instant::now()),
+                                                    None => protocol::Response { version: protocol::reply_version(request.version), request_id: request.request_id,
+                                                        reply: measurement::error("unavailable", "renderer control is unavailable") },
+                                                },
+                                                Err(_) => protocol::Response { version: protocol::VERSION, request_id: 0,
+                                                    reply: measurement::error("invalid_request", "invalid measurement JSON") },
+                                            }
+                                        }
+                                        _ => protocol::Response { version: protocol::VERSION, request_id: 0,
+                                            reply: measurement::error("invalid_request", "expected one bounded JSON string") },
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&response) {
+                                        let reply = OscMessage { addr: protocol::REPLY_ADDRESS.into(), args: vec![rosc::OscType::String(json)] };
+                                        if let Ok(bytes) = rosc::encoder::encode(&OscPacket::Message(reply)) { let _ = src.send(&socket, &bytes); }
+                                    }
+                                }
+
                                 // ── Live-parameter control messages ─────────────────────────────────
                                 Ok((_, OscPacket::Message(msg)))
                                     if msg.addr.starts_with("/omniphony/control/") =>
                                 {
                                     if let Some(ref ctrl) = control {
-                                        let outcome = handle_control_message(
+                                        let outcome = if measurement.as_ref().is_some_and(|service| service.active()) {
+                                            ControlOutcome::NotAllowed("a measurement session owns the renderer; end it before changing settings".into())
+                                        } else { handle_control_message(
                                             &msg,
                                             src,
                                             ctrl,
@@ -914,7 +962,7 @@ impl OscSender {
                                             &socket,
                                             &clients,
                                             &gaintable_cache,
-                                        );
+                                        ) };
                                         report_control_outcome(
                                             &socket,
                                             src,

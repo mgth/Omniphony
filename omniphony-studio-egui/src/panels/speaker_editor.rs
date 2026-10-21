@@ -291,8 +291,15 @@ impl StudioSpike {
                         .copied()
                         .unwrap_or(1.0)
                 };
+                // A measurement companion's level noise that skips this gain:
+                // the speaker plays at 0 dB whatever the gain says.
+                let bypassed = self
+                    .host
+                    .read()
+                    .measurement_noise
+                    .is_some_and(|noise| noise.speaker == index && noise.gain_bypassed);
                 let mut value = gain as f32;
-                if widgets::value_slider_help(
+                if widgets::value_slider_help_inactive(
                     ui,
                     t("speaker.gain"),
                     "help.speaker.gain",
@@ -300,6 +307,7 @@ impl StudioSpike {
                     0.0..=2.0,
                     0.01,
                     |v| crate::panels::audio::format_linear_as_db(Some(v as f64)),
+                    bypassed.then(|| t("speaker.gainBypassed")),
                 ) {
                     self.set_speaker_gain(index, value);
                 }

@@ -1938,7 +1938,9 @@ fn idle_feed_inputs(engine: &Engine) -> IdleFeedInputs {
     let live = control.live.read();
     IdleFeedInputs {
         arm_gen: live.speaker_test_idle_feed_gen,
-        test_active: live.speaker_test.is_some() || live.object_test.is_some(),
+        test_active: live.speaker_test.is_some()
+            || live.object_test.is_some()
+            || control.measurement.active(Instant::now()),
         sample_rate: engine.render_rate(),
     }
 }

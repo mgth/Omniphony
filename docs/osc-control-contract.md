@@ -1,9 +1,9 @@
 # Omniphony OSC control / state contract
 
-The engine is driven and observed entirely over **OSC** (UDP). This document is
+The engine is driven and observed entirely over **OSC** (UDP and local TCP). This document is
 the human-readable contract for client authors (Omniphony Studio, alternative
 front-ends, automation). The machine-readable single source of truth for the
-address strings is the dependency-free
+address strings is the default-dependency-free
 [`omniphony-osc-contract`](../osc-contract/src/lib.rs) crate (re-exported to the
 engine as `runtime_control::osc_contract`, and used by Studio too) — every
 address below has a named constant there, and the exhaustive lists are
@@ -834,6 +834,23 @@ spelling addresses, that every catalogued address appears in the index
 below, that every state address has a shape, and that the address set has not
 changed under the same `CONTRACT_REVISION`.
 
+## Measurement sessions
+
+Contract revision 9 adds `/omniphony/control/measurement` and
+`/omniphony/state/measurement`, each carrying one JSON string. This protocol
+requires the local TCP connection. Replies go only to the requesting companion,
+not to Studio subscribers. See [measurement sessions](measurement-protocol.md)
+for the versioned schema, ownership, finite signals and render-progress semantics.
+Rust clients opt into the contract crate's `measurement` feature for its serde types.
+
+Contract revision 10 adds `/omniphony/state/measurement/noise` (int, int),
+broadcast to every client: the index of the output a companion plays level noise
+on, or `-1` once none does, then `1` when that noise skips the output's gain
+(measurement protocol 6, `bypass_output_gain`), `0` when it plays through it.
+It is sent when either changes and to a client when it registers. While the
+second is `1` the output's gain does not act on what that speaker plays: Studio
+strikes it through.
+
 ## Address index
 
 Every address the contract catalogues, generated from `ALL_CONTROL`,
@@ -1025,6 +1042,7 @@ per-object streams `/omniphony/object/{id}/…` and `/omniphony/meter/object/{id
 - `/omniphony/state/layout`
 - `/omniphony/state/log_level`
 - `/omniphony/state/loudness`
+- `/omniphony/state/measurement/noise`
 - `/omniphony/state/monitoring`
 - `/omniphony/state/object_generators`
 - `/omniphony/state/object_test/clip`

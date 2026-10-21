@@ -309,6 +309,13 @@ pub enum OscEvent {
     StateClip {
         speaker: i32,
     },
+    /// The output a measurement companion plays level noise on (`-1`: none)
+    /// and whether that noise skips the output's gain.
+    #[serde(rename = "state:measurement_noise")]
+    StateMeasurementNoise {
+        output: i32,
+        gain_bypassed: bool,
+    },
     /// Overlay display preferences (JSON), republished by the engine whenever
     /// they change — including from an mpv keybind, which Studio cannot see.
     StateOverlay {
@@ -1067,6 +1074,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (4, "vbap") if parts[3] == "allow_negative_z" => Some(OscEvent::StateVbapAllowNegativeZ {
             enabled: to_number(*args.first()?)? != 0.0,
         }),
+        (4, "measurement") if parts[3] == "noise" => Some(OscEvent::StateMeasurementNoise {
+            output: to_number(*args.first()?)? as i32,
+            gain_bypassed: to_number(*args.get(1)?)? != 0.0,
+        }),
         (4, "speakers") if parts[3] == "recomputing" => Some(OscEvent::StateSpeakersRecomputing {
             enabled: to_number(*args.first()?)? != 0.0,
         }),
@@ -1793,11 +1804,18 @@ mod contract_conformance_tests {
     use crate::osc_contract::{self, shapes::Arg};
     use rosc::OscType;
 
-    /// Read by the listener before the parser, not by it.
-    const BEFORE_THE_PARSER: &[(&str, &str)] = &[(
-        osc_contract::STATE_SHUTDOWN,
-        "osc::handle_message drops the registration on it",
-    )];
+    /// State outside the Studio parser's scope. Measurement replies are
+    /// point-to-point to the companion; the renderer never broadcasts them.
+    const OUTSIDE_STUDIO_PARSER: &[(&str, &str)] = &[
+        (
+            osc_contract::STATE_SHUTDOWN,
+            "osc::handle_message drops the registration on it",
+        ),
+        (
+            osc_contract::STATE_MEASUREMENT,
+            "only the requesting measurement companion receives this reply",
+        ),
+    ];
 
     fn sample(kind: Arg) -> OscType {
         match kind {
@@ -1813,7 +1831,7 @@ mod contract_conformance_tests {
     fn every_state_address_in_the_contract_parses_to_an_event() {
         let mut unread = Vec::new();
         for (address, shape) in osc_contract::shapes::STATE {
-            if BEFORE_THE_PARSER
+            if OUTSIDE_STUDIO_PARSER
                 .iter()
                 .any(|(skipped, _)| skipped == address)
             {

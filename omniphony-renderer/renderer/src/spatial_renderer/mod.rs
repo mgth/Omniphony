@@ -1438,6 +1438,31 @@ impl SpatialRenderer {
             &mut output,
         ) || object_test_active;
 
+        // Measurement samples are prepared off-thread and sent directly to
+        // the selected physical output, through its existing gain and delay.
+        let measurement_active = self.control.measurement.armed()
+            && self.control.measurement.render(
+                &mut output,
+                crate::measurement::Configuration {
+                    sample_rate: self.sample_rate,
+                    width: self.speaker_stage.num_speakers,
+                    speaker_generation: self.speaker_params_generation_seen,
+                    geometry_generation: self
+                        .control
+                        .geometry_generation
+                        .load(std::sync::atomic::Ordering::Acquire),
+                    master_gain_bits: live.master_gain.to_bits(),
+                },
+                std::time::Instant::now(),
+            );
+        // Programme loudness metadata must not rescale a measurement.
+        let total_gain = if measurement_active {
+            live.master_gain
+        } else {
+            total_gain
+        };
+        let test_active = test_active || measurement_active;
+
         let (peak_sample, peak_speaker_idx) = if brir_bands_installed {
             output.fill(0.0);
             (0.0, 0)

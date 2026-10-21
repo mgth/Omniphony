@@ -1254,3 +1254,28 @@ fn a_band_set_comes_with_the_filter_memory_of_the_channels_in_use() {
             .all(|states| bank.states_compatible(states))
     );
 }
+
+#[test]
+fn speaker_delay_capacity_matches_advertised_limit_without_clamping_projector_alignment() {
+    let mut renderer = build_table_renderer(false, false);
+    let rate = renderer.sample_rate;
+    for ms in [160.0, omniphony_osc_contract::measurement::MAX_DELAY_MS] {
+        let line = &mut renderer.speaker_stage.delay_lines[0];
+        line.set_target_ms(ms, rate);
+        let frames = (ms * rate as f32 / 1000.0).round() as usize;
+        for _ in 0..rate as usize {
+            line.process(0.0);
+        }
+        let output: Vec<_> = (0..=frames)
+            .map(|i| line.process(if i == 0 { 1.0 } else { 0.0 }))
+            .collect();
+        assert!(
+            output[..frames].iter().all(|x| x.abs() < 1e-5),
+            "early output at {ms} ms"
+        );
+        assert!(
+            (output[frames] - 1.0).abs() < 1e-5,
+            "wrong delay at {ms} ms"
+        );
+    }
+}
