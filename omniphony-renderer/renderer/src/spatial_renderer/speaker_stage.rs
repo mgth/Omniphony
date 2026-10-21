@@ -10,7 +10,7 @@
 //! slew), which the binaural branch advances too — stays on `SpatialRenderer`
 //! and is passed in explicitly.
 //!
-//! NOTE (cascaded mode, phase B): `ChannelState::interp_prev_gains` and the
+//! NOTE (cascaded mode, phase B): `ChannelState::last_block_gains` and the
 //! gain slew are stateful *per channel* and layout-sized; two stages sharing
 //! one `channel_states` in the same frame would double-slew and thrash the
 //! interp re-seed check. Exactly one mix pass per `channel_states` per frame —
@@ -185,7 +185,7 @@ pub(super) struct SpeakerRenderStage {
     pub(super) object_test_filter_states: Option<CrossoverStates>,
     /// Previous block's destination gains for the object test, per band — the
     /// start point of this block's interpolation. Exactly the role
-    /// `ChannelState::interp_prev_gains` plays for a real object; the test has
+    /// `ChannelState::last_block_gains` plays for a real object; the test has
     /// no `ChannelState` of its own, so it keeps its own copy. Empty when no
     /// test is running, which is also how a fresh start is detected.
     pub(super) object_test_prev_gains: BandGains,
@@ -1112,27 +1112,7 @@ impl SpeakerRenderStage {
                             &mut band_gains,
                         );
                         bus.add_constant(bands, &band_gains, 0..sample_length);
-                    }
-                    RampMode::Frame => {
-                        let progress = state.ramp.current_progress().unwrap_or(RampProgress {
-                            completed_units: 0,
-                            total_units: 0,
-                        });
-                        ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                        let position = state.ramp.output_position;
-                        let size = state.ramp.current_size;
-                        Self::fill_band_gains(
-                            &self.unified_table,
-                            Some(&mut self.table_caches[input_channel_idx]),
-                            (&self.render_bands, &mut self.band_scratches),
-                            render_params,
-                            position,
-                            size,
-                            &mut band_gains,
-                        );
-                        bus.add_constant(bands, &band_gains, 0..sample_length);
-                        state.ramp.commit_output_position();
-                        state.ramp.advance_ramp(sample_length as u64);
+                        state.last_block_gains.copy_from(&band_gains);
                     }
                     RampMode::Sample => {
                         // One gain set per band, reused across the block (and
@@ -1191,18 +1171,38 @@ impl SpeakerRenderStage {
                                 lookup,
                             ),
                         }
+                        // `band_gains` holds the last sample's gains, once
+                        // there is a sample.
+                        if sample_length > 0 {
+                            state.last_block_gains.copy_from(&band_gains);
+                        }
                     }
-                    RampMode::Interp => {
-                        // Destination gains for this block: one VBAP evaluation per
-                        // band at the target position. The object's audible path is
-                        // then a per-sample linear interpolation from the previous
-                        // block's end gains to these — no per-sample VBAP.
-                        state.ramp.remaining_ramp_units = None;
-                        state.ramp.current_position = state.ramp.target_position;
-                        state.ramp.current_size = state.ramp.target_size;
-                        state.ramp.output_position = state.ramp.target_position;
-                        let position = state.ramp.target_position;
-                        let size = state.ramp.target_size;
+                    RampMode::Frame | RampMode::Interp => {
+                        // This block's end gains: one evaluation per band. The
+                        // object's audible path is then a per-sample linear
+                        // interpolation from the gains the previous block ended
+                        // on to these — no per-sample VBAP, and no step at the
+                        // block boundary.
+                        if ramp_mode == RampMode::Frame {
+                            // Where the stream's ramp is on the block's last
+                            // sample: `sample_length - 1` steps on.
+                            state
+                                .ramp
+                                .advance_ramp(sample_length.saturating_sub(1) as u64);
+                            let progress = state.ramp.current_progress().unwrap_or(RampProgress {
+                                completed_units: 0,
+                                total_units: 0,
+                            });
+                            ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
+                        } else {
+                            // Straight to the target, whatever the ramp length.
+                            state.ramp.remaining_ramp_units = None;
+                            state.ramp.current_position = state.ramp.target_position;
+                            state.ramp.current_size = state.ramp.target_size;
+                            state.ramp.output_position = state.ramp.target_position;
+                        }
+                        let position = state.ramp.output_position;
+                        let size = state.ramp.current_size;
 
                         Self::fill_band_gains(
                             &self.unified_table,
@@ -1215,14 +1215,14 @@ impl SpeakerRenderStage {
                         );
 
                         // First block for this channel → start == end (no jump in).
-                        if !state.interp_prev_gains.same_shape(&self.interp_end_scratch) {
-                            state.interp_prev_gains.copy_from(&self.interp_end_scratch);
+                        if !state.last_block_gains.same_shape(&self.interp_end_scratch) {
+                            state.last_block_gains.copy_from(&self.interp_end_scratch);
                         }
 
                         block_fractions(&mut self.block_fractions, sample_length);
                         bus.add_lerp(
                             bands,
-                            &state.interp_prev_gains,
+                            &state.last_block_gains,
                             &self.interp_end_scratch,
                             &self.block_fractions,
                             0..sample_length,
@@ -1238,7 +1238,7 @@ impl SpeakerRenderStage {
                                     for ((gain, &g0), &g1) in band_gains
                                         .as_mut_slice()
                                         .iter_mut()
-                                        .zip(state.interp_prev_gains.as_slice())
+                                        .zip(state.last_block_gains.as_slice())
                                         .zip(end.as_slice())
                                     {
                                         *gain = g0 * (1.0 - f) + g1 * f;
@@ -1250,7 +1250,15 @@ impl SpeakerRenderStage {
                         }
 
                         // Cache this block's destination as the next block's start.
-                        state.interp_prev_gains.copy_from(&self.interp_end_scratch);
+                        state.last_block_gains.copy_from(&self.interp_end_scratch);
+                        if ramp_mode == RampMode::Frame {
+                            // The last sample is mixed: step past it, as the
+                            // per-sample ramp does.
+                            state.ramp.commit_output_position();
+                            if sample_length > 0 {
+                                state.ramp.advance_ramp(1);
+                            }
+                        }
                     }
                 };
 

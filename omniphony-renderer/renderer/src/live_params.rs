@@ -74,17 +74,22 @@ impl PreferredEvaluationMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RampMode {
+    /// No ramp: every object jumps to its target, gains held over the block.
     Off,
+    /// One gain evaluation per object per block, at the position the stream's
+    /// ramp reaches on the block's last sample, interpolated linearly across
+    /// the block from the gains the previous block ended on. Follows the ramp
+    /// at block resolution, for the cost of `Interp`.
     Frame,
-    /// The object's position advances every sample. While it moves, its gains
-    /// are evaluated every few samples (`LiveParams::sample_ramp_stride`) and
-    /// interpolated linearly in between; while it holds, they are evaluated
-    /// once per block.
+    /// The object's position advances every sample along the stream's ramp.
+    /// While it moves, its gains are evaluated every few samples
+    /// (`LiveParams::sample_ramp_stride`) and interpolated linearly in
+    /// between; while it holds, they are evaluated once per block. The default.
     Sample,
-    /// One VBAP evaluation per object per frame (the destination gains), then a
-    /// per-sample linear interpolation of the gains from the previous block's
-    /// end to this block's end. Cheaper than `Sample` (no per-sample VBAP) while
-    /// keeping per-sample smoothness.
+    /// One VBAP evaluation per object per frame at the target position,
+    /// ignoring the stream's ramp length, then a per-sample linear
+    /// interpolation of the gains from the previous block's end to it. The
+    /// cheapest smooth mode, with `Frame`.
     Interp,
 }
 

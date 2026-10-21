@@ -328,7 +328,7 @@
   "audio.sampleRampStride": "计算间隔",
   "rampMode.infoButton": "渐变模式说明",
   "rampMode.infoTitle": "渐变模式",
-  "rampMode.infoBody": "渐变会平滑位置或增益的突变，让对象运动和电平变化更自然，并减少点击声或空间跳变。<br /><br /><strong>关闭</strong>：禁用插值，立即跳到新的目标值。<br /><br /><strong>按帧</strong>：每个解码后的音频帧执行一次插值。开销更低，但变化更阶梯化。<br /><br /><strong>按采样</strong>：位置逐个采样推进；对象移动时，每隔几个采样（计算间隔，默认 8）重新计算一次空间增益，中间做插值。最精确，开销也最大。",
+  "rampMode.infoBody": "渐变会平滑位置或增益的突变，让对象运动和电平变化更自然，并减少点击声或空间跳变。<br /><br /><strong>关闭</strong>：禁用插值，立即跳到新的目标值。<br /><br /><strong>按帧</strong>：每个解码后的音频帧计算一次空间增益（取对象渐变在帧末到达的位置），并在整帧内插值。平滑且开销低，按帧跟随运动。<br /><br /><strong>按采样</strong>：位置逐个采样推进；对象移动时，每隔几个采样（计算间隔，默认 8）重新计算一次空间增益，中间做插值。最精确，开销也最大。",
   "section.twoDSources": "固定声道源",
   "twoDSources.surroundLabel": "后置声道（4.x/5.x）",
   "twoDSources.surroundSide": "侧面",
