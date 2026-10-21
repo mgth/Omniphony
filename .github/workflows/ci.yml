@@ -38,7 +38,13 @@ env:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-22.04
+    # Ubuntu 24.04: its stock PipeWire (1.0) satisfies pipewire-rs 0.9
+    # (>= 0.3.65), so the gate needs nothing from Launchpad. On 22.04 it
+    # needed the pipewire-upstream PPA, and every Launchpad outage blocked
+    # every PR (2026-10-21: 503 on each attempt for hours). The release build
+    # (release.yml) stays on 22.04 with the PPA for the older glibc it ships
+    # against; this job tests the code, not that platform.
+    runs-on: ubuntu-24.04
     # Generous because the dependency install depends on GitHub's Ubuntu
     # mirror, which has days where it delivers a 27 MB package at a few
     # hundred kB/s. 45 minutes proved too tight on such a day. This is a
@@ -110,7 +116,8 @@ jobs:
 
       # The release version is written in a dozen manifests and lockfiles; a
       # copy left behind is a release whose parts disagree on what they are
-      # (#676). The script needs tomllib (3.11), which ubuntu-22.04 lacks.
+      # (#676). The script needs tomllib (3.11): pinned here so the check
+      # does not depend on the runner image's Python.
       - name: Setup Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -120,14 +127,14 @@ jobs:
         run: python3 scripts/release_version.py check
 
       # ── Platform dependencies ─────────────────────────────────────────────
-      # Same PipeWire PPA as release.yml: ubuntu-22.04 ships PipeWire 0.3.48 but
-      # pipewire-rs 0.9.x needs >= 0.3.65. What the renderer workspace links,
-      # nothing more.
+      # What the renderer workspace links: PipeWire for the output and input
+      # backends, ALSA, xkbcommon and Wayland, and libclang for the bindgen
+      # run in pipewire-sys and libspa-sys. All from Ubuntu's own archive.
       - name: Install Linux system dependencies
         run: |
-          # `apt-get update` reaches Launchpad and can hang rather than fail
-          # when it is unwell, so it is bounded: a retry loop is useless
-          # against a command that never returns.
+          # `apt-get update` can hang rather than fail when a mirror is
+          # unwell, so it is bounded: a retry loop is useless against a
+          # command that never returns.
           #
           # The install is NOT capped, deliberately. The archive mirror is
           # often merely slow — a 27 MB package crawling at a few hundred
@@ -135,43 +142,15 @@ jobs:
           # failed one (it did: exit 124 mid-download). `timeout-minutes` on
           # the job is the right backstop for a genuine stall; here we only
           # retry, so a dropped download gets another go.
-          # The PPA is added by hand, not with add-apt-repository: that tool
-          # fetches the archive's signing key through Launchpad's API, which
-          # answers 500 (GPGKeyTemporarilyNotFoundError) whenever Launchpad
-          # is unwell — as it was on 2026-09-21, for hours. The key is
-          # vendored instead (.github/keys/pipewire-upstream-ppa.asc,
-          # fingerprint FC43B7352BCC0EC8AF2EEB8B25088A0359807596, the one the
-          # API reports for the PPA and the one its InRelease is signed
-          # with), so only the archive host itself is needed.
-          sudo install -d -m 755 /etc/apt/keyrings
-          gpg --dearmor < .github/keys/pipewire-upstream-ppa.asc \
-            | sudo tee /etc/apt/keyrings/pipewire-upstream-ppa.gpg > /dev/null
-          suite="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-          echo "deb [signed-by=/etc/apt/keyrings/pipewire-upstream-ppa.gpg] https://ppa.launchpadcontent.net/pipewire-debian/pipewire-upstream/ubuntu $suite main" \
-            | sudo tee /etc/apt/sources.list.d/pipewire-upstream.list > /dev/null
-          # `apt-get update` exits 0 when the PPA answers 503 (it only warns
-          # and keeps the stock index), and the install then picks Ubuntu's
-          # 0.3.48, which libspa refuses ("no field `flags`") long after this
-          # step passed. Launchpad does answer 503 intermittently (2026-09-21:
-          # two probes in six), so the update is retried until the candidate
-          # version actually comes from the PPA.
-          pipewire_candidate() {
-            apt-cache policy libpipewire-0.3-dev | awk '/Candidate:/ { print $2 }'
-          }
-          for attempt in 1 2 3 4 5 6 7 8; do
+          for attempt in 1 2 3; do
             if sudo timeout 180 apt-get update; then
-              candidate="$(pipewire_candidate)"
-              if [ -n "$candidate" ] && dpkg --compare-versions "$candidate" ge 0.3.65; then
-                echo "PipeWire candidate from the PPA: $candidate"
-                break
-              fi
-              echo "PipeWire candidate is '$candidate' (the PPA index was not fetched); retrying" >&2
+              break
             fi
-            if [ "$attempt" -eq 8 ]; then
-              echo "apt-get update never fetched the PipeWire PPA after $attempt attempts" >&2
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get update failed after $attempt attempts" >&2
               exit 1
             fi
-            sleep 20
+            sleep 10
           done
           for attempt in 1 2 3; do
             if sudo apt-get install -y \
@@ -179,6 +158,8 @@ jobs:
               libasound2-dev \
               libxkbcommon-dev \
               libwayland-dev \
+              libclang-dev \
+              clang \
               pkg-config; then
               break
             fi
@@ -740,9 +721,8 @@ jobs:
     # macOS and only ever run by hand. The engine only: the native Studio
     # is not shipped for Linux arm64.
     #
-    # Ubuntu 24.04 rather than the x64 job's 22.04 because its stock PipeWire
-    # (1.0) already satisfies pipewire-rs 0.9 (>= 0.3.65), so no PPA is
-    # needed here.
+    # Ubuntu 24.04, like the x64 job, because its stock PipeWire (1.0)
+    # already satisfies pipewire-rs 0.9 (>= 0.3.65), so no PPA is needed.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -818,9 +798,9 @@ jobs:
     # Static gates that need no test run: action pinning, cargo-deny and the
     # clippy ratchet for the renderer workspace.
     #
-    # Ubuntu 24.04 rather than build-and-test's 22.04: clippy compiles the
-    # PipeWire -sys build scripts, and 24.04's stock PipeWire (1.0) already
-    # satisfies pipewire-rs 0.9, so this job needs no PPA.
+    # Ubuntu 24.04, like build-and-test: clippy compiles the PipeWire -sys
+    # build scripts, and 24.04's stock PipeWire (1.0) already satisfies
+    # pipewire-rs 0.9, so this job needs no PPA.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
