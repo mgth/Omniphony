@@ -299,8 +299,25 @@ pub struct DummyRing {
 /// The downmix over that set is what keeps the pole continuous: it does not
 /// depend on which triangle matched, unlike the per-triangle fold.
 pub fn compute_dummy_rings(ls_groups: &[[usize; 3]], is_dummy: &[bool]) -> Vec<DummyRing> {
+    let lands_on: Vec<Vec<usize>> = (0..is_dummy.len())
+        .map(|s| if is_dummy[s] { Vec::new() } else { vec![s] })
+        .collect();
+    downmix_rings_over(ls_groups, is_dummy, &lands_on)
+}
+
+/// [`compute_dummy_rings`] with every neighbour resolved through
+/// `lands_on`: the real speakers a neighbour's gain ends up on — itself for a
+/// real one, none for a pole or a centre (their gain goes nowhere a ring can
+/// follow), the loudspeakers it folds onto for a listener-layer virtual one
+/// ([`ListenerLayerMode::Shadow`]). A centre or a pole next to those
+/// downmixes onto their loudspeakers rather than dropping their share.
+fn downmix_rings_over(
+    ls_groups: &[[usize; 3]],
+    flagged: &[bool],
+    lands_on: &[Vec<usize>],
+) -> Vec<DummyRing> {
     let mut rings = Vec::new();
-    for (d, flag) in is_dummy.iter().enumerate() {
+    for (d, flag) in flagged.iter().enumerate() {
         if !*flag {
             continue;
         }
@@ -308,8 +325,13 @@ pub fn compute_dummy_rings(ls_groups: &[[usize; 3]], is_dummy: &[bool]) -> Vec<D
         for face in ls_groups {
             if face.contains(&d) {
                 for &s in face {
-                    if s != d && !is_dummy[s] && !ring.contains(&s) {
-                        ring.push(s);
+                    if s == d {
+                        continue;
+                    }
+                    for &r in &lands_on[s] {
+                        if !ring.contains(&r) {
+                            ring.push(r);
+                        }
                     }
                 }
             }
@@ -397,6 +419,182 @@ pub fn prepare_effective_speaker_dirs(
     None
 }
 
+// ── Listener layer ───────────────────────────────────────────────────────────
+
+/// How the triangulation treats the listener layer: the loudspeakers a film
+/// names at ear height (L, C, R, the surrounds, the backs, the wides),
+/// wherever the room put them.
+///
+/// A home layout often has L and R higher than C, beside or above the
+/// screen. On the real positions the hull then draws an edge from C to the
+/// surround *under* L, and a film's L channel (30° to the left, on the
+/// horizon) lands on that edge: C and the surround play it, L is silent — a
+/// hole under the elevated speakers. See docs/dsp-validation-report.md ("The listener layer").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListenerLayerMode {
+    /// Every loudspeaker where the layout puts it: classic VBAP, the hole
+    /// included.
+    #[default]
+    AsPlaced,
+    /// Every listener-layer loudspeaker pans at elevation 0, the heights
+    /// where they are. The channels land on their loudspeakers again, but
+    /// the panner believes L is lower than it is, so the space between the
+    /// listener layer and the heights is warped: an object a little above L
+    /// already reaches the tops although L alone is closer to it.
+    Flatten,
+    /// Real elevations, the listener layer made a band the hull cannot
+    /// cut across. Under every listener-layer loudspeaker above the
+    /// horizon hangs a virtual one, its shadow, at [`SHADOW_ELEVATION_DEG`],
+    /// folded 1:1 onto it (the lower-layer virtual loudspeakers of ITU-R
+    /// BS.2127, where the layout needs them): no edge runs below a raised
+    /// loudspeaker any more. Where the hull still skips an edge of the
+    /// listener ring — two loudspeakers far apart, the top backs leaning
+    /// out past their edge — a virtual loudspeaker on the ring between them
+    /// closes it, folded onto both. A listener-layer loudspeaker mounted
+    /// below the horizon pans at 0°: a centre under the screen keeps the
+    /// dialogue off the tops. On a listener layer at 0° whose ring the hull
+    /// keeps, nothing changes.
+    Shadow,
+}
+
+impl ListenerLayerMode {
+    /// The value the backend param stores.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AsPlaced => "as_placed",
+            Self::Flatten => "flatten",
+            Self::Shadow => "shadow",
+        }
+    }
+
+    /// A stored value back, `None` for one this build does not know.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "as_placed" => Some(Self::AsPlaced),
+            "flatten" => Some(Self::Flatten),
+            "shadow" => Some(Self::Shadow),
+            _ => None,
+        }
+    }
+}
+
+/// Elevation, degrees, of the shadow [`ListenerLayerMode::Shadow`] hangs
+/// under a raised listener-layer loudspeaker: below anything a film puts at
+/// ear height, as low as ITU-R BS.2051's bottom layer.
+///
+/// Only a raised loudspeaker gets one. One on the horizon has no edge below
+/// it to hide it, and a shadow there would only lean the hull out: under
+/// surrounds at ±110° on the horizon, the plane from the top backs down to
+/// their shadows passes outside their edge, and a source straight behind
+/// the listener on the horizon took 0.39 on each top back.
+pub const SHADOW_ELEVATION_DEG: f32 = -30.0;
+
+/// No virtual listener-layer loudspeaker is placed within this many degrees
+/// of another loudspeaker, real or virtual: the region is anchored already,
+/// and two directions that close would make a sliver of the triangulation
+/// (two coincident ones, no hull at all). Listener-layer loudspeakers
+/// stacked on one azimuth share one shadow, the lowest one's.
+const SHADOW_CLEARANCE_DEG: f32 = 10.0;
+
+/// Azimuth gaps of the listener ring narrower than this, degrees, are one
+/// position (stacked loudspeakers), not an edge to keep.
+const RING_MIN_GAP_DEG: f32 = 1.0;
+
+/// The listener layer of a layout and how the triangulation treats it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListenerLayer {
+    pub mode: ListenerLayerMode,
+    /// Per real loudspeaker, in the order of the directions the panner is
+    /// given: whether it is on the listener layer. Missing entries are not.
+    pub members: Vec<bool>,
+}
+
+/// Whether a direction is free for a virtual listener-layer loudspeaker:
+/// none of `dirs` within [`SHADOW_CLEARANCE_DEG`].
+fn clear_of(dirs: &[[f32; 2]], at: [f32; 2]) -> bool {
+    let min_dot = SHADOW_CLEARANCE_DEG.to_radians().cos();
+    let u = unit_direction_deg(at[0], at[1]);
+    dirs.iter()
+        .all(|d| dot3(unit_direction_deg(d[0], d[1]), u) <= min_dot)
+}
+
+impl ListenerLayer {
+    fn member(&self, i: usize) -> bool {
+        self.members.get(i).copied().unwrap_or(false)
+    }
+
+    /// The directions to triangulate: the real loudspeakers, moved as the
+    /// mode says, then the shadows. The second list holds, per direction,
+    /// the real loudspeakers a shadow folds onto (empty for the real ones).
+    /// Build time only.
+    fn panning_dirs(&self, ls_dirs_deg: &[[f32; 2]]) -> (Vec<[f32; 2]>, Vec<Vec<usize>>) {
+        let mut dirs = ls_dirs_deg.to_vec();
+        let mut folds = vec![Vec::new(); dirs.len()];
+        match self.mode {
+            ListenerLayerMode::AsPlaced => {}
+            ListenerLayerMode::Flatten => {
+                for (i, dir) in dirs.iter_mut().enumerate() {
+                    if self.member(i) {
+                        dir[1] = 0.0;
+                    }
+                }
+            }
+            ListenerLayerMode::Shadow => {
+                for (i, dir) in dirs.iter_mut().enumerate() {
+                    if self.member(i) {
+                        dir[1] = dir[1].max(0.0);
+                    }
+                }
+                // Lowest first: of loudspeakers stacked on one azimuth, the
+                // one nearest the shadow owns it.
+                let mut owners: Vec<usize> = (0..dirs.len())
+                    .filter(|&i| self.member(i) && dirs[i][1] > 0.0)
+                    .collect();
+                owners.sort_by(|&a, &b| dirs[a][1].total_cmp(&dirs[b][1]));
+                for owner in owners {
+                    let shadow = [dirs[owner][0], SHADOW_ELEVATION_DEG];
+                    if clear_of(&dirs, shadow) {
+                        dirs.push(shadow);
+                        folds.push(vec![owner]);
+                    }
+                }
+            }
+        }
+        (dirs, folds)
+    }
+
+    /// The listener ring's open edges in `tri`: pairs of listener-layer
+    /// loudspeakers next to each other in azimuth, less than 180° apart,
+    /// that no face joins. Each comes with where a virtual loudspeaker
+    /// closes it: halfway in azimuth, at their mean elevation.
+    fn open_ring_edges(&self, tri: &Triangulation) -> Vec<([usize; 2], [f32; 2])> {
+        let mut ring: Vec<usize> = (0..tri.dirs.len()).filter(|&i| self.member(i)).collect();
+        ring.sort_by(|&a, &b| tri.dirs[a][0].total_cmp(&tri.dirs[b][0]));
+        let mut open = Vec::new();
+        for (k, &a) in ring.iter().enumerate() {
+            let b = ring[(k + 1) % ring.len()];
+            if a == b {
+                continue;
+            }
+            let ([az_a, el_a], [az_b, el_b]) = (tri.dirs[a], tri.dirs[b]);
+            let gap = (az_b - az_a).rem_euclid(360.0);
+            if !(RING_MIN_GAP_DEG..180.0).contains(&gap) {
+                continue;
+            }
+            let joined = tri
+                .ls_groups
+                .iter()
+                .any(|face| face.contains(&a) && face.contains(&b));
+            if !joined {
+                let az = az_a + gap / 2.0;
+                let az = if az > 180.0 { az - 360.0 } else { az };
+                open.push(([a, b], [az, (el_a + el_b) / 2.0]));
+            }
+        }
+        open
+    }
+}
+
 // ── Coplanar hull faces ──────────────────────────────────────────────────────
 
 /// Largest distance, on the unit sphere, of a face's vertices from a
@@ -416,9 +614,11 @@ const COPLANAR_FACE_EPS: f64 = 1e-3;
 const FAN_MIN_DET: f64 = 1e-9;
 
 /// A triangulation ready for VBAP: the effective directions — the real
-/// loudspeakers first, then the virtual poles that close the hull
-/// ([`prepare_effective_speaker_dirs`]), then one virtual centre per coplanar
-/// hull face — with their unit vectors and the faces.
+/// loudspeakers first (moved as the [`ListenerLayer`] says), then the
+/// listener layer's virtual loudspeakers (shadows, ring closers), then the
+/// virtual poles that close the hull ([`prepare_effective_speaker_dirs`]),
+/// then one virtual centre per coplanar hull face — with their unit vectors
+/// and the faces.
 ///
 /// A convex hull returns triangles, so a planar face with four or more
 /// vertices — the rear quad of a 7.1.4 (the backs at 0°, the top backs over
@@ -446,6 +646,10 @@ pub struct Triangulation {
     pub is_dummy: Vec<bool>,
     /// Per effective direction: the virtual centre of a coplanar face.
     pub is_centre: Vec<bool>,
+    /// Per effective direction: for a listener-layer virtual loudspeaker
+    /// ([`ListenerLayerMode::Shadow`]: a shadow, a ring closer), the real
+    /// loudspeakers it folds onto at equal power; empty for the others.
+    pub listener_folds: Vec<Vec<usize>>,
     /// Unit vectors of `dirs`.
     pub u_spkr: Vec<[f32; 3]>,
     /// Faces, wound outward.
@@ -453,45 +657,134 @@ pub struct Triangulation {
 }
 
 impl Triangulation {
-    /// The virtual loudspeakers whose gain is downmixed at `1/√n` over the
-    /// real ones they share a face with: every centre, and in
-    /// [`OutOfHullMode::VirtualPoles`] the poles too (the other modes fold a
-    /// pole's gain into its matched triangle instead, see [`vbap3d`]).
-    pub fn downmix_rings(&self, mode: OutOfHullMode) -> Vec<DummyRing> {
-        let is_virtual: Vec<bool> = self
-            .is_dummy
-            .iter()
-            .zip(&self.is_centre)
-            .map(|(pole, centre)| *pole || *centre)
-            .collect();
-        let poles_too = matches!(mode, OutOfHullMode::VirtualPoles);
-        compute_dummy_rings(&self.ls_groups, &is_virtual)
-            .into_iter()
-            .filter(|ring| self.is_centre[ring.dummy] || poles_too)
+    /// Per effective direction, whether it is virtual: a pole, a centre, or
+    /// a listener-layer one.
+    pub fn is_virtual(&self) -> Vec<bool> {
+        (0..self.dirs.len())
+            .map(|i| self.is_dummy[i] || self.is_centre[i] || !self.listener_folds[i].is_empty())
             .collect()
+    }
+
+    /// The virtual loudspeakers whose gain is downmixed onto real ones, with
+    /// where it goes: every listener-layer one at `1/√n` onto the
+    /// loudspeakers it folds onto (a shadow at full weight onto its own);
+    /// every centre at `1/√n` over the real loudspeakers it shares a face
+    /// with, a listener-layer neighbour counting as the loudspeakers it folds
+    /// onto; and in [`OutOfHullMode::VirtualPoles`] the poles as the centres
+    /// (the other modes fold a pole's gain into its matched triangle instead,
+    /// see [`vbap3d`]). Every ring lands on real loudspeakers directly, so
+    /// the downmix's order does not matter.
+    pub fn downmix_rings(&self, mode: OutOfHullMode) -> Vec<DummyRing> {
+        let poles_too = matches!(mode, OutOfHullMode::VirtualPoles);
+        let spread: Vec<bool> = (0..self.dirs.len())
+            .map(|i| self.is_centre[i] || (poles_too && self.is_dummy[i]))
+            .collect();
+        let lands_on: Vec<Vec<usize>> = (0..self.dirs.len())
+            .map(|s| {
+                if self.is_dummy[s] || self.is_centre[s] {
+                    Vec::new()
+                } else if self.listener_folds[s].is_empty() {
+                    vec![s]
+                } else {
+                    self.listener_folds[s].clone()
+                }
+            })
+            .collect();
+        let mut rings: Vec<DummyRing> = self
+            .listener_folds
+            .iter()
+            .enumerate()
+            .filter(|(_, folds)| !folds.is_empty())
+            .map(|(virt, folds)| DummyRing {
+                dummy: virt,
+                ring: folds.clone(),
+                weight: 1.0 / (folds.len() as f32).sqrt(),
+            })
+            .collect();
+        rings.extend(downmix_rings_over(&self.ls_groups, &spread, &lands_on));
+        rings
     }
 
     /// Number of virtual centres.
     pub fn centres(&self) -> usize {
         self.is_centre.iter().filter(|c| **c).count()
     }
+
+    /// Number of listener-layer virtual loudspeakers: shadows and ring
+    /// closers.
+    pub fn listener_virtuals(&self) -> usize {
+        self.listener_folds.iter().filter(|f| !f.is_empty()).count()
+    }
 }
 
-/// [`prepare_effective_speaker_dirs`], triangulated, with every coplanar
-/// hull face closed around a virtual centre ([`Triangulation`]).
+/// [`prepare_effective_speaker_dirs`] on the directions `listener` pans with
+/// ([`ListenerLayer`]: the listener layer moved, its shadows added before the
+/// poles are checked), triangulated, with every coplanar hull face closed
+/// around a virtual centre ([`Triangulation`]). In
+/// [`ListenerLayerMode::Shadow`], an edge of the listener ring the hull
+/// skips is then closed with a virtual loudspeaker between its two
+/// loudspeakers, and the whole is triangulated again — once: build time
+/// only.
 pub fn prepare_triangulation(
     ls_dirs_deg: &[[f32; 2]],
     omit_large_triangles: bool,
     enable_dummies: bool,
     mode: OutOfHullMode,
+    listener: &ListenerLayer,
+) -> Option<Triangulation> {
+    let (mut pan_dirs, mut folds) = listener.panning_dirs(ls_dirs_deg);
+    let tri = triangulate(
+        &pan_dirs,
+        &folds,
+        omit_large_triangles,
+        enable_dummies,
+        mode,
+    )?;
+    if listener.mode != ListenerLayerMode::Shadow {
+        return Some(tri);
+    }
+    let mut closed_any = false;
+    for ([a, b], at) in listener.open_ring_edges(&tri) {
+        if clear_of(&pan_dirs, at) {
+            pan_dirs.push(at);
+            folds.push(vec![a, b]);
+            closed_any = true;
+        }
+    }
+    if !closed_any {
+        return Some(tri);
+    }
+    // A closed ring that cannot be triangulated keeps the open one.
+    triangulate(
+        &pan_dirs,
+        &folds,
+        omit_large_triangles,
+        enable_dummies,
+        mode,
+    )
+    .or(Some(tri))
+}
+
+/// [`prepare_triangulation`]'s one pass: `dirs` (the real loudspeakers, then
+/// the listener layer's virtual ones, `folds` saying which), closed with the
+/// virtual poles and the coplanar faces' centres.
+fn triangulate(
+    dirs: &[[f32; 2]],
+    folds: &[Vec<usize>],
+    omit_large_triangles: bool,
+    enable_dummies: bool,
+    mode: OutOfHullMode,
 ) -> Option<Triangulation> {
     let (dirs, is_dummy) =
-        prepare_effective_speaker_dirs(ls_dirs_deg, omit_large_triangles, enable_dummies, mode)?;
+        prepare_effective_speaker_dirs(dirs, omit_large_triangles, enable_dummies, mode)?;
+    let mut listener_folds = folds.to_vec();
+    listener_folds.resize(dirs.len(), Vec::new());
     let (u_spkr, ls_groups) = find_ls_triplets(&dirs, omit_large_triangles)?;
     let mut tri = Triangulation {
         is_centre: vec![false; dirs.len()],
         dirs,
         is_dummy,
+        listener_folds,
         u_spkr,
         ls_groups,
     };
@@ -580,6 +873,7 @@ fn close_coplanar_faces(tri: &mut Triangulation) {
         tri.u_spkr.push(centre);
         tri.is_dummy.push(false);
         tri.is_centre.push(true);
+        tri.listener_folds.push(Vec::new());
         fans.extend(boundary.iter().map(|&(a, b)| [a, b, c]));
         for &f in group {
             retired[f] = true;
@@ -1329,7 +1623,13 @@ pub fn generate_vbap_gain_table_3d(
     }
 
     let n_real = ls_dirs_deg.len();
-    let tri = prepare_triangulation(ls_dirs_deg, omit_large_triangles, enable_dummies, mode)?;
+    let tri = prepare_triangulation(
+        ls_dirs_deg,
+        omit_large_triangles,
+        enable_dummies,
+        mode,
+        &ListenerLayer::default(),
+    )?;
     let layout_inv_mtx = invert_ls_mtx_3d(&tri.u_spkr, &tri.ls_groups);
     let dummy_rings = tri.downmix_rings(mode);
 
