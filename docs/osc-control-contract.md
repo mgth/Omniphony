@@ -445,7 +445,7 @@ dedicated address, under `/omniphony`):
 | `auto_gain` | bool | `false` | — | — | `/control/auto_gain` |
 | `auto_gain_ceiling_db` | float [-12, 0], step 0.1 | `-1` | — | — | `/control/auto_gain_ceiling` |
 | `use_loudness` | bool | `false` | — | — | `/control/loudness` |
-| `ramp_mode` | `off` \| `frame` \| `interp` \| `sample` | `"frame"` | — | — | `/control/ramp_mode` |
+| `ramp_mode` | `off` \| `frame` \| `interp` \| `sample` | `"sample"` | — | — | `/control/ramp_mode` |
 | `sample_ramp_stride` | int [1, 32] | `8` | — | — | — |
 | `drc_mode` | string | `"Off"` | — | — | `/control/input/drc_mode` |
 | `drc_weight` | float [0, 1], step 0.01 | `1` | — | — | `/control/input/drc_weight` |

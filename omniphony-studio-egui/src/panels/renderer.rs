@@ -1330,14 +1330,14 @@ impl StudioSpike {
                     .audio
                     .ramp_mode
                     .clone()
-                    .unwrap_or_else(|| "frame".into()),
+                    .unwrap_or_else(|| "sample".into()),
                 live.option_f64("sample_ramp_stride").unwrap_or(8.0),
             )
         };
         let current = if RAMP_MODES.iter().any(|(id, _)| *id == current) {
             current
         } else {
-            "frame".to_owned()
+            "sample".to_owned()
         };
         let mut chosen = current.clone();
         let mut stride = stride as f32;
@@ -1350,7 +1350,7 @@ impl StudioSpike {
                             .iter()
                             .find(|(id, _)| *id == current)
                             .map(|(_, key)| *key)
-                            .unwrap_or("audio.rampModeFrame")))
+                            .unwrap_or("audio.rampModeSample")))
                         .width(w)
                         .truncate()
                         .show_ui(ui, |ui| {

@@ -228,9 +228,10 @@ pub fn drift_events(n_objects: usize, seed_round: u64) -> Vec<SpatialChannelEven
 /// returns it plus a reusable PCM buffer. The first `render_frame` consumes the
 /// registration events so subsequent steady frames find populated channel state.
 ///
-/// `ramp_mode` is forced explicitly (the constructor seeds `Sample`): the live
-/// mpv default is now `Frame`, so the primary sweeps use `Frame` and a dedicated
-/// group contrasts it against `Sample`.
+/// `ramp_mode` is forced explicitly (the constructor seeds the declared default,
+/// `Sample`): the primary sweeps pin `Frame`, the cheapest smoothing path their
+/// baselines were measured on, and a dedicated group contrasts it against
+/// `Sample`.
 pub fn prepared(
     preset: &str,
     n_objects: usize,
