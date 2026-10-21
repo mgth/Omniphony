@@ -248,6 +248,9 @@ pub struct SpatialRenderer {
     /// The BRIR stage of the cascaded path, used while the HRIR source is a
     /// room response ([`crate::binaural::HrirSource::Brir`]).
     brir: crate::binaural::BrirStage,
+    /// Per-output FIR correction of the speaker feeds
+    /// ([`crate::output_correction`]), run on the speaker path only.
+    output_correction: crate::output_correction::OutputCorrectionStage,
     /// Rebuilds the topology on a BRIR set's loudspeakers (or back) for a
     /// real-time host that does not ([`layout_follower`]).
     layout_follower: layout_follower::LayoutFollower,
@@ -523,6 +526,7 @@ impl SpatialRenderer {
         self.speaker_stage.synchronous_builds = on;
         self.binaural.set_synchronous_builds(on);
         self.brir.set_synchronous_builds(on);
+        self.output_correction.set_synchronous_builds(on);
     }
 
     pub fn set_ramp_strategy(&mut self, strategy: Arc<dyn RampStrategy>) {
@@ -852,10 +856,24 @@ impl SpatialRenderer {
             false
         };
 
+        // Output correction follows the live filters on the speaker path; the
+        // headphone paths leave it (its filters belong to the room's speakers).
+        if binaural_active {
+            self.output_correction.deactivate();
+        } else {
+            let g = self.control.live.read();
+            self.output_correction.ensure(
+                &g.output_filters,
+                g.options.output_correction,
+                self.speaker_stage.num_speakers,
+            );
+        }
+
         // Latency of the path this frame takes: the speaker path and the
         // cascaded binaural path both mix through the main speaker stage
         // (crossover included); the plain binaural path bypasses the
-        // crossover entirely; the BRIR stage adds its own block. Cached for
+        // crossover entirely; the BRIR stage adds its own block, and the
+        // output correction its own on the speaker path. Cached for
         // [`Self::output_latency_samples`].
         self.last_output_latency = if binaural_active && !(cascade_active && self.cascade.is_some())
         {
@@ -870,6 +888,7 @@ impl SpatialRenderer {
                 } else {
                     0
                 }
+                + self.output_correction.latency_samples()
         };
 
         // ── 1. Snapshot the live params this frame needs (a lock-free read) ──
@@ -1467,6 +1486,10 @@ impl SpatialRenderer {
             output.fill(0.0);
             (0.0, 0)
         } else {
+            // Before each output's gain and delay: the filters shape the
+            // speaker feed, the level and time alignment come after.
+            self.output_correction
+                .process(&mut output, self.speaker_stage.num_speakers);
             self.speaker_stage
                 .finalize_output(live.speaker_params, total_gain, &mut output)
         };

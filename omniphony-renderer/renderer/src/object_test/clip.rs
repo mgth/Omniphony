@@ -110,10 +110,11 @@ fn from_bytes(path: &str, bytes: &[u8], target_rate: u32) -> Result<ObjectTestCl
     })
 }
 
-struct Wav {
-    samples: Vec<f32>,
-    channels: u16,
-    sample_rate: u32,
+/// A decoded WAV file: interleaved samples in [−1, 1].
+pub(crate) struct Wav {
+    pub(crate) samples: Vec<f32>,
+    pub(crate) channels: u16,
+    pub(crate) sample_rate: u32,
 }
 
 fn u16le(b: &[u8], at: usize) -> u16 {
@@ -127,7 +128,7 @@ fn finite_or_silence(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
 }
 
-fn parse_wav(b: &[u8]) -> Result<Wav, String> {
+pub(crate) fn parse_wav(b: &[u8]) -> Result<Wav, String> {
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
         return Err("not a RIFF/WAVE file".to_string());
     }

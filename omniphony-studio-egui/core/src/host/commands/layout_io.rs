@@ -361,6 +361,7 @@ fn replace_layout_payload(layout: &Layout) -> serde_json::Value {
                 // wire and not a 0 Hz corner.
                 "freqLow": positive(speaker.freq_low),
                 "freqHigh": positive(speaker.freq_high),
+                "correctionFilter": speaker.correction_filter,
             })
         })
         .collect();
@@ -408,6 +409,7 @@ mod tests {
             delay_ms: -5.0,
             freq_low: Some(0.0),
             freq_high: Some(120.0),
+            correction_filter: None,
         }
     }
 

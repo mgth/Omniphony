@@ -492,6 +492,7 @@ impl SpatialRenderer {
             distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),
             distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
             speakers: speaker_live,
+            output_filters: crate::output_correction::OutputFilters::from_layout(speaker_layout),
             room_ratio,
             room_ratio_rear,
             room_ratio_lower,
@@ -553,6 +554,7 @@ impl SpatialRenderer {
 
         let binaural = Self::build_binaural_stage(&control, sample_rate);
         let brir = Self::build_brir_stage(&control, sample_rate);
+        let output_correction = Self::build_output_correction_stage(&control, sample_rate);
         let layout_follower = super::layout_follower::LayoutFollower::spawn(Arc::clone(&control));
 
         Ok(Self {
@@ -587,6 +589,7 @@ impl SpatialRenderer {
             ramp_strategy_override: None,
             binaural,
             brir,
+            output_correction,
             layout_follower,
             synchronous_stage_builds: false,
             cascade: None,
@@ -630,6 +633,19 @@ impl SpatialRenderer {
         )
     }
 
+    /// The output correction stage for `sample_rate`, reporting each filter
+    /// set it prepares to the control.
+    fn build_output_correction_stage(
+        control: &Arc<RendererControl>,
+        sample_rate: u32,
+    ) -> crate::output_correction::OutputCorrectionStage {
+        let status_control = Arc::clone(control);
+        crate::output_correction::OutputCorrectionStage::with_status_sink(
+            sample_rate,
+            Arc::new(move |status| status_control.set_output_correction_status(status)),
+        )
+    }
+
     /// Re-target the renderer to another sample rate: the one the frames it is
     /// given actually run at. Everything timed in samples is rebuilt for it —
     /// crossover filters, speaker delay lines, gain slews, the output-mode
@@ -653,6 +669,7 @@ impl SpatialRenderer {
         );
         self.binaural = Self::build_binaural_stage(&self.control, sample_rate);
         self.brir = Self::build_brir_stage(&self.control, sample_rate);
+        self.output_correction = Self::build_output_correction_stage(&self.control, sample_rate);
         self.set_synchronous_stage_builds(self.synchronous_stage_builds);
         // Re-derived on the next cascaded frame against the new stages.
         self.cascade = None;

@@ -64,7 +64,11 @@ Serialized JSON layout snapshot with speaker geometry and static metadata.
 
 #### `/omniphony/state/speakers`
 
-Serialized JSON speaker runtime/config snapshot with per-speaker `gain`, `delayMs`, and `muted`.
+Serialized JSON speaker runtime/config snapshot with per-speaker `gain`, `delayMs`, and `muted`,
+and `correction` for a speaker with a room correction filter: `{"file", "state"}`, where `state`
+is `pending` until the filter is prepared, `loaded` (with `taps` at the engine rate and the file's
+`sourceRate`) or `error` (with `error`: the speaker then plays unfiltered). See
+[`docs/output-correction.md`](../docs/output-correction.md).
 
 ### Spatial Metadata
 
@@ -230,7 +234,8 @@ patterns are worth knowing:
   `/omniphony/control/config/{audio,input,layout} s <json>` followed by
   `/omniphony/control/config/{audio,input,layout}/apply`, and
   `/omniphony/control/config/speakers s <json>` for runtime speaker edits
-  (`muted`, `delayMs`). Speaker topology and metadata edits go through
+  (`muted`, `delayMs`, `correctionFilter`: a filter file path, `null` to remove it).
+  Speaker topology and metadata edits go through
   `config/layout`.
 
 ### Live Input Control for Studio

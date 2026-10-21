@@ -25,6 +25,10 @@ pub enum Purpose {
     Brir,
     /// A decoder bridge library, appended to the bridge list.
     Bridge,
+    /// A room correction filter (mono WAV) for the speaker at this index.
+    CorrectionFilter {
+        speaker: usize,
+    },
 }
 pub struct PendingPicker {
     purpose: Purpose,
@@ -127,6 +131,13 @@ impl StudioSpike {
                             &self.host,
                             crate::host::commands::bridges::Action::Add(path),
                         ),
+                        Purpose::CorrectionFilter { speaker } => {
+                            crate::host::commands::speakers::control_speaker_correction_filter(
+                                &self.host,
+                                speaker as i32,
+                                Some(path),
+                            )
+                        }
                         _ => {}
                     });
                 if accepted.is_none() {

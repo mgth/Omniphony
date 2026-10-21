@@ -69,8 +69,12 @@ fn wav_frame_count(wav: &[u8]) -> u64 {
 /// the 7.1.4 layout, in a fresh work directory named `name`; returns the raw
 /// f32 output. Panics when the run fails or does not end on its own.
 fn render_demo(name: &str, config: Option<&str>) -> Vec<u8> {
+    render_demo_on(name, config, &manifest_dir().join("../layouts/7.1.4.yaml"))
+}
+
+/// [`render_demo`] through the layout file `layout`.
+fn render_demo_on(name: &str, config: Option<&str>, layout: &Path) -> Vec<u8> {
     let input = manifest_dir().join("assets/demo/spatial-demo.wav");
-    let layout = manifest_dir().join("../layouts/7.1.4.yaml");
     let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     let _ = std::fs::remove_dir_all(&work);
     // A config directory of its own keeps the run off any per-user config.
@@ -88,7 +92,7 @@ fn render_demo(name: &str, config: Option<&str>) -> Vec<u8> {
         .arg("--bridge-path")
         .arg(reference_bridge_path())
         .args(["--enable-vbap", "--speaker-layout"])
-        .arg(&layout)
+        .arg(layout)
         .args(["--output-backend", "file", "--output-file"])
         .arg(&output)
         .args(["--output-file-format", "raw-f32"])
@@ -169,4 +173,80 @@ fn binaural_file_render_is_deterministic_from_the_first_frame() {
         first_difference < 8 * 480,
         "the render opens on the default set (first difference at byte {first_difference})"
     );
+}
+
+/// A correction filter named in the layout file reaches the render: the
+/// speaker it belongs to comes out through it (half the level, two samples
+/// later), and every output, filtered or not, one block of the correction
+/// stage (127 samples) later than without it.
+#[test]
+fn a_correction_filter_in_the_layout_filters_its_speaker() {
+    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("correction_layout");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let filter = work.join("fl.wav");
+    let taps = [0.0f32, 0.0, 0.5];
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + 12).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&3u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&48_000u32.to_le_bytes());
+    wav.extend_from_slice(&(48_000u32 * 4).to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&32u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&12u32.to_le_bytes());
+    for t in taps {
+        wav.extend_from_slice(&t.to_le_bytes());
+    }
+    std::fs::write(&filter, wav).unwrap();
+    // The first speaker of the layout (FL) takes the filter.
+    let original = manifest_dir().join("../layouts/7.1.4.yaml");
+    // Line endings as checked out (CRLF on Windows) normalised first, so the
+    // edit below finds its line on every platform.
+    let text = std::fs::read_to_string(&original)
+        .unwrap()
+        .replace("\r\n", "\n");
+    let filtered = text.replacen(
+        "    delay_ms: 0\n",
+        &format!(
+            "    delay_ms: 0\n    correction_filter: {:?}\n",
+            filter.to_string_lossy()
+        ),
+        1,
+    );
+    assert_ne!(filtered, text);
+    let layout = work.join("layout.yaml");
+    std::fs::write(&layout, filtered).unwrap();
+
+    let samples = |bytes: Vec<u8>| -> Vec<f32> {
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
+    };
+    let dry = samples(render_demo_on("correction_dry", None, &original));
+    let wet = samples(render_demo_on("correction_wet", None, &layout));
+    assert_eq!(dry.len(), wet.len());
+    let channels = LAYOUT_CHANNELS as usize;
+    let frames = dry.len() / channels;
+    let at = |s: &[f32], n: usize, c: usize| s[n * channels + c];
+    let latency = 127;
+    let fl_energy: f32 = (0..frames).map(|n| at(&dry, n, 0).powi(2)).sum();
+    assert!(fl_energy > 1e-3, "the demo reaches FL");
+    for n in latency + 2..frames {
+        let want = 0.5 * at(&dry, n - latency - 2, 0);
+        assert!((at(&wet, n, 0) - want).abs() < 1e-5, "FL at {n}");
+        for c in 1..channels {
+            assert!(
+                (at(&wet, n, c) - at(&dry, n - latency, c)).abs() < 1e-6,
+                "channel {c} at {n}"
+            );
+        }
+    }
 }

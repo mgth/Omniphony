@@ -283,7 +283,7 @@ payload shape.
 | `/control/gain` | f `≥0` (linear) | Master gain without a sequence number (scripts). Same field as the realtime address. Registry option `master_gain` (the file stores dB). |
 | `/control/object/{id}/mute` | int bool | Per-object mute. Transient: never saved. |
 | `/control/source_bounds` | enabled int bool, x_min f, x_max f, y_min f, y_max f, z_min f, z_max f `[-1,1]` | The box a source must sit in to be heard (`x` left → right, `y` back → front, `z` floor → ceiling). While enabled, every input channel outside it is muted: an object at its position, a bed channel at its speaker's, through the same gain slew as a mute. A side at the end of the cube bounds nothing. A min above its max is swapped. Transient, like a mute: never saved, off at start. Echoed on `/state/source_bounds`. |
-| `/control/config/speakers` | json | Speaker edits: delay (saved) and mute (transient, never saved). |
+| `/control/config/speakers` | json | Speaker edits: delay and room correction filter (`correctionFilter`, a file path or `null`; both saved) and mute (transient, never saved). |
 | `/control/loudness` | int bool | Dialogue-norm / loudness correction. Registry option alias (`use_loudness`). |
 | `/control/auto_gain` | int bool | Auto gain-reduction on clipping. Registry option alias. |
 | `/control/auto_gain_ceiling` | f `[-12,0]` dB | Auto-gain target ceiling. Registry option alias (`auto_gain_ceiling_db`). |
@@ -449,6 +449,7 @@ dedicated address, under `/omniphony`):
 | `sample_ramp_stride` | int [1, 32] | `8` | — | — | — |
 | `drc_mode` | string | `"Off"` | — | — | `/control/input/drc_mode` |
 | `drc_weight` | float [0, 1], step 0.01 | `1` | — | — | `/control/input/drc_weight` |
+| `output_correction` | bool | `true` | — | — | — |
 | `dialogue_gain_db` | float [-12, 12], step 0.5 | `0` | — | — | — |
 | `hrir_update_lattice` | `exact` \| `fine` \| `balanced` \| `coarse` | `"exact"` | `hrir_source` (live, reload) | — | `/control/binaural/hrir_update_lattice` |
 | `room_ratio` | 3 floats [0.01, 100], step 0.01 | `[1, 2, 1]` | `room` (live, topology) | — | `/control/room_ratio` |

@@ -686,6 +686,19 @@ declared_options! {
         alias: LegacyAddr::Exact(osc_contract::CONTROL_INPUT_DRC_WEIGHT),
     }
 
+    /// Room correction: run each output's correction filter
+    /// (`Speaker::correction_filter`). Off keeps the outputs going through the
+    /// stage unfiltered, so the latency does not move under an A/B
+    /// comparison. No REPLAN: the stage compares it every frame.
+    output_correction: Bool = true => {
+        kind: OptionKind::Bool,
+        flags: OptionFlags::NONE,
+        group: None,
+        i18n: "outputCorrection.enabled",
+        help: Some("help.outputCorrection.enabled"),
+        alias: LegacyAddr::None,
+    }
+
     /// Gain in dB on the channels the bridge tags as dialogue
     /// (`FormatBridge::channel_tags`); 0 leaves them as the stream mixed them.
     /// Applied with the PCM conversion, so before the upmix stages.

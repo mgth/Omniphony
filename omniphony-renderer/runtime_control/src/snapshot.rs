@@ -613,7 +613,11 @@ mod capability_tests {
 pub fn build_speakers_state_json(
     live: &LiveParams,
     layout: &renderer::speaker_layout::SpeakerLayout,
+    correction: &renderer::output_correction::OutputCorrectionStatus,
 ) -> String {
+    // The status describes the filters it was prepared for; until the set
+    // asked for lands, the speakers that name a filter read as pending.
+    let current = correction.generation == live.output_filters.generation;
     let speakers = layout
         .speakers
         .iter()
@@ -630,11 +634,37 @@ pub fn build_speakers_state_json(
                     .map(|state| state.delay_ms)
                     .unwrap_or(speaker.delay_ms)
                     .max(0.0),
-                "muted": live_state.map(|state| state.muted).unwrap_or(false)
+                "muted": live_state.map(|state| state.muted).unwrap_or(false),
+                "correction": speaker
+                    .correction_filter
+                    .as_ref()
+                    .map(|file| correction_json(file, current.then(|| {
+                        correction.outputs.get(idx).and_then(Option::as_ref)
+                    }).flatten())),
             })
         })
         .collect::<Vec<_>>();
     json!({ "speakers": speakers }).to_string()
+}
+
+/// One speaker's correction filter in `/state/speakers`: the file, and how
+/// it loaded (`pending` until the stage has prepared it).
+fn correction_json(
+    file: &str,
+    status: Option<&renderer::output_correction::FilterStatus>,
+) -> serde_json::Value {
+    match status {
+        None => json!({ "file": file, "state": "pending" }),
+        Some(status) => match &status.error {
+            Some(error) => json!({ "file": file, "state": "error", "error": error }),
+            None => json!({
+                "file": file,
+                "state": "loaded",
+                "taps": status.taps,
+                "sourceRate": status.source_rate,
+            }),
+        },
+    }
 }
 
 /// Build the core OSC messages for a live-state snapshot.
@@ -693,7 +723,8 @@ pub fn build_live_state_bundle_with_host(
     let active_topology = control.active_topology();
     let editable_layout = control.editable_layout();
     let layout_json = serde_json::to_string(&editable_layout).unwrap_or_else(|_| "{}".to_string());
-    let speakers_state_json = build_speakers_state_json(&live, &editable_layout);
+    let speakers_state_json =
+        build_speakers_state_json(&live, &editable_layout, &control.output_correction_status());
     let loudness_gain: f32 = match (live.options.use_loudness, live.dialogue_level) {
         (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
         _ => 1.0,

@@ -86,6 +86,7 @@ impl StudioSpike {
             delay_ms: 0.0,
             freq_low: None,
             freq_high: None,
+            correction_filter: None,
         });
         speakers::apply_layout_document(
             &self.host,

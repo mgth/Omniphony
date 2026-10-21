@@ -349,6 +349,16 @@ impl ConvolutionPlan {
 
     /// Inverse-transform the accumulated spectrum into `scratch.ifft_out`.
     fn inverse(&self, scratch: &mut OutputScratch) {
+        // The DC and Nyquist bins of a real signal's spectrum are real, and
+        // the inverse transform refuses them otherwise. They are, up to a
+        // non-finite sample upstream (NaN times zero is NaN): such a block
+        // must come out as garbage, never as a panic on the audio thread.
+        if let Some(first) = scratch.spec_acc.first_mut() {
+            first.im = 0.0;
+        }
+        if let Some(last) = scratch.spec_acc.last_mut() {
+            last.im = 0.0;
+        }
         self.ifft
             .process_with_scratch(
                 &mut scratch.spec_acc,
@@ -608,6 +618,23 @@ mod tests {
 
     /// A unit impulse through a unit kernel comes back at exactly
     /// `latency_samples()`, pinning the latency accounting.
+    #[test]
+    fn a_non_finite_input_does_not_panic() {
+        let plan = ConvolutionPlan::new(16);
+        let kernel = plan.partition(&[1.0, 0.5, 0.25]);
+        let mut input = plan.make_input(kernel.partitions());
+        let mut scratch = plan.make_scratch();
+        let mut out = vec![0.0f32; 16];
+        for block in 0..3 {
+            for i in 0..16 {
+                let x = if block == 1 && i == 3 { f32::NAN } else { 0.5 };
+                input.push(x);
+            }
+            plan.analyze(&mut input);
+            plan.synthesize(&input, &kernel, &mut scratch, &mut out);
+        }
+    }
+
     #[test]
     fn impulse_lands_at_latency() {
         let plan = ConvolutionPlan::new(32);

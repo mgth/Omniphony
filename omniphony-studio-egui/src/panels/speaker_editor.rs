@@ -375,7 +375,99 @@ impl StudioSpike {
                     freq_high,
                 );
             });
+
+            self.correction_group(ui, index, speaker);
         });
+    }
+
+    /// Room correction: the filter file this output is convolved with and
+    /// how the renderer loaded it, with the switch that turns every filter
+    /// off at once (an A/B comparison at the same latency) in the bar. Last
+    /// in the tab: its status line is the one thing here whose height moves.
+    fn correction_group(&mut self, ui: &mut Ui, index: usize, speaker: &Speaker) {
+        use crate::model::app_state::SpeakerCorrection;
+        let (state, mut enabled) = {
+            let live = self.host.read();
+            (
+                live.app
+                    .speaker_corrections
+                    .get(&index.to_string())
+                    .cloned(),
+                live.option_bool("output_correction").unwrap_or(true),
+            )
+        };
+        let file = speaker.correction_filter.as_deref();
+        // The file's name only: a full path would push the buttons out of a
+        // narrow panel, and the name is what tells two filters apart.
+        let name = file.map(|path| {
+            std::path::Path::new(path)
+                .file_name()
+                .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
+        });
+        let shown_enabled = enabled;
+        let mut toggled = false;
+        let mut action = None;
+        Group::new(t("outputCorrection.enabled"))
+            .help("help.outputCorrection.enabled")
+            .actions(|ui| {
+                toggled =
+                    widgets::switch(ui, &mut enabled, t("outputCorrection.enabled")).changed();
+            })
+            .show(ui, |ui| {
+                action = widgets::label_buttons_help(
+                    ui,
+                    name.as_deref().unwrap_or(t("speaker.correction.none")),
+                    "help.outputCorrection.enabled",
+                    &[
+                        (t("speaker.correction.choose"), true),
+                        (t("speaker.correction.remove"), file.is_some()),
+                    ],
+                );
+                if file.is_none() {
+                    return;
+                }
+                match state {
+                    Some(SpeakerCorrection::Loaded { taps, source_rate }) => widgets::note(
+                        ui,
+                        &t("speaker.correction.loaded")
+                            .replace("{taps}", &taps.to_string())
+                            .replace("{rate}", &source_rate.to_string()),
+                    ),
+                    Some(SpeakerCorrection::Failed { error }) => {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    t("speaker.correction.error").replace("{error}", &error),
+                                )
+                                .color(theme::WARN),
+                            )
+                            .wrap(),
+                        );
+                    }
+                    Some(SpeakerCorrection::Pending) | None => {
+                        widgets::note(ui, t("speaker.correction.pending"))
+                    }
+                }
+                if !shown_enabled {
+                    widgets::note(ui, t("speaker.correction.off"));
+                }
+            });
+        if toggled {
+            self.set_option("output_correction", serde_json::json!(enabled));
+        }
+        match action {
+            Some(0) => self.pick_files(
+                ui.ctx(),
+                crate::ui::file_dialogs::Purpose::CorrectionFilter { speaker: index },
+                &["wav".to_owned()],
+            ),
+            Some(1) => crate::host::commands::speakers::control_speaker_correction_filter(
+                &self.host,
+                index as i32,
+                None,
+            ),
+            _ => {}
+        }
     }
 
     /// The coordinate table with the "3D Edit" toggle at its right, as the

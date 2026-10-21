@@ -4375,3 +4375,83 @@ fn source_bounds_clamp_order_and_bound_nothing_at_the_cube_ends() {
         "the sides themselves are inside"
     );
 }
+
+/// A correction filter on one output convolves that speaker's feed after the
+/// mix, and every output moves by the stage's latency, which the renderer
+/// reports to the host: a bed impulse on the LFE speaker comes out through
+/// the filter (half the level, two samples later) one block late.
+#[test]
+fn output_correction_filters_its_speaker_and_reports_its_latency() {
+    const LFE_SPK: usize = 3;
+    const IMPULSE_AT: usize = 2_000;
+    let dir =
+        std::env::temp_dir().join(format!("orender-correction-render-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("lfe.wav");
+    std::fs::write(
+        &path,
+        crate::output_correction::test_wav(48_000, &[0.0, 0.0, 0.5]),
+    )
+    .unwrap();
+    let render = |filtered: bool| -> (Vec<f32>, usize, usize) {
+        let mut r = crossover_renderer();
+        r.set_synchronous_stage_builds(true);
+        r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
+        if filtered {
+            let mut sources = vec![None; LFE_SPK + 1];
+            sources[LFE_SPK] = Some(crate::output_correction::FilterSource::File(
+                path.to_string_lossy().into(),
+            ));
+            r.control.live.write().output_filters =
+                crate::output_correction::OutputFilters::new(sources);
+        }
+        let events = [SpatialChannelEvent {
+            channel_idx: 0,
+            is_bed: true,
+            gain_db: Some(0.0),
+            ramp_length: Some(0),
+            size: None,
+            position: None,
+            sample_pos: Some(0),
+        }];
+        let frame_len = 1_024;
+        let mut pcm = vec![0.0f32; 8 * frame_len];
+        pcm[IMPULSE_AT] = 1.0;
+        let mut samples = Vec::new();
+        let mut n = 0;
+        for f in 0..8 {
+            let ev: &[SpatialChannelEvent] = if f == 0 { &events } else { &[] };
+            let out = r
+                .render_frame(
+                    &pcm[f * frame_len..(f + 1) * frame_len],
+                    1,
+                    ev,
+                    Vec::new(),
+                    false,
+                )
+                .unwrap();
+            n = out.n_channels;
+            samples.extend_from_slice(&out.samples);
+        }
+        (samples, n, r.output_latency_samples())
+    };
+    let (dry, n, dry_latency) = render(false);
+    let (wet, _, wet_latency) = render(true);
+    let _ = std::fs::remove_dir_all(&dir);
+    let block_latency = crate::output_correction::CORRECTION_BLOCK - 1;
+    assert_eq!(wet_latency, dry_latency + block_latency);
+    let peak = |s: &[f32]| {
+        (0..s.len() / n)
+            .map(|i| (i, s[i * n + LFE_SPK]))
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .unwrap()
+    };
+    let (dry_at, dry_value) = peak(&dry);
+    let (wet_at, wet_value) = peak(&wet);
+    assert!(dry_value.abs() > 0.1, "the bed reaches the LFE speaker");
+    assert_eq!(wet_at, dry_at + block_latency + 2);
+    assert!(
+        (wet_value - 0.5 * dry_value).abs() < 1e-5,
+        "{wet_value} vs {dry_value}"
+    );
+}
