@@ -913,9 +913,9 @@ impl BinauralRenderer {
 
         // Late-reverb bus: per-channel sends accumulate here; the shared FDN
         // turns the mono sum into a decorrelated stereo tail after the loop.
-        // The reflection room, grown to contain the scene (see
-        // `reflections::room_containing_scene`): once per frame, for every
-        // channel's image sources below.
+        // The reflection room, grown to contain the scene, proportions kept
+        // (see `reflections::room_containing_scene`): once per frame, for
+        // every channel's image sources below.
         let room_m = reflections::room_containing_scene(reflections.room_size_m, unit_scale_m);
 
         let reverb_active = reverb.enabled;
@@ -1155,6 +1155,10 @@ impl BinauralRenderer {
                 // past the 20 m cap of the grown room) had every reflection
                 // arrive early by the excess, and the near wall's at zero
                 // delay — a coincident copy of the direct sound.
+                // Both come back listener-relative (the walls are mirrored
+                // in room coordinates, where the ears sit a seated height
+                // above the floor, see `reflections::EAR_HEIGHT_M`), so
+                // every distance below is measured from the ears.
                 let src_m = reflections::clamp_into_room(phys, room_m);
                 let d_src = (src_m[0] * src_m[0] + src_m[1] * src_m[1] + src_m[2] * src_m[2])
                     .sqrt()
@@ -1873,17 +1877,18 @@ mod tests {
     }
 
     /// The room grows to contain the scene: at unit scale 3 in the default
-    /// 4 × 5 × 2.7 m room a source at the ADM boundary (3 m to the right)
-    /// used to be pulled back to the 2 m wall, with the wall's image 0.1 m
-    /// behind it. Now the room is 6.7 m wide, the source is 0.35 m from
-    /// the wall, and the nearest image trails the direct sound by 0.7 m —
-    /// 98 samples at 48 kHz — with nothing before it.
+    /// 4 × 5 × 2.7 m room a source at the ADM boundary (3 m above the ears)
+    /// used to be pulled back to the ceiling, with the ceiling's image 0.1 m
+    /// behind it. Now the room grows until the ceiling — the wall that
+    /// binds, the ears staying 1.2 m above the floor — is 0.35 m over the
+    /// cube, and the nearest image trails the direct sound by 0.7 m — 98
+    /// samples at 48 kHz — with nothing before it.
     #[test]
     fn room_grows_to_contain_the_scene() {
         let n = 2_048;
         let mut input = vec![0.0f32; n];
         input[0] = 1.0;
-        let pos = [[1.0, 0.0, 0.0]];
+        let pos = [[0.0, 0.0, 1.0]];
         let render = |enabled: bool| -> Vec<f32> {
             let params = BinauralFrameParams {
                 unit_scale_m: 3.0,
@@ -2076,11 +2081,12 @@ mod tests {
     }
 
     /// A reflection arrives at the two ears with the interaural delay of its
-    /// own direction. Source at (0.9, 0.3, 0) in the default room: the first
-    /// image to land is the ceiling's (image at z = 2.7, 1.9 m beyond the
-    /// source: 267 samples), whose lateral sine is 0.9 / 2.86 = 0.31, i.e. an
-    /// ITD of 0.16 ms ≈ 8 samples with the left ear the far one. Before, both
-    /// ears received it at the same instant.
+    /// own direction. Source at (0.9, 0.3, 0) in the default room, ears
+    /// 1.2 m above the floor: the first image to land is the floor's (image
+    /// at z = −2.4, 1.63 m beyond the source: 228 samples), whose lateral
+    /// sine is 0.9 / 2.58 = 0.35, i.e. an ITD of 0.18 ms ≈ 9 samples with
+    /// the left ear the far one. Before, both ears received it at the same
+    /// instant.
     #[test]
     fn reflections_carry_their_own_itd() {
         let n = 1_024;
@@ -2120,11 +2126,11 @@ mod tests {
                 .expect("no reflection energy at all")
         };
         let (l, r) = (onset(0), onset(1));
-        assert!((250..290).contains(&r), "right-ear first reflection at {r}");
+        assert!((210..250).contains(&r), "right-ear first reflection at {r}");
         let itd = l as i64 - r as i64;
         assert!(
-            (5..=11).contains(&itd),
-            "left minus right onset {itd} samples, expected ≈ 8 (L={l}, R={r})"
+            (6..=12).contains(&itd),
+            "left minus right onset {itd} samples, expected ≈ 9 (L={l}, R={r})"
         );
     }
 

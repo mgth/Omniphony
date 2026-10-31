@@ -3,7 +3,8 @@
 //! Externalization aid: an anechoic HRTF render almost always sounds
 //! "inside the head" regardless of calibration — the missing cue is room
 //! acoustics. This module adds the six first-order image sources of a
-//! shoebox room (listener at the room centre, world-fixed walls): each
+//! shoebox room (listener centred left/right and front/back, ears
+//! [`EAR_HEIGHT_M`] above the floor, world-fixed walls): each
 //! reflection is a delayed, attenuated, broadband-ILD-panned copy of the
 //! channel signal. No per-reflection HRIR convolution — per reflection and
 //! ear the steady-state cost is one smoothed fractional ring-buffer read
@@ -35,6 +36,36 @@ pub const ROOM_FLOOR_MARGIN_M: f32 = 0.35;
 /// Margin (m) keeping the (clamped) source strictly inside the room so an
 /// image can never coincide with the listener.
 const WALL_MARGIN_M: f32 = 0.05;
+
+/// Height of the listener's ears above the floor (m): a seated listener.
+/// A property of the listener, not of the room, so it does not follow the
+/// room when [`room_containing_scene`] grows it: the floor bounce stays the
+/// early reflection it is in a real room, and the room grows upwards.
+///
+/// At the room's mid-height the floor and the ceiling would be equidistant
+/// from the ears, so for any source at ear height (z = 0, most of a bed)
+/// their two images would have the same path length and lie both in the
+/// median plane: the same delay, ITD, gain and filter, i.e. one coincident
+/// echo 6 dB up with no elevation cue in it. Off mid-height they separate —
+/// the floor image first, the ceiling one later — as in a real room.
+/// Left/right and front/back stay centred: an offset there buys little and
+/// breaks the left/right symmetry of the render.
+///
+/// An engine constant, not a setting: it fixes a degenerate geometry, it is
+/// not a preference.
+pub const EAR_HEIGHT_M: f32 = 1.2;
+
+/// Highest the ears may sit, as a fraction of the room height: 1.2 m in a
+/// 2.7 m room. In a room lower than that the ears come down with the
+/// ceiling instead of staying at [`EAR_HEIGHT_M`] — a 2.4 m room, common
+/// and the room a 2.4 m configuration keeps at small unit scales, would
+/// otherwise have them exactly at mid-height, the coincidence above.
+pub const MAX_EAR_HEIGHT_FRACTION: f32 = 4.0 / 9.0;
+
+/// The ears' height above the floor (m) in a room `height_m` high.
+fn ear_height_m(height_m: f32) -> f32 {
+    EAR_HEIGHT_M.min(MAX_EAR_HEIGHT_FRACTION * height_m)
+}
 
 /// Delay ramp speed in delay-samples per output sample (same policy as
 /// [`crate::delay_line::DelayLine`]): no discontinuities, a full-scale change
@@ -85,29 +116,77 @@ fn half_extents(room_m: [f32; 3]) -> [f32; 3] {
     half
 }
 
-/// `room` (full extents, metres) grown, axis by axis, to contain the scene:
-/// the ADM cube spans `±unit_scale_m` on every world axis, and the walls are
-/// world-fixed (the head rotates, the scene does not), so each half-extent
-/// is floored at `unit_scale_m + ROOM_FLOOR_MARGIN_M`, within
-/// [`MAX_ROOM_M`]. An axis the user already sized larger is left alone.
+/// The listener's ears in room coordinates (origin at the room centre) for
+/// the room of half-extents `half`: centred on x and y,
+/// [`ear_height_m`] above the floor on z.
+fn listener_in_room(half: [f32; 3]) -> [f32; 3] {
+    [0.0, 0.0, ear_height_m(2.0 * half[2]) - half[2]]
+}
+
+/// The lowest room height (m) that leaves `reach` metres between the ears
+/// and the ceiling. `H − ear_height_m(H)` grows with `H`: it is
+/// `(1 − MAX_EAR_HEIGHT_FRACTION)·H` up to the height where the ears reach
+/// [`EAR_HEIGHT_M`], `H − EAR_HEIGHT_M` above it.
+fn height_for_headroom(reach: f32) -> f32 {
+    let low = reach / (1.0 - MAX_EAR_HEIGHT_FRACTION);
+    if MAX_EAR_HEIGHT_FRACTION * low <= EAR_HEIGHT_M {
+        low
+    } else {
+        EAR_HEIGHT_M + reach
+    }
+}
+
+/// `room` (full extents, metres) grown to contain the scene: the ADM cube
+/// spans `±unit_scale_m` on every world axis around the listener, and the
+/// walls are world-fixed (the head rotates, the scene does not), so the
+/// walls must stand [`ROOM_FLOOR_MARGIN_M`] beyond the cube. Across x and y
+/// that is a full extent of `2·(unit_scale_m + margin)`; on z it is the
+/// ceiling that must stand `unit_scale_m + margin` above the ears, which sit
+/// [`EAR_HEIGHT_M`] above the floor (see [`height_for_headroom`]).
 ///
-/// Without the floor, a scene larger than the room had every boundary
+/// The floor is *not* lowered to hold the bottom half of the cube: the
+/// ears' height above it is the listener's, whatever the scale. A source
+/// lower than the floor — more than about 1.15 m under the ears, which only
+/// content below ear level reaches — is pulled up to it by
+/// [`clamp_into_room`], and its floor image then follows the direct sound
+/// closely. Content at and above ear level, nearly all of it, is untouched.
+///
+/// The room grows *uniformly* first, keeping its proportions, until it
+/// holds the scene or its longest axis reaches [`MAX_ROOM_M`]; only then
+/// are the axes still short of the scene floored, each on its own (within
+/// [`MAX_ROOM_M`]). Flooring every axis independently made a cube of most
+/// rooms — 3.0 × 3.5 × 2.4 m at a 2 m unit scale became a 4.7 m cube —
+/// and a cube puts the side-wall, floor and ceiling echoes of a centred
+/// source on the same delay, the "tin can" sound. The configured dimensions
+/// are still a *minimum*: nothing shrinks.
+///
+/// Without the growth, a scene larger than the room had every boundary
 /// object pulled back to the wall by [`clamp_into_room`] — valid geometry,
 /// but the reflections of the wall rather than of the object, and from the
-/// nearest wall a near-coincident copy of the direct sound. The configured
-/// dimensions are therefore a *minimum*: a room smaller than the scene it
-/// holds has no physical reading anyway.
+/// nearest wall a near-coincident copy of the direct sound. A room smaller
+/// than the scene it holds has no physical reading anyway.
 pub fn room_containing_scene(room_m: [f32; 3], unit_scale_m: f32) -> [f32; 3] {
-    let floor = 2.0 * (unit_scale_m.max(0.0) + ROOM_FLOOR_MARGIN_M);
+    let reach = unit_scale_m.max(0.0) + ROOM_FLOOR_MARGIN_M;
+    let need = [2.0 * reach, 2.0 * reach, height_for_headroom(reach)];
     let mut out = room_m;
-    for extent in &mut out {
-        *extent = extent.max(floor).min(MAX_ROOM_M);
+    let mut scale = 1.0f32;
+    let mut longest = 0.0f32;
+    for a in 0..3 {
+        out[a] = out[a].clamp(MIN_ROOM_M, MAX_ROOM_M);
+        scale = scale.max(need[a] / out[a]);
+        longest = longest.max(out[a]);
+    }
+    // Uniform growth up to the cap on the longest axis (never a shrink: the
+    // clamp above keeps `longest` within the cap).
+    let scale = scale.min(MAX_ROOM_M / longest).max(1.0);
+    for a in 0..3 {
+        out[a] = (out[a] * scale).max(need[a]).min(MAX_ROOM_M);
     }
     out
 }
 
-/// `src` (listener-relative metres, listener at the room centre) pulled just
-/// inside the walls of `room`, by `WALL_MARGIN_M`. The image-source
+/// `src` (listener-relative metres) pulled just inside the walls of `room`,
+/// by `WALL_MARGIN_M`, and returned listener-relative. The image-source
 /// geometry is only meaningful for a source inside the room; this is the
 /// source [`first_order_images`] actually mirrors, and therefore the one the
 /// direct-path reference (distance, hence the relative delays) must use too
@@ -115,28 +194,39 @@ pub fn room_containing_scene(room_m: [f32; 3], unit_scale_m: f32) -> [f32; 3] {
 /// arrive *before* it.
 pub fn clamp_into_room(src_m: [f32; 3], room_m: [f32; 3]) -> [f32; 3] {
     let half = half_extents(room_m);
+    let ear = listener_in_room(half);
     let mut s = src_m;
     for a in 0..3 {
-        s[a] = s[a].clamp(-(half[a] - WALL_MARGIN_M), half[a] - WALL_MARGIN_M);
+        // Clamped in room coordinates, where the walls are symmetric.
+        let lim = half[a] - WALL_MARGIN_M;
+        s[a] = (s[a] + ear[a]).clamp(-lim, lim) - ear[a];
     }
     s
 }
 
-/// Mirror `src` (listener-relative metres, listener at the room centre)
-/// across each of the six walls of a `room` (full extents, metres).
+/// Mirror `src` (listener-relative metres) across each of the six walls of
+/// a `room` (full extents, metres); the images come back listener-relative,
+/// in the order +x, −x, +y, −y, +z (ceiling), −z (floor).
 ///
-/// Sources outside the room are first clamped just inside the walls (see
-/// [`clamp_into_room`]) — the geometry stays valid for any `unit_scale_m`.
+/// The walls are mirrored in room coordinates, around the room centre, not
+/// the listener: with the ears below mid-height (see [`EAR_HEIGHT_M`]) the
+/// floor image of a source is nearer than its ceiling image. Sources outside the room are first clamped just inside
+/// the walls (see [`clamp_into_room`]) — the geometry stays valid for any
+/// `unit_scale_m`.
 pub fn first_order_images(src_m: [f32; 3], room_m: [f32; 3]) -> [[f32; 3]; NUM_REFLECTIONS] {
     let half = half_extents(room_m);
+    let ear = listener_in_room(half);
     let s = clamp_into_room(src_m, room_m);
     let mut out = [[0.0f32; 3]; NUM_REFLECTIONS];
     for a in 0..3 {
+        // The source in room coordinates on this axis, mirrored across the
+        // wall at ±half, then brought back relative to the ears.
+        let s_room = s[a] + ear[a];
         let mut pos = s;
-        pos[a] = 2.0 * half[a] - s[a];
+        pos[a] = 2.0 * half[a] - s_room - ear[a];
         out[a * 2] = pos;
         let mut neg = s;
-        neg[a] = -2.0 * half[a] - s[a];
+        neg[a] = -2.0 * half[a] - s_room - ear[a];
         out[a * 2 + 1] = neg;
     }
     out
@@ -354,16 +444,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn centered_source_images_sit_one_room_dimension_away() {
+    fn source_at_the_ears_images_sit_one_room_dimension_away() {
         let room = [4.0, 6.0, 3.0];
         let images = first_order_images([0.0, 0.0, 0.0], room);
-        // For a centred source the image across wall ±a sits at ±room[a].
+        // Across x and y, where the ears are centred, the image across wall
+        // ±a of a source at the ears sits at ±room[a].
         assert_eq!(images[0][0], 4.0);
         assert_eq!(images[1][0], -4.0);
         assert_eq!(images[2][1], 6.0);
         assert_eq!(images[3][1], -6.0);
-        assert_eq!(images[4][2], 3.0);
-        assert_eq!(images[5][2], -3.0);
+        // Across z the ears sit `EAR_HEIGHT_M` above the floor: the floor
+        // image is twice that below them, the ceiling one twice the rest of
+        // the height above.
+        let ear = EAR_HEIGHT_M;
+        assert!(
+            (images[4][2] - 2.0 * (3.0 - ear)).abs() < 1e-5,
+            "{:?}",
+            images[4]
+        );
+        assert!((images[5][2] + 2.0 * ear).abs() < 1e-5, "{:?}", images[5]);
+    }
+
+    /// The floor and the ceiling are no longer equidistant from the ears:
+    /// for a source at ear height their images differ in path length, hence
+    /// in delay (and level), instead of landing as one coincident echo.
+    #[test]
+    fn floor_and_ceiling_images_differ_for_a_source_at_ear_height() {
+        let dist = |p: [f32; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        let c = crate::binaural::itd::SPEED_OF_SOUND;
+        // 2.4 m included: the room where a fixed 1.2 m would be mid-height.
+        for room in [[4.0, 5.0, 2.7], [3.0, 3.5, 2.4], [8.0, 10.0, 4.0]] {
+            for src in [[0.0f32, 2.0, 0.0], [1.0, 1.0, 0.0], [-1.2, -0.5, 0.0]] {
+                let images = first_order_images(src, room);
+                let (ceiling, floor) = (dist(images[4]), dist(images[5]));
+                assert!(
+                    ceiling > floor,
+                    "{room:?} {src:?}: ceiling {ceiling} not beyond floor {floor}"
+                );
+                // At least a few samples apart at 48 kHz: two distinct echoes.
+                let apart_s = (ceiling - floor) / c;
+                assert!(
+                    apart_s * 48_000.0 > 4.0,
+                    "{room:?} {src:?}: floor and ceiling {apart_s} s apart"
+                );
+            }
+        }
     }
 
     /// Every image of a source is farther from the listener than the
@@ -407,31 +532,133 @@ mod tests {
         }
     }
 
-    /// The floor contains the ADM cube with its margin on every axis and
-    /// leaves a generous room alone.
+    /// Distance (m) from the ADM cube at `unit_scale_m` to the nearest of
+    /// the side walls and the ceiling of `room`, in room coordinates. The
+    /// floor is left out: it stays at the listener's ear height below the
+    /// ears (see [`room_containing_scene`]).
+    fn clearance_above_the_floor(room: [f32; 3], unit_scale_m: f32) -> f32 {
+        let half = half_extents(room);
+        let ear = listener_in_room(half);
+        let s = unit_scale_m;
+        (half[0] - s).min(half[1] - s).min(half[2] - (s + ear[2]))
+    }
+
+    /// The grown room holds the ADM cube, around the ears, with the margin
+    /// to every side wall and to the ceiling, and leaves a generous room
+    /// alone.
     #[test]
     fn room_floor_contains_the_scene() {
         let default = [4.0, 5.0, 2.7];
-        // Unit scale 1: the default room is already the floor on its height
-        // (2 × (1 + 0.35) = 2.7) and above it elsewhere — unchanged.
-        assert_eq!(room_containing_scene(default, 1.0), default);
-        // Unit scale 3: every axis grows to 6.7 m.
-        let grown = room_containing_scene(default, 3.0);
-        for (a, &g) in grown.iter().enumerate() {
-            assert!((g - 6.7).abs() < 1e-5, "axis {a}: {g}");
+        for s in [0.5f32, 1.0, 1.5, 2.0, 3.0] {
+            for room in [default, [3.0, 3.5, 2.4], [6.0, 4.0, 2.5]] {
+                let grown = room_containing_scene(room, s);
+                let clearance = clearance_above_the_floor(grown, s);
+                assert!(
+                    clearance >= ROOM_FLOOR_MARGIN_M - 1e-4,
+                    "{room:?} at {s}: {grown:?} leaves {clearance} m"
+                );
+                // The cube down to ear level is not pulled back to a wall.
+                for corner in [[s, s, s], [-s, s, 0.0], [s, -s, s], [-s, -s, 0.0]] {
+                    let clamped = clamp_into_room(corner, grown);
+                    for a in 0..3 {
+                        assert!(
+                            (clamped[a] - corner[a]).abs() < 1e-5,
+                            "{room:?} at {s}: corner {corner:?} clamped to {clamped:?}"
+                        );
+                    }
+                }
+                // A configured size is a minimum.
+                for a in 0..3 {
+                    assert!(grown[a] >= room[a], "{room:?} at {s}: {grown:?}");
+                }
+            }
         }
+        // The default room holds the scene at unit scale 1 as it is.
+        assert_eq!(room_containing_scene(default, 1.0), default);
         // A room the user sized larger keeps its dimensions.
         let big = [12.0, 15.0, 8.0];
         assert_eq!(room_containing_scene(big, 3.0), big);
-        // Capped at the largest room the bank models.
-        assert_eq!(room_containing_scene(default, 12.0), [MAX_ROOM_M; 3]);
-        // Every ADM-cube corner sits inside the grown room by the margin.
-        let s = 2.5;
-        let room = room_containing_scene(default, s);
-        for corner in [[s, s, s], [-s, s, -s], [s, -s, s]] {
-            let clamped = clamp_into_room(corner, room);
-            assert_eq!(clamped, corner, "corner {corner:?} was clamped");
+        // Capped at the largest room the bank models; the height only needs
+        // the scene's top half over the ears.
+        assert_eq!(
+            room_containing_scene(default, 12.0),
+            [
+                MAX_ROOM_M,
+                MAX_ROOM_M,
+                EAR_HEIGHT_M + 12.0 + ROOM_FLOOR_MARGIN_M
+            ]
+        );
+    }
+
+    /// The ears stay `EAR_HEIGHT_M` above the floor however far the room
+    /// grows: the room grows upwards, and the floor bounce of a source at
+    /// ear height keeps the path a real floor gives it. A room lower than
+    /// 2.7 m brings them down with its ceiling, never to mid-height.
+    #[test]
+    fn ears_stay_at_seated_height_above_the_floor() {
+        for s in [1.0f32, 2.0, 3.0, 4.0] {
+            let grown = room_containing_scene([4.0, 5.0, 2.7], s);
+            let half = half_extents(grown);
+            let above_floor = listener_in_room(half)[2] + half[2];
+            assert!(
+                (above_floor - EAR_HEIGHT_M).abs() < 1e-5,
+                "scale {s}: {grown:?}, ears {above_floor} m above the floor"
+            );
         }
+        for height in [1.2f32, 2.0, 2.4, 2.6] {
+            let above_floor = listener_in_room(half_extents([4.0, 5.0, height]))[2] + height / 2.0;
+            assert!(
+                above_floor < EAR_HEIGHT_M && above_floor < 0.45 * height,
+                "{height} m: ears {above_floor} m above the floor"
+            );
+        }
+        // Below ear level the floor stays where the listener's is: a source
+        // under it is pulled up to it.
+        let grown = room_containing_scene([4.0, 5.0, 2.7], 3.0);
+        let low = clamp_into_room([0.0, 0.0, -3.0], grown);
+        assert!(
+            (low[2] + EAR_HEIGHT_M - WALL_MARGIN_M).abs() < 1e-5,
+            "{low:?}"
+        );
+    }
+
+    /// The room grows uniformly: a small room is scaled, not floored axis by
+    /// axis into a cube. 3.0 × 3.5 × 2.4 m at a 2 m unit scale used to
+    /// become a 4.7 m cube, 4 × 5 × 2.7 a 4.7 × 5 × 4.7 box — side walls,
+    /// floor and ceiling all on one delay for a centred source.
+    #[test]
+    fn small_rooms_grow_in_proportion_rather_than_into_a_cube() {
+        for room in [[3.0f32, 3.5, 2.4], [4.0, 5.0, 2.7], [6.0, 4.0, 2.5]] {
+            let grown = room_containing_scene(room, 2.0);
+            assert!(grown[0] < MAX_ROOM_M && grown[1] < MAX_ROOM_M, "{grown:?}");
+            let ratio = grown[0] / room[0];
+            assert!(ratio > 1.0, "{room:?}: did not grow ({grown:?})");
+            for a in 1..3 {
+                assert!(
+                    (grown[a] / room[a] - ratio).abs() < 1e-4,
+                    "{room:?}: {grown:?} lost the proportions"
+                );
+            }
+            // No two axes equal unless they were equal to begin with.
+            for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+                assert!(
+                    (grown[a] - grown[b]).abs() > 0.1,
+                    "{room:?}: axes {a} and {b} merged in {grown:?}"
+                );
+            }
+        }
+        // Once the longest axis reaches the cap, the uniform growth stops
+        // and only the axes still short of the scene are floored: a long
+        // hall at a large scale keeps its length and gets its height.
+        let hall = [6.0, 18.0, 3.0];
+        let grown = room_containing_scene(hall, 4.0);
+        let reach = 4.0 + ROOM_FLOOR_MARGIN_M;
+        assert_eq!(grown[1], MAX_ROOM_M);
+        assert!((grown[0] - 2.0 * reach).abs() < 1e-4, "{grown:?}");
+        assert!(
+            (grown[2] - (EAR_HEIGHT_M + reach)).abs() < 1e-4,
+            "{grown:?}"
+        );
     }
 
     #[test]

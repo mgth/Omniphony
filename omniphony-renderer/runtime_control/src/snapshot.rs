@@ -1185,8 +1185,10 @@ mod reflections_tests {
         };
         let json = reflections_json(&binaural);
         assert!(near(&axes(&json["roomM"]), [4.0, 5.0, 2.7]), "{json}");
+        // Grown in proportion until the ceiling stands 3.35 m above ears
+        // 1.2 m off the floor: 4.55 m of height, × 1.685 overall.
         assert!(
-            near(&axes(&json["roomEffectiveM"]), [6.7, 6.7, 6.7]),
+            near(&axes(&json["roomEffectiveM"]), [6.740741, 8.425926, 4.55]),
             "{json}"
         );
         binaural.unit_scale_m = 1.0;
