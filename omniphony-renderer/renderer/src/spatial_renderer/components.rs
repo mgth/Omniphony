@@ -212,10 +212,12 @@ pub(super) struct ChannelState {
 
     pub(super) ramp: ChannelRampState,
 
-    /// `RampMode::Interp` only: this channel's destination band gains from the
-    /// previous block, reused as the start of the next block's interpolation.
-    /// Empty until the first block for this channel.
-    pub(super) interp_prev_gains: BandGains,
+    /// The band gains this channel's last block ended on (its last sample's),
+    /// kept in every ramp mode: `Frame` and `Interp` start the next block's
+    /// interpolation from them, so neither a block boundary nor a switch from
+    /// another mode steps the gains. Empty until the first block for this
+    /// channel.
+    pub(super) last_block_gains: BandGains,
 }
 
 impl ChannelState {
@@ -252,7 +254,7 @@ impl Default for ChannelState {
             gain_db: GAIN_DB_NEG_INF, // -inf dB (muted)
             slewed_gain: 0.0,
             ramp: ChannelRampState::default(),
-            interp_prev_gains: BandGains::new(),
+            last_block_gains: BandGains::new(),
         }
     }
 }

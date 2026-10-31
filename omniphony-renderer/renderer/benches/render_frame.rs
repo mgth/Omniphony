@@ -14,9 +14,10 @@
 //!     moves this frame (worst-case OAMD block: `update_metadata` + fresh ramps).
 //!     Confirms hypothesis #2: metadata-bearing frames cost more than steady ones.
 //!
-//!   * `render_ramp_mode/<frame|sample>` — at a fixed object count, the cost of
-//!     the ramp mode itself. `Frame` is the live mpv default after the engine
-//!     parity fix; `Sample` follows the ramped position sample by sample.
+//!   * `render_ramp_mode/<frame|sample|interp>` — at a fixed object count, the
+//!     cost of the ramp mode itself. `Frame` and `Interp` evaluate the gains
+//!     once per block; `Sample`, the default, follows the ramped position
+//!     sample by sample.
 //!
 //! Run with:  cargo bench -p renderer
 //! A single scenario:  cargo bench -p renderer -- render_steady/32
@@ -84,9 +85,9 @@ fn bench_metadata_frame(c: &mut Criterion) {
 }
 
 /// Quantify the cost of the ramp mode itself at a fixed object count. `Frame`
-/// is the live mpv default after the engine parity fix; `Sample` follows the
-/// ramped position sample by sample, with a `compute_gains` every few samples
-/// while it moves.
+/// and `Interp` evaluate the gains once per block and interpolate them across
+/// it; `Sample`, the default, follows the ramped position sample by sample,
+/// with a `compute_gains` every few samples while it moves.
 fn bench_ramp_mode(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_ramp_mode");
     const N: usize = 32;

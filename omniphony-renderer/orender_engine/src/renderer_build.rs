@@ -610,10 +610,11 @@ pub fn seed_runtime_state_from_render_config(
         render_cfg.and_then(|c| c.diag_rate),
     );
 
-    // Object-transition ramp mode: honour `render.ramp_mode` (default "frame";
-    // per-sample `compute_gains` is the most expensive path and must be an
-    // explicit choice). Both the requested-mode mutex and the live snapshot
-    // field must be set — the render loop reads the latter.
+    // Object-transition ramp mode: honour `render.ramp_mode` (default "sample";
+    // "frame" and "interp" evaluate the gains once per block and interpolate
+    // them across it, the cheaper choices for constrained hardware). Both the
+    // requested-mode mutex and the live snapshot field must be set — the
+    // render loop reads the latter.
     let ramp_mode = render_cfg
         .and_then(|cfg| cfg.options.ramp_mode)
         .unwrap_or(renderer::options::defaults::ramp_mode);

@@ -445,7 +445,7 @@ dedicated address, under `/omniphony`):
 | `auto_gain` | bool | `false` | — | — | `/control/auto_gain` |
 | `auto_gain_ceiling_db` | float [-12, 0], step 0.1 | `-1` | — | — | `/control/auto_gain_ceiling` |
 | `use_loudness` | bool | `false` | — | — | `/control/loudness` |
-| `ramp_mode` | `off` \| `frame` \| `interp` \| `sample` | `"frame"` | — | — | `/control/ramp_mode` |
+| `ramp_mode` | `off` \| `frame` \| `interp` \| `sample` | `"sample"` | — | — | `/control/ramp_mode` |
 | `sample_ramp_stride` | int [1, 32] | `8` | — | — | — |
 | `drc_mode` | string | `"Off"` | — | — | `/control/input/drc_mode` |
 | `drc_weight` | float [0, 1], step 0.01 | `1` | — | — | `/control/input/drc_weight` |
@@ -705,7 +705,7 @@ and heatmap configuration.
 | `/control/debug/speaker_gaintable/unsubscribe` | — | Release the gain-table subscription. |
 | `/control/debug/speaker_gaintable/nack` | … | Request missing chunks / version. |
 | `/control/log_level` | s | `off`\|`error`\|`warn`\|`info`\|`debug`\|`trace`. |
-| `/control/ramp_mode` | s | Object-transition ramp: `off` \| `frame` \| `interp` \| `sample`. Registry option alias. |
+| `/control/ramp_mode` | s | Object-transition ramp: `off` (jump to the target) \| `frame` (one gain evaluation per block, interpolated across the block along the stream's ramp) \| `interp` (one evaluation per block at the target, ignoring the ramp length) \| `sample` (the default: an evaluation every `sample_ramp_stride` samples along the stream's ramp). Registry option alias. |
 | `/control/option` | s key, value | Generic setter for any declared live option — see [Live options](#live-options). |
 | `/control/options` | (s key, value)… | Grouped setter: several declared live options applied at once, one rebuild and one notification — see [Live options](#live-options). |
 | `/control/options/apply` | s group | Apply a group of declared options (a `staged` group's staged values; a `live` group is acknowledged) — see [Live options](#live-options). |

@@ -641,7 +641,7 @@ declared_options! {
     }
 
     /// Ramp processing mode for object moves and gain transitions.
-    ramp_mode: Enum(RampMode) = RampMode::Frame => {
+    ramp_mode: Enum(RampMode) = RampMode::Sample => {
         kind: OptionKind::Enum(&["off", "frame", "interp", "sample"]),
         flags: OptionFlags::NONE,
         group: None,
@@ -743,6 +743,18 @@ mod tests {
         assert_eq!(render.options.sample_ramp_stride, Some(4));
         let extra: Vec<_> = render.extra.keys().filter_map(|k| k.as_str()).collect();
         assert_eq!(extra, ["not_an_option"]);
+    }
+
+    /// The default ramp is per sample, the mode that has been listened to.
+    /// `frame` was the default once; choosing it now has to be explicit, so it
+    /// is saved.
+    #[test]
+    fn the_default_ramp_is_per_sample_and_frame_is_saved() {
+        assert_eq!(defaults::ramp_mode, RampMode::Sample);
+        let mut render = RenderConfig::default();
+        store::ramp_mode(&mut render, RampMode::Frame);
+        let yaml = serde_yaml_ng::to_string(&render).unwrap();
+        assert!(yaml.contains("ramp_mode: frame"), "{yaml}");
     }
 
     /// A save writes each declared key under its own name, in its canonical
