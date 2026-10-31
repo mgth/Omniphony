@@ -378,17 +378,21 @@ How it renders:
 - **Scale**: `unit_scale_m` sets how far "1 ADM unit" is in metres. At the
   default 1.0 the far wall of the mix is one metre from your nose — try 3–4
   for a room-sized stage. The reflection room grows on its own to contain
-  the scene, with 0.35 m between the scene and every wall: it is scaled
-  *uniformly*, keeping its proportions, until the scene fits or its longest
-  side reaches 20 m, and only then are the sides still too short raised one
-  by one (the default 4 × 5 × 2.7 m becomes 11.2 × 14.0 × 7.5 m at a scale
+  the scene, with 0.35 m between the scene and every side wall and the
+  ceiling: it is scaled *uniformly*, keeping its proportions, until the
+  scene fits or its longest side reaches 20 m, and only then are the sides
+  still too short raised one by one (the default 4 × 5 × 2.7 m holds the
+  scene as it is at a scale of 1 and becomes 6.7 × 8.4 × 4.55 m at a scale
   of 3). Flooring each side on its own made a cube of most rooms, and a
   cube puts the side walls', floor's and ceiling's echoes on one delay. The
   dimensions you set are a minimum — a room smaller than the scene it holds
-  has no physical reading. The listener is centred across the room but
-  their ears sit 0.444 of the height above the floor (1.2 m in a 2.7 m
-  room), not at mid-height: otherwise the floor and the ceiling echoes of
-  any source at ear height coincide. Past the 20 m cap the image-source
+  has no physical reading. The listener is centred across the room, with
+  their ears 1.2 m above the floor whatever the scale (lower in a room
+  under 2.7 m high, never at mid-height): the room grows upwards, the floor
+  bounce stays an early reflection, and the floor and ceiling echoes of a
+  source at ear height do not coincide. The floor is not lowered for the
+  bottom half of the scene, so a source more than about 1.15 m below the
+  ears is lifted to the floor. Past the 20 m cap the image-source
   model pulls a source that sits outside the room back inside before
   mirroring it, which keeps the geometry valid but puts the reflections
   where the wall is, not where the object is.
