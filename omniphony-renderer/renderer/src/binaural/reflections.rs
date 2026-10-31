@@ -540,11 +540,7 @@ mod tests {
         let half = half_extents(room);
         let ear = listener_in_room(half);
         let s = unit_scale_m;
-        let mut clearance = f32::MAX;
-        for a in 0..2 {
-            clearance = clearance.min(half[a] - s);
-        }
-        clearance.min(half[2] - (s + ear[2]))
+        (half[0] - s).min(half[1] - s).min(half[2] - (s + ear[2]))
     }
 
     /// The grown room holds the ADM cube, around the ears, with the margin
