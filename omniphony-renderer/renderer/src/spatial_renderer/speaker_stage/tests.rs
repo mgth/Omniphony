@@ -8,8 +8,9 @@
 
 use super::*;
 use crate::crossover::SmallBands;
-use crate::ramp_strategy::{PositionRampStrategy, RampRenderParams};
+use crate::ramp_strategy::{ChannelRampState, PositionRampStrategy, RampRenderParams};
 use crate::render_backend::PreparedRenderEngine;
+use crate::spatial_renderer::schedule;
 use crate::spatial_renderer::tests::{build_table_renderer, noise_block};
 use crate::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
 
@@ -175,9 +176,24 @@ fn reference_mix_channels(
             total_units: 0,
         };
         let ramp = &mut channel.ramp;
+        let schedule = &mut channel.schedule;
+        // A move scheduled on block sample `s` starts there.
+        let start_moves_on =
+            |ramp: &mut ChannelRampState, schedule: &mut EventSchedule, s: usize| {
+                schedule::start_due_moves(
+                    ramp,
+                    schedule,
+                    frame.block_start + s as u64,
+                    frame.ramp_strategy,
+                    frame.ramp_context,
+                )
+            };
         let mut band_gains: Vec<Gains> = Vec::new();
         match frame.ramp_mode {
             RampMode::Off => {
+                if sample_length > 0 {
+                    start_moves_on(ramp, schedule, sample_length - 1);
+                }
                 ramp.remaining_ramp_units = None;
                 ramp.start_position = ramp.target_position;
                 ramp.current_position = ramp.target_position;
@@ -195,6 +211,7 @@ fn reference_mix_channels(
                 let mut last_pos = [f64::NAN; 3];
                 let mut last_size = [f32::NAN; 3];
                 for sample_idx in 0..sample_length {
+                    start_moves_on(ramp, schedule, sample_idx);
                     let progress = ramp.current_progress().unwrap_or(idle);
                     frame
                         .ramp_strategy
@@ -216,8 +233,18 @@ fn reference_mix_channels(
             }
             RampMode::Frame | RampMode::Interp => {
                 if frame.ramp_mode == RampMode::Frame {
-                    // The ramp's position on the block's last sample.
-                    for _ in 1..sample_length {
+                    // The ramp's position on the block's last sample, walked
+                    // to sample by sample as the per-sample ramp walks it.
+                    for sample_idx in 0..sample_length {
+                        start_moves_on(ramp, schedule, sample_idx);
+                        if sample_idx + 1 == sample_length {
+                            break;
+                        }
+                        let progress = ramp.current_progress().unwrap_or(idle);
+                        frame
+                            .ramp_strategy
+                            .evaluate(ramp, progress, frame.ramp_context);
+                        ramp.commit_output_position();
                         ramp.advance_ramp(1);
                     }
                     let progress = ramp.current_progress().unwrap_or(idle);
@@ -225,6 +252,9 @@ fn reference_mix_channels(
                         .ramp_strategy
                         .evaluate(ramp, progress, frame.ramp_context);
                 } else {
+                    if sample_length > 0 {
+                        start_moves_on(ramp, schedule, sample_length - 1);
+                    }
                     ramp.remaining_ramp_units = None;
                     ramp.current_position = ramp.target_position;
                     ramp.current_size = ramp.target_size;
@@ -285,8 +315,10 @@ const MODES: [RampMode; 4] = [
 /// Metadata for one block: bed gains that step, objects on slow circles with
 /// ramps shorter than, equal to and longer than the block — so ramps end
 /// mid-block and span blocks — and gains that step too, to keep the slew
-/// moving.
-fn scene_events(block: usize, block_len: usize) -> Vec<SpatialChannelEvent> {
+/// moving. `dated`: the objects' events fall on samples across the block and
+/// up to two blocks past it, as a TrueHD stream's do, instead of all on its
+/// first sample.
+fn scene_events(block: usize, block_len: usize, dated: bool) -> Vec<SpatialChannelEvent> {
     let mut events: Vec<SpatialChannelEvent> = (0..N_BEDS)
         .map(|ch| SpatialChannelEvent {
             channel_idx: ch,
@@ -313,7 +345,11 @@ fn scene_events(block: usize, block_len: usize) -> Vec<SpatialChannelEvent> {
             ramp_length: Some(ramp_length as u32),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.9 * az.sin(), 0.9 * az.cos(), (obj % 4) as f64 * 0.3]),
-            sample_pos: Some(0),
+            sample_pos: Some(if dated {
+                ((obj * 13 + block * 7) % (3 * block_len)) as u64
+            } else {
+                0
+            }),
         });
     }
     events
@@ -325,7 +361,12 @@ fn scene_events(block: usize, block_len: usize) -> Vec<SpatialChannelEvent> {
 /// objects, a muted object, and trilinear and nearest-cell lookups. The frames
 /// ask for a gain lookup per sample for moving objects, as the reference
 /// does.
-fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: usize) {
+fn assert_mix_matches_reference(
+    mut r: SpatialRenderer,
+    label: &str,
+    block_len: usize,
+    dated: bool,
+) {
     const BLOCKS_PER_MODE: usize = 9;
     let topology = r.control.active_topology();
     let num_speakers = r.speaker_stage.num_speakers;
@@ -359,6 +400,8 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
     let mut reference = ReferenceState::default();
     let mut object_params = vec![ObjectLiveParams::default(); N_CHANNELS];
     let mut silent = true;
+    // Blocks that started holding an event for a later one.
+    let mut carried = 0;
 
     for block in 0..MODES.len() * BLOCKS_PER_MODE {
         let ramp_mode = MODES[block / BLOCKS_PER_MODE];
@@ -368,18 +411,30 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
             .sync_position_interpolation(block % BLOCKS_PER_MODE < 6);
         object_params[N_BEDS + 1].muted = block % 5 == 3;
 
-        let events = scene_events(block, block_len);
+        let events = scene_events(block, block_len, dated);
+        let block_start = (block * block_len) as u64;
         for states in [&mut r.channel_states, &mut reference.channel_states] {
             SpatialRenderer::update_metadata(
                 states,
                 false,
                 48_000,
                 &events,
+                block_start,
                 &strategy,
                 &ramp_context,
             )
             .unwrap();
+            SpatialRenderer::start_scheduled_block(
+                states,
+                block_start,
+                block_start + block_len as u64,
+                &strategy,
+                &ramp_context,
+            );
         }
+        carried += usize::from(r.channel_states.iter().any(|c| {
+            !c.schedule.is_empty() && c.schedule.next_at() >= block_start + block_len as u64
+        }));
         let pcm = noise_block(N_CHANNELS, block_len, block);
         let frame = || SpeakerStageFrame {
             input_pcm: &pcm,
@@ -395,6 +450,7 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
             sample_ramp_stride: 1,
             ramp_strategy: &strategy,
             ramp_context: &ramp_context,
+            block_start,
             log_object_positions: false,
             is_first: false,
             measure_breakdown,
@@ -501,16 +557,49 @@ fn assert_mix_matches_reference(mut r: SpatialRenderer, label: &str, block_len: 
         });
     }
     assert!(!silent, "{label}: the scene mixed silence");
+    if dated {
+        assert!(
+            carried > MODES.len() * BLOCKS_PER_MODE / 2,
+            "{label}: the scene carried events past their block on {carried} blocks only"
+        );
+    } else {
+        assert_eq!(carried, 0, "{label}: undated events were scheduled");
+    }
 }
 
 #[test]
 fn mix_is_bit_identical_to_the_sample_major_mix_on_a_cartesian_table() {
-    assert_mix_matches_reference(build_table_renderer(true, true), "cartesian, LR4", 40);
+    assert_mix_matches_reference(
+        build_table_renderer(true, true),
+        "cartesian, LR4",
+        40,
+        false,
+    );
 }
 
 #[test]
 fn mix_is_bit_identical_to_the_sample_major_mix_on_a_polar_table() {
-    assert_mix_matches_reference(build_table_renderer(false, true), "polar, LR4", 57);
+    assert_mix_matches_reference(build_table_renderer(false, true), "polar, LR4", 57, false);
+}
+
+/// Events dated across the block and past it start their moves on their
+/// own samples in every ramp mode, as the sample-major reference starts them
+/// sample by sample: the split passes of the per-sample ramp and the walks of
+/// the per-block ramps mix and leave the ramps exactly as it does.
+#[test]
+fn mix_is_bit_identical_to_the_sample_major_mix_with_dated_events() {
+    assert_mix_matches_reference(
+        build_table_renderer(true, true),
+        "cartesian, LR4, dated",
+        40,
+        true,
+    );
+    assert_mix_matches_reference(
+        build_table_renderer(false, false),
+        "polar, no crossover, dated",
+        57,
+        true,
+    );
 }
 
 /// No crossover: one full band, gains from the band's own evaluator.
@@ -518,7 +607,7 @@ fn mix_is_bit_identical_to_the_sample_major_mix_on_a_polar_table() {
 fn mix_is_bit_identical_to_the_sample_major_mix_without_crossover() {
     let r = build_table_renderer(true, false);
     assert!(r.speaker_stage.crossover_filter_bank.is_none());
-    assert_mix_matches_reference(r, "no crossover", 40);
+    assert_mix_matches_reference(r, "no crossover", 40, false);
 }
 
 /// The linear-phase engine: the band split works in bursts and the beds go
@@ -538,7 +627,7 @@ fn mix_is_bit_identical_to_the_sample_major_mix_with_the_fir_crossover() {
             .as_ref()
             .is_some_and(|bank| bank.latency_samples() > 0)
     );
-    assert_mix_matches_reference(r, "cartesian, FIR", 40);
+    assert_mix_matches_reference(r, "cartesian, FIR", 40, false);
 }
 
 /// The bus on its own: sources of every shape — gains that hold, gains that
@@ -827,6 +916,8 @@ impl RampProbe {
             &bands,
             len,
             &mut self.ramp,
+            &mut EventSchedule::default(),
+            0,
             &PositionRampStrategy,
             &Self::context(),
             self.stride,
@@ -883,6 +974,86 @@ fn stride_interpolation_is_exact_for_a_linear_gain_law_across_blocks() {
     assert_eq!(lookups_per_block, [6, 5, 3, 1]);
 }
 
+/// A move scheduled inside a segment the stride is interpolating ends that
+/// segment on the sample before it: the samples it already holds keep the
+/// gains of their own positions instead of being pulled toward where the move
+/// goes. A ramp from 0 to 1 over 100 samples, cut on sample 4 by a jump to
+/// 0.5, through a gain law linear in the position (so every sample can be
+/// read off as its position): samples 0–3 are on the ramp at every stride,
+/// and the jump lands whole on sample 4, as the per-sample ramp lands any
+/// jump.
+#[test]
+fn a_move_scheduled_inside_a_segment_does_not_reach_back_into_it() {
+    const BLOCK: usize = 16;
+    let run = |stride: usize| -> Vec<f32> {
+        let context = RampProbe::context();
+        let mut ramp = ChannelRampState::default();
+        PositionRampStrategy.update_target(
+            &mut ramp,
+            crate::ramp_strategy::RampTarget {
+                position: [1.0, 0.0, 0.0],
+                size: [0.0; 3],
+                ramp_length: 100,
+            },
+            None,
+            &context,
+        );
+        let mut schedule = EventSchedule::default();
+        schedule.push(schedule::ScheduledEvent {
+            at: 4,
+            ramp_length: Some(0),
+            position: Some([0.5, 0.0, 0.0]),
+            ..Default::default()
+        });
+        let bands = vec![vec![1.0f32; BLOCK]];
+        let mut planar = vec![0.0f32; BLOCK];
+        let mut output = vec![0.0f32; BLOCK];
+        let mut band_gains = flat(&[zeroed(1)]);
+        let mut segment_end = BandGains::new();
+        let mut bus = MixBus::silent(&mut planar, &mut output, BLOCK, 1);
+        mix_sample_ramp(
+            &mut bus,
+            &bands,
+            BLOCK,
+            &mut ramp,
+            &mut schedule,
+            0,
+            &PositionRampStrategy,
+            &context,
+            stride,
+            &mut GainCarry::default(),
+            1,
+            &mut band_gains,
+            &mut segment_end,
+            |position, _size, out| *out = flat(&[vec![position[0] as f32]]),
+        );
+        bus.finish();
+        assert!(schedule.is_empty());
+        output
+    };
+    let exact = run(1);
+    for (i, &g) in exact[..4].iter().enumerate() {
+        assert!((g - i as f32 * 0.01).abs() < 1e-6, "sample {i}: {g}");
+    }
+    assert_eq!(exact[4], 0.5, "the jump lands on its sample");
+    for stride in [2, 8, crate::live_params::MAX_SAMPLE_RAMP_STRIDE] {
+        let strided = run(stride);
+        for i in 0..4 {
+            assert!(
+                (strided[i] - exact[i]).abs() < 1e-6,
+                "stride {stride}, sample {i}: {} where the ramp is at {}",
+                strided[i],
+                exact[i]
+            );
+        }
+        assert_eq!(
+            &strided[4..],
+            &exact[4..],
+            "stride {stride}: the jump must land whole on its sample"
+        );
+    }
+}
+
 /// The samples of a segment are interpolated, but its ends are not: the last
 /// sample of every segment, the last sample of a ramp and every sample after
 /// it are mixed with the gains of their own position, bit for bit. Checked
@@ -920,6 +1091,8 @@ fn stride_keeps_segment_ends_and_settled_samples_exact() {
                 &bands,
                 BLOCK,
                 &mut ramp,
+                &mut EventSchedule::default(),
+                0,
                 &PositionRampStrategy,
                 &context,
                 stride,

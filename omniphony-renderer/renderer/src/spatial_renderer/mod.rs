@@ -42,9 +42,7 @@
 //! ```
 
 use crate::live_params::{RampMode, RendererControl};
-use crate::ramp_strategy::{
-    PositionRampStrategy, RampContext, RampProgress, RampRenderParams, RampStrategy, RampTarget,
-};
+use crate::ramp_strategy::{PositionRampStrategy, RampContext, RampRenderParams, RampStrategy};
 
 use crate::dsp::db::{db_to_linear, linear_to_db};
 use crate::dsp::ensure_denormals_flushed;
@@ -56,6 +54,7 @@ mod cascade;
 mod components;
 mod construction;
 mod layout_follower;
+mod schedule;
 pub use construction::RendererSpec;
 mod speaker_stage;
 use components::{ChannelState, evaluation_build_config};
@@ -97,6 +96,15 @@ struct LiveSnapshot<'a> {
     distance_diffuse_threshold: f32,
     distance_diffuse_curve: f32,
     diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
+}
+
+/// What [`SpatialRenderer::update_metadata`] found in a block's events.
+#[derive(Default)]
+struct MetadataUpdate {
+    /// An event was scheduled for a later sample.
+    scheduled: bool,
+    /// An event was dated a second or more past its block.
+    far: bool,
 }
 
 /// A speaker for a log line: its layout name, or `#index` when the index is
@@ -192,6 +200,20 @@ pub struct SpatialRenderer {
     /// `channel_states`: the reset is the only cross-thread access, and making
     /// it a flag keeps the render path lock-free.
     reset_requested: std::sync::atomic::AtomicBool,
+
+    /// The renderer's sample clock: samples rendered so far, which is where
+    /// the next block starts. Scheduled object events wait on it
+    /// (`schedule.rs`).
+    rendered_samples: u64,
+
+    /// Some channel may hold a scheduled event: the per-block pass over the
+    /// schedules runs only then, so a stream whose events all land on their
+    /// block's first sample (DTS, PCM, the virtual bed) never pays for it.
+    schedule_active: bool,
+
+    /// An event dated a second or more past its block was taken for a broken
+    /// clock and applied at once: said once.
+    far_event_warned: bool,
 
     /// Sample rate for ramp time calculations
     sample_rate: u32,
@@ -607,80 +629,147 @@ impl SpatialRenderer {
     /// Takes `&mut Vec<ChannelState>` rather than `&mut self` so the caller can
     /// split the borrow: `render_frame` holds an immutable snapshot of other
     /// fields while this mutates channel state.
+    ///
+    /// `block_start` is the first sample of the block the events come with,
+    /// on the renderer's clock. An object event on that sample is applied
+    /// now; one dated later in the block, or past it, is scheduled on its
+    /// channel for its sample (`schedule.rs`) — as is one on that sample when
+    /// the channel already holds an earlier one, so each channel's events
+    /// still take effect in order. A bed event is applied now: it only
+    /// carries a gain, and a bridge dates it on its frame's first sample.
     fn update_metadata(
         states: &mut Vec<ChannelState>,
         log_object_positions: bool,
         sample_rate: u32,
         events: &[SpatialChannelEvent],
+        block_start: u64,
         strategy: &dyn RampStrategy,
         ctx: &RampContext,
-    ) -> Result<()> {
+    ) -> Result<MetadataUpdate> {
+        // Past a second, an offset is a broken clock, not a schedule: the
+        // event is applied at once, as every event used to be.
+        let max_lead = u64::from(sample_rate.max(1));
+        let mut update = MetadataUpdate::default();
         for event in events {
             if event.channel_idx >= components::MAX_EVENT_CHANNELS {
                 continue;
             }
             let state = Self::state_mut(states, event.channel_idx);
-            state.initialized = true;
 
             // A gain no linear factor stands for (NaN, +inf, past ~770 dB) is
             // a broken event, not an instruction: the channel keeps the gain it
             // had. -inf is the mute it means (see `gain_db_to_linear`).
-            if let Some(gain) = event
+            let gain_db = event
                 .gain_db
-                .filter(|&g| components::gain_db_to_linear(g).is_finite())
-            {
-                state.gain_db = gain;
-            }
-            if let Some(ramp_length) = event.ramp_length {
-                state.ramp.ramp_length = ramp_length as u64;
-            }
+                .filter(|&g| components::gain_db_to_linear(g).is_finite());
 
             // Beds are routed directly to speakers — no position state needed.
             if event.is_bed {
+                state.initialized = true;
+                if let Some(gain) = gain_db {
+                    state.gain_db = gain;
+                }
+                if let Some(ramp_length) = event.ramp_length {
+                    state.ramp.ramp_length = ramp_length as u64;
+                }
                 continue;
             }
 
-            // Per-event size becomes the new ramp target. `None` = unchanged.
-            let new_target_size = event.size.unwrap_or(state.ramp.target_size);
-            let size_changed = state.ramp.target_size != new_target_size;
-
-            if let Some(target_position) = event.position {
-                if state.ramp.target_position != target_position || size_changed {
-                    let current_ramp_length = state.ramp.ramp_length;
-                    if log_object_positions {
-                        let remaining_units = state.ramp.remaining_ramp_units.unwrap_or(0);
-                        let sample_pos = event.sample_pos.unwrap_or(0);
-                        if state.ramp.target_position != target_position {
-                            log::info!(
-                                "  Obj ch{:2}: sample_pos {} remaining {} - Starting ramp over {} samples (~{}ms)",
-                                event.channel_idx,
-                                sample_pos,
-                                remaining_units,
-                                state.ramp.ramp_length,
-                                state.ramp.ramp_length as f32 / sample_rate as f32 * 1000.0
-                            );
-                        }
-                    }
-                    strategy.update_target(
-                        &mut state.ramp,
-                        RampTarget {
-                            position: target_position,
-                            size: new_target_size,
-                            ramp_length: current_ramp_length,
-                        },
-                        event.sample_pos,
-                        ctx,
-                    );
-                }
-            } else if size_changed {
-                state.ramp.target_size = new_target_size;
-                if state.ramp.remaining_ramp_units.is_none() {
-                    state.ramp.current_size = new_target_size;
-                }
+            let mut offset = event.sample_pos.unwrap_or(0);
+            if offset >= max_lead {
+                update.far = true;
+                offset = 0;
             }
+            if log_object_positions
+                && let Some(target_position) = event.position
+                && state.ramp.target_position != target_position
+            {
+                log::info!(
+                    "  Obj ch{:2}: sample_pos +{} remaining {} - Ramp over {} samples (~{}ms)",
+                    event.channel_idx,
+                    offset,
+                    state.ramp.remaining_ramp_units.unwrap_or(0),
+                    event.ramp_length.map_or(state.ramp.ramp_length, u64::from),
+                    event.ramp_length.map_or(state.ramp.ramp_length, u64::from) as f32
+                        / sample_rate as f32
+                        * 1000.0
+                );
+            }
+
+            let (gain_db, ramp_length, size, position) = if offset == 0 && state.schedule.is_empty()
+            {
+                (gain_db, event.ramp_length, event.size, event.position)
+            } else {
+                update.scheduled = true;
+                let pushed_out = state.schedule.push(schedule::ScheduledEvent {
+                    at: block_start.saturating_add(offset),
+                    gain_db,
+                    ramp_length: event.ramp_length,
+                    size: event.size,
+                    position: event.position,
+                });
+                // A full schedule hands its earliest event back: it
+                // waits no longer.
+                match pushed_out {
+                    Some(early) => (early.gain_db, early.ramp_length, early.size, early.position),
+                    None => continue,
+                }
+            };
+            state.initialized = true;
+            if let Some(gain) = gain_db {
+                state.gain_db = gain;
+            }
+            schedule::apply_move(
+                &mut state.ramp,
+                ramp_length,
+                size,
+                position,
+                block_start,
+                strategy,
+                ctx,
+            );
         }
 
-        Ok(())
+        Ok(update)
+    }
+
+    /// At the start of a block (after [`Self::update_metadata`]), what the
+    /// scheduled events due in it set for the whole block: the channel comes
+    /// alive and takes their gains, in time order, so the gain slew computed
+    /// for the block already ramps to them. Their moves are left to the ramp
+    /// drivers, which start each one on its sample. A move due before the
+    /// block, on a channel no driver advanced (one the block's PCM does not
+    /// carry), starts now. Returns whether any channel still holds an event.
+    fn start_scheduled_block(
+        states: &mut [ChannelState],
+        block_start: u64,
+        block_end: u64,
+        strategy: &dyn RampStrategy,
+        ctx: &RampContext,
+    ) -> bool {
+        let mut held = false;
+        for state in states.iter_mut() {
+            if state.schedule.is_empty() {
+                continue;
+            }
+            if state.schedule.next_at() < block_start {
+                schedule::start_due_moves(
+                    &mut state.ramp,
+                    &mut state.schedule,
+                    block_start - 1,
+                    strategy,
+                    ctx,
+                );
+            }
+            for event in state.schedule.due_before_mut(block_end) {
+                state.initialized = true;
+                if let Some(gain) = event.gain_db.take() {
+                    state.gain_db = gain;
+                }
+            }
+            held |= !state.schedule.is_empty();
+        }
+        held
     }
 
     /// Render audio objects to speaker channels for a single frame
@@ -743,6 +832,7 @@ impl SpatialRenderer {
             .swap(false, std::sync::atomic::Ordering::Acquire)
         {
             self.channel_states.clear();
+            self.schedule_active = false;
             self.speaker_stage.drop_gain_carries();
             // The rooms too: the reflections, reverb and BRIR tails of the
             // previous stream would otherwise ring on into the next one.
@@ -1014,23 +1104,46 @@ impl SpatialRenderer {
             &POSITION_STRATEGY
         };
 
-        if !pending_events.is_empty() {
-            Self::update_metadata(
-                &mut self.channel_states,
-                self.log_object_positions,
-                self.sample_rate,
-                pending_events,
-                ramp_strategy,
-                &ramp_context,
-            )?;
-        }
-
         // Derive sample count from slice length and channel count.
         let sample_length = if input_channel_count > 0 {
             input_pcm.len() / input_channel_count
         } else {
             0
         };
+
+        // This block on the renderer's clock, which the scheduled events wait
+        // on. Advanced here, before any branch, so every path counts it once.
+        let block_start = self.rendered_samples;
+        let block_end = block_start.saturating_add(sample_length as u64);
+        self.rendered_samples = block_end;
+
+        if !pending_events.is_empty() {
+            let update = Self::update_metadata(
+                &mut self.channel_states,
+                self.log_object_positions,
+                self.sample_rate,
+                pending_events,
+                block_start,
+                ramp_strategy,
+                &ramp_context,
+            )?;
+            self.schedule_active |= update.scheduled;
+            if update.far && !std::mem::replace(&mut self.far_event_warned, true) {
+                log::warn!(
+                    "An object event is dated a second or more past its block: \
+                     applied at once (the stream's clock looks broken)"
+                );
+            }
+        }
+        if self.schedule_active {
+            self.schedule_active = Self::start_scheduled_block(
+                &mut self.channel_states,
+                block_start,
+                block_end,
+                ramp_strategy,
+                &ramp_context,
+            );
+        }
 
         // Snapshot the routing once for this frame via ArcSwap: no mutex and no
         // Vec clone.
@@ -1135,6 +1248,7 @@ impl SpatialRenderer {
                         sample_ramp_stride: live.sample_ramp_stride,
                         ramp_strategy,
                         ramp_context: &ramp_context,
+                        block_start,
                         log_object_positions: self.log_object_positions,
                         is_first,
                         measure_breakdown,
@@ -1226,14 +1340,42 @@ impl SpatialRenderer {
                             // is bypassed — so without this every object stays at
                             // the ramp default [0,0,0]: dead centre, and rotation-
                             // invariant (the zero vector ignores the head pose).
-                            let progress = st.ramp.current_progress().unwrap_or(RampProgress {
-                                completed_units: 0,
-                                total_units: 0,
-                            });
-                            ramp_strategy.evaluate(&mut st.ramp, progress, &ramp_context);
-                            self.binaural_pos_buf[c] = heard_position(st.ramp.output_position);
-                            st.ramp.commit_output_position();
-                            st.ramp.advance_ramp(sample_length as u64);
+                            //
+                            // The block's position is the one on its first
+                            // sample; the moves scheduled on the samples
+                            // after it start on theirs as the ramp walks
+                            // through the block.
+                            let ramp = &mut st.ramp;
+                            let schedule = &mut st.schedule;
+                            if sample_length > 0 {
+                                schedule::start_due_moves(
+                                    ramp,
+                                    schedule,
+                                    block_start,
+                                    ramp_strategy,
+                                    &ramp_context,
+                                );
+                            }
+                            schedule::evaluate(ramp, ramp_strategy, &ramp_context);
+                            self.binaural_pos_buf[c] = heard_position(ramp.output_position);
+                            ramp.commit_output_position();
+                            match sample_length.checked_sub(1) {
+                                Some(last) => {
+                                    schedule::walk_to(
+                                        ramp,
+                                        schedule,
+                                        block_start,
+                                        0,
+                                        last,
+                                        ramp_strategy,
+                                        &ramp_context,
+                                    );
+                                    ramp.advance_ramp(1);
+                                }
+                                None => {
+                                    ramp.advance_ramp(0);
+                                }
+                            }
                         }
                     }
                 }
@@ -1400,6 +1542,7 @@ impl SpatialRenderer {
             sample_ramp_stride: live.sample_ramp_stride,
             ramp_strategy,
             ramp_context: &ramp_context,
+            block_start,
             log_object_positions: self.log_object_positions,
             is_first,
             measure_breakdown,

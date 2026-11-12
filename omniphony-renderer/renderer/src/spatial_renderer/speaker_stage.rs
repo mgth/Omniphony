@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use super::ChannelRoute;
 use super::components::{BandRenderer, BandScratch, ChannelState};
+use super::schedule::{self, EventSchedule};
 use super::{GAIN_SLEW_SECS, SpatialRenderer};
 use crate::ramp_strategy::RampProgress;
 
@@ -303,6 +304,9 @@ pub(super) struct SpeakerStageFrame<'a> {
     pub(super) sample_ramp_stride: usize,
     pub(super) ramp_strategy: &'a dyn RampStrategy,
     pub(super) ramp_context: &'a RampContext,
+    /// The block's first sample on the renderer's clock, which scheduled
+    /// object events are dated on (`schedule.rs`).
+    pub(super) block_start: u64,
     pub(super) log_object_positions: bool,
     pub(super) is_first: bool,
     pub(super) measure_breakdown: bool,
@@ -618,6 +622,11 @@ impl LaneScratch {
 /// lookup per sample was eight times the work for a difference far below
 /// audibility.
 ///
+/// A move scheduled on a sample of the block (`schedule`, on the renderer's
+/// clock from `block_start`) starts on that sample: the pass runs up to it,
+/// starts it, and goes on. The samples are mixed exactly as they would be had
+/// the move arrived there, and a block without one is a single pass.
+///
 /// `band_gains` is left holding the gains of the block's last sample, which
 /// are those of its position; `segment_end` is scratch.
 #[inline(always)]
@@ -627,6 +636,8 @@ fn mix_sample_ramp<S: RampStrategy + ?Sized>(
     bands: &[Vec<f32>],
     sample_length: usize,
     ramp: &mut crate::ramp_strategy::ChannelRampState,
+    schedule: &mut EventSchedule,
+    block_start: u64,
     ramp_strategy: &S,
     ramp_context: &RampContext,
     stride: usize,
@@ -674,52 +685,87 @@ fn mix_sample_ramp<S: RampStrategy + ?Sized>(
             bus.add_lerp(bands, band_gains, end, &fractions[..len], range);
         };
 
-    for sample_idx in 0..sample_length {
-        let progress = ramp.current_progress().unwrap_or(RampProgress {
-            completed_units: 0,
-            total_units: 0,
-        });
-        ramp_strategy.evaluate(ramp, progress, ramp_context);
-        let position = ramp.output_position;
-        let size = ramp.current_size;
+    let block_end = block_start + sample_length as u64;
+    let mut pass_start = 0;
+    loop {
+        // This pass runs up to the next move scheduled in the block.
+        let next_move = schedule.next_at();
+        let pass_end = if next_move < block_end {
+            (next_move.saturating_sub(block_start) as usize).max(pass_start)
+        } else {
+            sample_length
+        };
+        for sample_idx in pass_start..pass_end {
+            let progress = ramp.current_progress().unwrap_or(RampProgress {
+                completed_units: 0,
+                total_units: 0,
+            });
+            ramp_strategy.evaluate(ramp, progress, ramp_context);
+            let position = ramp.output_position;
+            let size = ramp.current_size;
 
-        if position != last_pos || size != last_size {
-            if !moving {
-                if have_gains {
-                    // The run so far keeps its gains; a segment starts here.
-                    bus.add_constant(bands, band_gains, run_start..sample_idx);
-                    moving = true;
-                    run_start = sample_idx;
-                    segment_last = (sample_idx + stride).min(sample_length) - 1;
-                } else {
-                    // Nothing to interpolate from: the block starts on the
-                    // gains of its first sample's position.
-                    lookup(position, size, band_gains);
-                    have_gains = true;
+            if position != last_pos || size != last_size {
+                if !moving {
+                    if have_gains {
+                        // The run so far keeps its gains; a segment starts here.
+                        bus.add_constant(bands, band_gains, run_start..sample_idx);
+                        moving = true;
+                        run_start = sample_idx;
+                        segment_last = (sample_idx + stride).min(sample_length) - 1;
+                    } else {
+                        // Nothing to interpolate from: the block starts on the
+                        // gains of its first sample's position.
+                        lookup(position, size, band_gains);
+                        have_gains = true;
+                    }
                 }
+                last_pos = position;
+                last_size = size;
+            } else if moving {
+                // The movement stopped on the previous sample: the segment ends
+                // there, and this sample starts a run on the gains it reached.
+                lookup(last_pos, last_size, segment_end);
+                mix_segment(bus, band_gains, segment_end, run_start..sample_idx);
+                std::mem::swap(band_gains, segment_end);
+                moving = false;
+                run_start = sample_idx;
             }
-            last_pos = position;
-            last_size = size;
-        } else if moving {
-            // The movement stopped on the previous sample: the segment ends
-            // there, and this sample starts a run on the gains it reached.
-            lookup(last_pos, last_size, segment_end);
-            mix_segment(bus, band_gains, segment_end, run_start..sample_idx);
-            std::mem::swap(band_gains, segment_end);
-            moving = false;
-            run_start = sample_idx;
-        }
-        if moving && sample_idx == segment_last {
-            lookup(position, size, segment_end);
-            mix_segment(bus, band_gains, segment_end, run_start..sample_idx + 1);
-            std::mem::swap(band_gains, segment_end);
-            moving = false;
-            run_start = sample_idx + 1;
-            moving_until = sample_idx;
-        }
+            if moving && sample_idx == segment_last {
+                lookup(position, size, segment_end);
+                mix_segment(bus, band_gains, segment_end, run_start..sample_idx + 1);
+                std::mem::swap(band_gains, segment_end);
+                moving = false;
+                run_start = sample_idx + 1;
+                moving_until = sample_idx;
+            }
 
-        ramp.commit_output_position();
-        ramp.advance_ramp(1);
+            ramp.commit_output_position();
+            ramp.advance_ramp(1);
+        }
+        if pass_end == sample_length {
+            break;
+        }
+        // A segment under way ends on the sample before the move, on the
+        // gains of its position there, as it would at the end of a block:
+        // finished later, it would interpolate those samples toward wherever
+        // the move goes — a jump would be heard before its sample.
+        if moving {
+            lookup(last_pos, last_size, segment_end);
+            mix_segment(bus, band_gains, segment_end, run_start..pass_end);
+            std::mem::swap(band_gains, segment_end);
+            moving = false;
+            run_start = pass_end;
+        }
+        // The move (and any due with it) starts on this sample, from the
+        // position committed on the one before.
+        schedule::start_due_moves(
+            ramp,
+            schedule,
+            block_start + pass_end as u64,
+            ramp_strategy,
+            ramp_context,
+        );
+        pass_start = pass_end;
     }
     bus.add_constant(bands, band_gains, run_start..sample_length);
 
@@ -803,6 +849,7 @@ impl SpeakerRenderStage {
             sample_ramp_stride,
             ramp_strategy,
             ramp_context,
+            block_start,
             log_object_positions,
             is_first,
             measure_breakdown,
@@ -1093,6 +1140,16 @@ impl SpeakerRenderStage {
                 let mut band_gains = std::mem::take(&mut self.band_gains_scratch);
                 match ramp_mode {
                     RampMode::Off => {
+                        // No ramp: the block jumps to where its moves lead.
+                        if let Some(last) = sample_length.checked_sub(1) {
+                            schedule::start_due_moves(
+                                &mut state.ramp,
+                                &mut state.schedule,
+                                block_start + last as u64,
+                                ramp_strategy,
+                                ramp_context,
+                            );
+                        }
                         state.ramp.remaining_ramp_units = None;
                         state.ramp.start_position = state.ramp.target_position;
                         state.ramp.current_position = state.ramp.target_position;
@@ -1147,6 +1204,8 @@ impl SpeakerRenderStage {
                                 bands,
                                 sample_length,
                                 &mut state.ramp,
+                                &mut state.schedule,
+                                block_start,
                                 position,
                                 ramp_context,
                                 sample_ramp_stride,
@@ -1161,6 +1220,8 @@ impl SpeakerRenderStage {
                                 bands,
                                 sample_length,
                                 &mut state.ramp,
+                                &mut state.schedule,
+                                block_start,
                                 ramp_strategy,
                                 ramp_context,
                                 sample_ramp_stride,
@@ -1185,17 +1246,35 @@ impl SpeakerRenderStage {
                         // block boundary.
                         if ramp_mode == RampMode::Frame {
                             // Where the stream's ramp is on the block's last
-                            // sample: `sample_length - 1` steps on.
-                            state
-                                .ramp
-                                .advance_ramp(sample_length.saturating_sub(1) as u64);
-                            let progress = state.ramp.current_progress().unwrap_or(RampProgress {
-                                completed_units: 0,
-                                total_units: 0,
-                            });
-                            ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
+                            // sample: `sample_length - 1` steps on, each move
+                            // scheduled on the way started on its sample.
+                            match sample_length.checked_sub(1) {
+                                Some(last) => schedule::walk_to(
+                                    &mut state.ramp,
+                                    &mut state.schedule,
+                                    block_start,
+                                    0,
+                                    last,
+                                    ramp_strategy,
+                                    ramp_context,
+                                ),
+                                None => {
+                                    state.ramp.advance_ramp(0);
+                                }
+                            }
+                            schedule::evaluate(&mut state.ramp, ramp_strategy, ramp_context);
                         } else {
-                            // Straight to the target, whatever the ramp length.
+                            // Straight to the target of the block's last move,
+                            // whatever the ramp length.
+                            if let Some(last) = sample_length.checked_sub(1) {
+                                schedule::start_due_moves(
+                                    &mut state.ramp,
+                                    &mut state.schedule,
+                                    block_start + last as u64,
+                                    ramp_strategy,
+                                    ramp_context,
+                                );
+                            }
                             state.ramp.remaining_ramp_units = None;
                             state.ramp.current_position = state.ramp.target_position;
                             state.ramp.current_size = state.ramp.target_size;

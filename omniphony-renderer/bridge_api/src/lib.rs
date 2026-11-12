@@ -113,6 +113,9 @@ pub type BridgeHostLogSink = extern "C" fn(level: RLogLevel, target: RStr<'_>, m
 #[derive(StableAbi, Clone, Debug)]
 pub struct REvent {
     pub id: u32,
+    /// The sample this event takes effect on, on the clock of
+    /// [`RMetadataFrame::sample_pos`]: the host starts the object's ramp on
+    /// it, inside the frame or in a later one.
     pub sample_pos: u64,
     /// True when `pos` contains valid 3-D coordinates. A `false` event is a
     /// gain/ramp-only update for its object.
@@ -309,7 +312,9 @@ pub struct RMetadataFrame {
     /// `object_channels`).
     pub name_updates: RVec<RNameUpdate>,
     /// Base sample position for this metadata (= decoded_samples at frame start,
-    /// without evo_sample_offset). Used for OSC timestamping.
+    /// without evo_sample_offset). Used for OSC timestamping, and the origin
+    /// the host dates [`REvent::sample_pos`] from: an event at this sample
+    /// takes effect on the frame's first sample.
     pub sample_pos: u64,
     /// Ramp duration in samples.
     pub ramp_duration: u32,

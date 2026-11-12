@@ -152,6 +152,13 @@ pub fn event_pos_as_adm_cartesian(
 /// `object_channels` declaration (events for undeclared ids are skipped);
 /// `channel_gains` yields one gain/ramp-only event per listed fixed channel.
 ///
+/// `sample_pos` is the payload's own (`RMetadataFrame::sample_pos`): the first
+/// sample of the frame it comes with, on the bridge's clock. Each event's
+/// sample, on that clock too, is handed to the renderer as an offset from it,
+/// which is how the renderer dates events (`SpatialChannelEvent::sample_pos`);
+/// one before it is due at once. A bed gain is due on the frame's first
+/// sample.
+///
 /// `bed_trims` is the virtual bed's per-fixed-channel trim (dB, indexed by
 /// channel, from [`crate::virtual_bed::FixedChannelPlanner::fixed_trims`]),
 /// summed onto each stream channel gain. The stream re-stamps the bed gains on
@@ -182,7 +189,7 @@ pub fn build_spatial_channel_events(
             ramp_length: Some(ramp_duration),
             size: None,
             position: None,
-            sample_pos: Some(sample_pos),
+            sample_pos: Some(0),
         });
     }
 
@@ -203,7 +210,7 @@ pub fn build_spatial_channel_events(
                 .size()
                 .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32]),
             position: event_pos_as_adm_cartesian(coordinate_format, event),
-            sample_pos: event.sample_pos(),
+            sample_pos: event.sample_pos().map(|at| at.saturating_sub(sample_pos)),
         });
     }
 }
@@ -256,9 +263,56 @@ mod tests {
         assert_eq!(out[0].channel_idx, 2);
         assert_eq!(out[0].gain_db, Some(-3.0));
         assert_eq!(out[0].ramp_length, Some(32));
-        assert_eq!(out[0].sample_pos, Some(480));
+        assert_eq!(
+            out[0].sample_pos,
+            Some(0),
+            "a bed gain is due on the frame's first sample"
+        );
         assert!(!out[1].is_bed);
         assert_eq!(out[1].channel_idx, 6);
+    }
+
+    /// The renderer dates an event from the first sample of the frame it
+    /// comes with: the payload's own sample position, on the bridge's clock
+    /// like the event's. One dated before the frame is due at once; one
+    /// without a date stays undated.
+    #[test]
+    fn object_events_are_dated_from_their_frames_first_sample() {
+        let dated = |id: u32, at: Option<u64>| {
+            let mut event = Event::with_id(id);
+            event.set_pos([0.5, 0.5, 0.0]);
+            if let Some(at) = at {
+                event.set_sample_pos(at);
+            }
+            event
+        };
+        let conf = Configuration::new(vec![
+            dated(10, Some(96_000)),
+            dated(11, Some(96_000 + 688)),
+            dated(12, Some(96_000 + 2_000)),
+            dated(13, Some(95_000)),
+            dated(14, None),
+        ]);
+        let object_channels: Vec<(u32, usize)> = (10..15).map(|id| (id, id as usize - 4)).collect();
+
+        let mut out = Vec::new();
+        build_spatial_channel_events(
+            &conf,
+            RCoordinateFormat::Cartesian,
+            &object_channels,
+            &[],
+            &[],
+            96_000,
+            0,
+            &mut out,
+        );
+
+        let offsets: Vec<_> = out.iter().map(|e| e.sample_pos).collect();
+        assert_eq!(
+            offsets,
+            [Some(0), Some(688), Some(2_000), Some(0), None],
+            "on the frame's first sample, inside it, past it, before it, undated"
+        );
     }
 
     #[test]

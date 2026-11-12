@@ -103,6 +103,10 @@ pub struct ChannelRampState {
     pub output_position: [f64; 3],
     pub ramp_length: u64,
     pub remaining_ramp_units: Option<u64>,
+    /// The sample the current ramp started on, on the renderer's clock (the
+    /// samples it has rendered): an object event's own sample, which may lie
+    /// inside the block it came with or in a later one. `None` until a ramp
+    /// is started by the renderer.
     pub target_sample_index: Option<u64>,
 }
 
@@ -160,6 +164,10 @@ impl ChannelRampState {
 pub trait RampStrategy: Send + Sync {
     fn name(&self) -> &'static str;
 
+    /// Start a ramp toward `target` from where the object is. The renderer
+    /// calls it on the event's own sample, with the position of the sample
+    /// before committed (`current_position`); `sample_index` is that sample
+    /// on the renderer's clock.
     fn update_target(
         &self,
         state: &mut ChannelRampState,

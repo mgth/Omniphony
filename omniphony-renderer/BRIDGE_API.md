@@ -357,6 +357,14 @@ pub struct REvent {
 
 If `has_pos == false`, the event is a gain/ramp-only update for its object.
 
+`sample_pos` is the sample the event takes effect on, on the bridge's own
+clock: the clock of `RMetadataFrame::sample_pos`, which is the first sample of
+the frame the metadata comes with. The host starts the object's ramp on that
+sample, inside the frame or in the later frame that holds it, and applies its
+gain from the start of that frame; an event dated before its frame takes
+effect at once. Date an event on the PCM it belongs to: an event dated on the
+frame's first sample is what every event used to be.
+
 ### Objects, channel gains and names
 
 - `object_channels`

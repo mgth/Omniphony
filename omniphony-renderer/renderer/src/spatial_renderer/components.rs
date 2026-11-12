@@ -3,6 +3,7 @@
 //! `pub(super)` (or `pub` for the renderer's public API types) so the
 //! `SpatialRenderer` impl in the parent module can use them.
 
+use super::schedule::EventSchedule;
 use crate::crossover::FreqBand;
 use crate::live_params::{RenderTopology, RendererControl};
 use crate::ramp_strategy::ChannelRampState;
@@ -183,7 +184,12 @@ pub struct SpatialChannelEvent {
     /// Target position in ADM Cartesian coordinates [x, y, z] (`None` = unchanged).
     /// x ∈ [-1, 1] left/right · y ∈ [-1, 1] back/front · z ∈ [-1, 1] floor/ceiling.
     pub position: Option<[f64; 3]>,
-    /// Sample index within the access unit where this event takes effect.
+    /// The sample this event takes effect on: an offset from the first sample
+    /// of the block it is rendered with (`None` = 0). An offset past the block
+    /// carries the event to the block holding that sample; an object's ramp
+    /// starts on that sample, its gain at the start of that block (see
+    /// `schedule.rs`). An offset of a second or more is taken for a broken
+    /// clock and applied at once.
     pub sample_pos: Option<u64>,
 }
 
@@ -211,6 +217,10 @@ pub(super) struct ChannelState {
     pub(super) slewed_gain: f32,
 
     pub(super) ramp: ChannelRampState,
+
+    /// Object events dated after the first sample of the block they came
+    /// with, waiting for their own sample.
+    pub(super) schedule: EventSchedule,
 
     /// The band gains this channel's last block ended on (its last sample's),
     /// kept in every ramp mode: `Frame` and `Interp` start the next block's
@@ -254,6 +264,7 @@ impl Default for ChannelState {
             gain_db: GAIN_DB_NEG_INF, // -inf dB (muted)
             slewed_gain: 0.0,
             ramp: ChannelRampState::default(),
+            schedule: EventSchedule::default(),
             last_block_gains: BandGains::new(),
         }
     }
