@@ -77,7 +77,7 @@ CI pins the SDK commit in `.github/actions/setup-asio-sdk/action.yml`.
 
 The Xcode command line tools (`xcode-select --install`) are all the build
 needs; the CoreAudio backend uses the system frameworks. Apple Silicon is the
-platform CI builds and tests (`macos-14`).
+platform CI builds and tests (`macos-15`).
 
 ### Optional: SAF-backed VBAP
 
