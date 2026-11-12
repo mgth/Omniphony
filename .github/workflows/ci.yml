@@ -536,7 +536,14 @@ jobs:
     # the PR rather than in a user's report after a release (#200, #201,
     # #205 and #260 all reached users that way). The job name is a required
     # check on `main`: rename it and branch protection must follow.
-    runs-on: macos-14
+    #
+    # macOS 15 on Apple silicon (Xcode 16.4 by default). GitHub retired the
+    # macOS 14 images on 2026-11-02; a job still asking for `macos-14` is
+    # cancelled at once ("configuration not supported"), never run. The
+    # version is pinned rather than `macos-latest` so an image move shows up
+    # as a change here, not as a silent toolchain jump. release.yml's macOS
+    # build uses the same image: keep the two in step.
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
