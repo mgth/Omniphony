@@ -4901,3 +4901,84 @@ fn an_event_dated_a_second_past_its_block_is_applied_at_once() {
     assert_eq!(ramp_after(u64::MAX), ramp_after(0));
     assert_eq!(ramp_after(0), (DATED_B, Some(500 - BLOCK as u64)));
 }
+
+/// A dated move is not heard before its sample, whatever the stride of the
+/// per-sample ramp's gain lookups: a jump that lands inside a segment the
+/// stride is interpolating ends that segment on the sample before it, and
+/// does not pull its earlier samples toward where it lands. Per-sample lookups
+/// leave every sample before the jump bit for bit as without it; with a
+/// stride, the samples before it are no further from the per-sample gains
+/// than the jump-free render's are (the segment ends earlier, which only
+/// brings them closer), a small fraction of what the jump moves.
+#[test]
+fn a_dated_move_is_not_heard_before_its_sample() {
+    const BLOCK: usize = 64;
+    const BLOCKS: usize = 30;
+    const MOVING: usize = 24; // past the gain slew's fade-in
+    let input = vec![0.25f32; BLOCK];
+    // The jump lands inside a moving block, between two lookups at every
+    // stride but 1.
+    let jump_at = MOVING * BLOCK + BLOCK + 21;
+    let render = |stride: usize, with_jump: bool| -> Vec<f32> {
+        let mut r = dated_events_renderer(RampMode::Sample, false);
+        r.control.live.write().options.sample_ramp_stride = stride;
+        let mut out = Vec::new();
+        for block in 0..BLOCKS {
+            let events = match block {
+                0 => vec![dated_move(DATED_A, 0, 0)],
+                // A ramp across six blocks; the jump is dated past the block
+                // it comes with.
+                b if b == MOVING => {
+                    let mut events = vec![dated_move(DATED_B, (6 * BLOCK) as u32, 0)];
+                    if with_jump {
+                        events.push(dated_move(DATED_C, 0, (jump_at - MOVING * BLOCK) as u64));
+                    }
+                    events
+                }
+                _ => Vec::new(),
+            };
+            out.extend(
+                r.render_frame(&input, 1, &events, Vec::new(), false)
+                    .unwrap()
+                    .samples,
+            );
+        }
+        out
+    };
+    let largest_difference = |a: &[f32], b: &[f32], samples: std::ops::Range<usize>| {
+        a[samples.start * 12..samples.end * 12]
+            .iter()
+            .zip(&b[samples.start * 12..samples.end * 12])
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max)
+    };
+
+    let exact = render(1, true);
+    let exact_without = render(1, false);
+    let first_difference = exact
+        .iter()
+        .zip(&exact_without)
+        .position(|(a, b)| a.to_bits() != b.to_bits())
+        .map(|i| i / 12);
+    assert_eq!(
+        first_difference,
+        Some(jump_at),
+        "per-sample lookups: the jump must first be heard on its own sample"
+    );
+    let jump = largest_difference(&exact, &exact_without, jump_at..jump_at + 8);
+
+    for stride in [8, crate::live_params::MAX_SAMPLE_RAMP_STRIDE] {
+        let before_jump = 0..jump_at;
+        let jumped = largest_difference(&render(stride, true), &exact, before_jump.clone());
+        let ramped = largest_difference(&render(stride, false), &exact_without, before_jump);
+        assert!(
+            jumped <= ramped + 1e-6,
+            "stride {stride}: before the jump the mix is {jumped} off the per-sample gains, \
+             against {ramped} without the jump"
+        );
+        assert!(
+            jumped < jump / 10.0,
+            "stride {stride}: the jump ({jump}) is heard before its sample ({jumped})"
+        );
+    }
+}

@@ -974,6 +974,93 @@ fn stride_interpolation_is_exact_for_a_linear_gain_law_across_blocks() {
     assert_eq!(lookups_per_block, [6, 5, 3, 1]);
 }
 
+/// A move scheduled inside a segment the stride is interpolating ends that
+/// segment on the sample before it: the samples it already holds keep the
+/// gains of their own positions instead of being pulled toward where the move
+/// goes. A ramp from 0 to 1 over 100 samples, cut on sample 4 by a jump to
+/// 0.5, through a gain law linear in the position (so every sample can be
+/// read off as its position): samples 0–3 are on the ramp at every stride,
+/// and the jump is first heard on sample 4.
+#[test]
+fn a_move_scheduled_inside_a_segment_does_not_reach_back_into_it() {
+    const BLOCK: usize = 16;
+    let run = |stride: usize| -> Vec<f32> {
+        let context = RampProbe::context();
+        let mut ramp = ChannelRampState::default();
+        PositionRampStrategy.update_target(
+            &mut ramp,
+            crate::ramp_strategy::RampTarget {
+                position: [1.0, 0.0, 0.0],
+                size: [0.0; 3],
+                ramp_length: 100,
+            },
+            None,
+            &context,
+        );
+        let mut schedule = EventSchedule::default();
+        schedule.push(schedule::ScheduledEvent {
+            at: 4,
+            ramp_length: Some(0),
+            position: Some([0.5, 0.0, 0.0]),
+            ..Default::default()
+        });
+        let bands = vec![vec![1.0f32; BLOCK]];
+        let mut planar = vec![0.0f32; BLOCK];
+        let mut output = vec![0.0f32; BLOCK];
+        let mut band_gains = flat(&[zeroed(1)]);
+        let mut segment_end = BandGains::new();
+        let mut bus = MixBus::silent(&mut planar, &mut output, BLOCK, 1);
+        mix_sample_ramp(
+            &mut bus,
+            &bands,
+            BLOCK,
+            &mut ramp,
+            &mut schedule,
+            0,
+            &PositionRampStrategy,
+            &context,
+            stride,
+            &mut GainCarry::default(),
+            1,
+            &mut band_gains,
+            &mut segment_end,
+            |position, _size, out| *out = flat(&[vec![position[0] as f32]]),
+        );
+        bus.finish();
+        assert!(schedule.is_empty());
+        output
+    };
+    let exact = run(1);
+    for (i, &g) in exact[..4].iter().enumerate() {
+        assert!((g - i as f32 * 0.01).abs() < 1e-6, "sample {i}: {g}");
+    }
+    assert_eq!(exact[4], 0.5, "the jump lands on its sample");
+    for stride in [2, 8, crate::live_params::MAX_SAMPLE_RAMP_STRIDE] {
+        let strided = run(stride);
+        for i in 0..4 {
+            assert!(
+                (strided[i] - exact[i]).abs() < 1e-6,
+                "stride {stride}, sample {i}: {} where the ramp is at {}",
+                strided[i],
+                exact[i]
+            );
+        }
+        assert!(
+            strided[4] > exact[3] + 1e-3,
+            "stride {stride}: the jump is not heard on its sample"
+        );
+        assert_eq!(
+            strided[(4 + stride - 1).min(BLOCK - 1)],
+            if 4 + stride <= BLOCK {
+                0.5
+            } else {
+                strided[BLOCK - 1]
+            },
+            "stride {stride}: the jump must be complete one stride after its sample"
+        );
+    }
+}
+
 /// The samples of a segment are interpolated, but its ends are not: the last
 /// sample of every segment, the last sample of a ramp and every sample after
 /// it are mixed with the gains of their own position, bit for bit. Checked

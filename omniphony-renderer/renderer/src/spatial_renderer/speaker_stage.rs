@@ -745,6 +745,17 @@ fn mix_sample_ramp<S: RampStrategy + ?Sized>(
         if pass_end == sample_length {
             break;
         }
+        // A segment under way ends on the sample before the move, on the
+        // gains of its position there, as it would at the end of a block:
+        // finished later, it would interpolate those samples toward wherever
+        // the move goes — a jump would be heard before its sample.
+        if moving {
+            lookup(last_pos, last_size, segment_end);
+            mix_segment(bus, band_gains, segment_end, run_start..pass_end);
+            std::mem::swap(band_gains, segment_end);
+            moving = false;
+            run_start = pass_end;
+        }
         // The move (and any due with it) starts on this sample, from the
         // position committed on the one before.
         schedule::start_due_moves(
