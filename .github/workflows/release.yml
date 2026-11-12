@@ -79,8 +79,9 @@ jobs:
           - platform: windows-latest
           # macOS Apple Silicon: CoreAudio output backend, no extra system deps.
           # The .app is ad-hoc signed (omniphony-studio-egui/scripts/package.sh)
-          # until real signing secrets are configured.
-          - platform: macos-14
+          # until real signing secrets are configured. Same image as ci.yml's
+          # build-macos (macOS 14 is retired): keep the two in step.
+          - platform: macos-15
 
     runs-on: ${{ matrix.platform }}
 
