@@ -4982,3 +4982,67 @@ fn a_dated_move_is_not_heard_before_its_sample() {
         );
     }
 }
+
+/// An event restating the target a ramp is already heading to, with the time
+/// it has left (what the IAMF bridge sends for every object when another one
+/// moves), leaves the ramp running as it was: neither its origin nor its
+/// progress is reset, so the object keeps going instead of jumping back
+/// toward where the ramp started. Whether the restatement is dated inside a
+/// block, carried from the block before, or lands on a block's first sample,
+/// and at every stride.
+#[test]
+fn restating_a_running_ramps_target_keeps_its_trajectory() {
+    const BLOCK: usize = 64;
+    const START: usize = 24 * BLOCK; // past the gain slew's fade-in
+    const RAMP: usize = 3000;
+    const BLOCKS: usize = (START + RAMP) / BLOCK + 4;
+    let input = vec![0.25f32; BLOCK];
+    // (sample the restatement is dated on, block it arrives with)
+    let cases = [
+        (START + 1000, (START + 1000) / BLOCK),
+        (START + 1000, (START + 1000) / BLOCK - 1),
+        (START + 16 * BLOCK, START / BLOCK + 16),
+    ];
+    for stride in [1, 8] {
+        let render = |restated: Option<(usize, usize)>| -> Vec<f32> {
+            let mut r = dated_events_renderer(RampMode::Sample, false);
+            r.control.live.write().options.sample_ramp_stride = stride;
+            let mut out = Vec::new();
+            for block in 0..BLOCKS {
+                let mut events = Vec::new();
+                if block == 0 {
+                    events.push(dated_move(DATED_A, 0, 0));
+                }
+                if block == START / BLOCK {
+                    events.push(dated_move(DATED_B, RAMP as u32, 0));
+                }
+                if let Some((at, arrives)) = restated
+                    && block == arrives
+                {
+                    let left = (START + RAMP - at) as u32;
+                    events.push(dated_move(DATED_B, left, (at - block * BLOCK) as u64));
+                }
+                out.extend(
+                    r.render_frame(&input, 1, &events, Vec::new(), false)
+                        .unwrap()
+                        .samples,
+                );
+            }
+            out
+        };
+        let uninterrupted = render(None);
+        for case in cases {
+            let restated = render(Some(case));
+            let first_difference = restated
+                .iter()
+                .zip(&uninterrupted)
+                .position(|(a, b)| a.to_bits() != b.to_bits())
+                .map(|i| i / 12);
+            assert_eq!(
+                first_difference, None,
+                "stride {stride}, restated on sample {} arriving with block {}: the ramp was disturbed",
+                case.0, case.1
+            );
+        }
+    }
+}

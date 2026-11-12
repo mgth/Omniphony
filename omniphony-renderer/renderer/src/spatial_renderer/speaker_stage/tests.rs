@@ -980,7 +980,8 @@ fn stride_interpolation_is_exact_for_a_linear_gain_law_across_blocks() {
 /// goes. A ramp from 0 to 1 over 100 samples, cut on sample 4 by a jump to
 /// 0.5, through a gain law linear in the position (so every sample can be
 /// read off as its position): samples 0–3 are on the ramp at every stride,
-/// and the jump is first heard on sample 4.
+/// and the jump lands whole on sample 4, as the per-sample ramp lands any
+/// jump.
 #[test]
 fn a_move_scheduled_inside_a_segment_does_not_reach_back_into_it() {
     const BLOCK: usize = 16;
@@ -1045,18 +1046,10 @@ fn a_move_scheduled_inside_a_segment_does_not_reach_back_into_it() {
                 exact[i]
             );
         }
-        assert!(
-            strided[4] > exact[3] + 1e-3,
-            "stride {stride}: the jump is not heard on its sample"
-        );
         assert_eq!(
-            strided[(4 + stride - 1).min(BLOCK - 1)],
-            if 4 + stride <= BLOCK {
-                0.5
-            } else {
-                strided[BLOCK - 1]
-            },
-            "stride {stride}: the jump must be complete one stride after its sample"
+            &strided[4..],
+            &exact[4..],
+            "stride {stride}: the jump must land whole on its sample"
         );
     }
 }

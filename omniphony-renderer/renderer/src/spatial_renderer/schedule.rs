@@ -118,11 +118,19 @@ impl EventSchedule {
     }
 }
 
-/// Apply what an object event says about its ramp, now: its ramp length, then
-/// a new ramp toward its position, from where the object is, when the
+/// Apply what an object event says about its ramp, now: a new ramp toward its
+/// position, from where the object is, over its ramp length, when the
 /// position or the size changes — or the new size alone, when it states no
 /// position. `at` is the sample the ramp starts on, on the renderer's clock,
 /// handed to the strategy.
+///
+/// An event that starts no ramp leaves a running one as it is. A stream
+/// restates the target an object is heading to, with the time it has left
+/// (the IAMF bridge does for every object whenever another one moves); the
+/// ramp length is the running ramp's own total (`current_progress`), so
+/// taking that time as the new length would rewind the ramp and send the
+/// object back toward where it started. Its length is kept for the next ramp
+/// only while none runs.
 #[inline]
 pub(super) fn apply_move<S: RampStrategy + ?Sized>(
     ramp: &mut ChannelRampState,
@@ -133,14 +141,17 @@ pub(super) fn apply_move<S: RampStrategy + ?Sized>(
     strategy: &S,
     ctx: &RampContext,
 ) {
-    if let Some(ramp_length) = ramp_length {
-        ramp.ramp_length = ramp_length as u64;
-    }
     // `None` = unchanged.
     let new_target_size = size.unwrap_or(ramp.target_size);
     let size_changed = ramp.target_size != new_target_size;
+    let starts_ramp = position.is_some_and(|p| ramp.target_position != p || size_changed);
+    if let Some(ramp_length) = ramp_length
+        && (starts_ramp || ramp.remaining_ramp_units.is_none())
+    {
+        ramp.ramp_length = ramp_length as u64;
+    }
     if let Some(target_position) = position {
-        if ramp.target_position != target_position || size_changed {
+        if starts_ramp {
             let ramp_length = ramp.ramp_length;
             strategy.update_target(
                 ramp,
@@ -289,6 +300,75 @@ mod tests {
         let mut want: Vec<u64> = (101..100 + SCHEDULE_CAPACITY as u64).collect();
         want.push(500);
         assert_eq!(times(&mut schedule), want);
+    }
+
+    /// A restated target leaves the running ramp as it is, origin, length and
+    /// progress; the length an event states is kept for the next ramp only
+    /// while none runs, and a new target starts its ramp over it.
+    #[test]
+    fn a_restated_target_leaves_the_running_ramp_alone() {
+        use crate::ramp_strategy::{PositionRampStrategy, RampRenderParams};
+        let ctx = RampContext::new(RampRenderParams {
+            room_ratio: [1.0; 3],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            room_ratio_center_blend: 0.0,
+            use_distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+        });
+        let (a, b, c) = ([-0.8, 0.8, 0.0], [0.8, 0.8, 0.0], [0.0, -0.5, 0.2]);
+        let mut ramp = ChannelRampState::default();
+        let strategy = PositionRampStrategy;
+        apply_move(
+            &mut ramp,
+            Some(0),
+            Some([0.0; 3]),
+            Some(a),
+            0,
+            &strategy,
+            &ctx,
+        );
+        ramp.advance_ramp(1);
+        assert_eq!(ramp.remaining_ramp_units, None);
+        apply_move(&mut ramp, Some(3000), None, Some(b), 1, &strategy, &ctx);
+        ramp.advance_ramp(1000);
+        let running = (
+            ramp.start_position,
+            ramp.ramp_length,
+            ramp.remaining_ramp_units,
+        );
+        assert_eq!(running, (a, 3000, Some(2000)));
+
+        // B again with the 2000 samples it has left, then a gain-only update
+        // stating a length: neither touches the ramp.
+        apply_move(&mut ramp, Some(2000), None, Some(b), 1001, &strategy, &ctx);
+        apply_move(&mut ramp, Some(500), None, None, 1001, &strategy, &ctx);
+        assert_eq!(
+            (
+                ramp.start_position,
+                ramp.ramp_length,
+                ramp.remaining_ramp_units
+            ),
+            running
+        );
+
+        // Settled, a stated length is kept for the next ramp, which starts
+        // from B over it.
+        ramp.advance_ramp(2000);
+        apply_move(&mut ramp, Some(700), None, Some(b), 3001, &strategy, &ctx);
+        assert_eq!((ramp.ramp_length, ramp.remaining_ramp_units), (700, None));
+        apply_move(&mut ramp, None, None, Some(c), 3001, &strategy, &ctx);
+        assert_eq!(
+            (
+                ramp.start_position,
+                ramp.target_position,
+                ramp.remaining_ramp_units
+            ),
+            (b, c, Some(700))
+        );
     }
 
     #[test]
