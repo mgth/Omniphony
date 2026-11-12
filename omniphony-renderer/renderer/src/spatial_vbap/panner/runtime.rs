@@ -14,12 +14,37 @@ impl VbapPanner {
     /// construction because `VirtualPoles` shapes the triangulation itself.
     /// The SAF backend (feature `saf_vbap`) ignores it and keeps its own
     /// out-of-hull behaviour.
+    ///
+    /// Every loudspeaker pans where it is placed; see
+    /// [`Self::new_with_listener_layer`].
     pub fn new(
+        speaker_dirs_deg: &[[f32; 2]],
+        az_res_deg: i32,
+        el_res_deg: i32,
+        spread: f32,
+        mode: crate::spatial_vbap::OutOfHullMode,
+    ) -> Result<Self, String> {
+        Self::new_with_listener_layer(
+            speaker_dirs_deg,
+            az_res_deg,
+            el_res_deg,
+            spread,
+            mode,
+            &crate::spatial_vbap::ListenerLayer::default(),
+        )
+    }
+
+    /// [`Self::new`], the listener layer triangulated as `listener` says
+    /// (`ListenerLayerMode`: as placed, flattened, or kept a band with
+    /// virtual loudspeakers), baked at construction like `mode`. The SAF
+    /// backend ignores it too.
+    pub fn new_with_listener_layer(
         speaker_dirs_deg: &[[f32; 2]],
         az_res_deg: i32,
         el_res_deg: i32,
         _spread: f32,
         mode: crate::spatial_vbap::OutOfHullMode,
+        listener: &crate::spatial_vbap::ListenerLayer,
     ) -> Result<Self, String> {
         let n_speakers = speaker_dirs_deg.len();
         if n_speakers < 3 {
@@ -34,11 +59,15 @@ impl VbapPanner {
 
         #[cfg(not(feature = "saf_vbap"))]
         {
-            let source =
-                native_backend::NativeVbapLayout::from_speaker_dirs(speaker_dirs_deg, mode)?;
+            let source = native_backend::NativeVbapLayout::from_speaker_dirs_with_listener_layer(
+                speaker_dirs_deg,
+                mode,
+                listener,
+            )?;
             Ok(VbapPanner {
                 n_triangles: source.n_faces,
                 n_virtual_centres: source.n_centres,
+                n_listener_virtuals: source.n_listener_virtuals,
                 n_speakers,
                 allow_negative_z: true,
                 source,
@@ -46,11 +75,14 @@ impl VbapPanner {
         }
         #[cfg(feature = "saf_vbap")]
         {
-            let _ = mode; // SAF keeps its own out-of-hull behaviour
+            // SAF keeps its own out-of-hull behaviour and pans the layout as
+            // placed.
+            let _ = (mode, listener);
             let layout = saf_backend::SpartaVbapLayout::from_speaker_dirs(speaker_dirs_deg)?;
             Ok(VbapPanner {
                 n_triangles: layout.n_faces as usize,
                 n_virtual_centres: 0,
+                n_listener_virtuals: 0,
                 n_speakers,
                 allow_negative_z: true,
                 speaker_dirs_deg: speaker_dirs_deg.to_vec(),
@@ -82,6 +114,12 @@ impl VbapPanner {
     /// Virtual loudspeakers at the centre of coplanar hull faces.
     pub fn num_virtual_centres(&self) -> usize {
         self.n_virtual_centres
+    }
+
+    /// Virtual loudspeakers of the listener layer: the shadows and the ring
+    /// closers of `ListenerLayerMode::Shadow`.
+    pub fn num_listener_virtuals(&self) -> usize {
+        self.n_listener_virtuals
     }
 
     // ── Direct gain computation ──────────────────────────────────────────────

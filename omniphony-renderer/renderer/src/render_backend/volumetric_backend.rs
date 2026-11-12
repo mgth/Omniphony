@@ -46,8 +46,8 @@ use super::{
     BackendCapabilities, GainModel, GainScratch, RenderRequest, VbapBackend, foreign_scratch,
 };
 use crate::spatial_vbap::vbap_native::{
-    FACE_HIT_TOLERANCE, compute_dummy_rings, invert_ls_mtx_3d, prepare_triangulation,
-    unit_direction_deg,
+    FACE_HIT_TOLERANCE, ListenerLayer, compute_dummy_rings, invert_ls_mtx_3d,
+    prepare_triangulation, unit_direction_deg,
 };
 use crate::spatial_vbap::{OutOfHullMode, VbapScratch, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
@@ -210,7 +210,11 @@ impl LoudspeakerSurface {
     /// in degrees, as the panner takes them), real loudspeaker `i` standing
     /// `radii[i]` from the listener. The triangulation is closed with the
     /// virtual poles whatever the panner's own out-of-hull mode, so that a
-    /// direction outside an open hull still meets the surface.
+    /// direction outside an open hull still meets the surface. It is the
+    /// loudspeakers as placed whatever the panner's listener-layer mode
+    /// (`vbap_native::ListenerLayerMode`): that mode moves where the panner
+    /// believes the listener layer is, depth is measured against where the
+    /// loudspeakers stand.
     pub(crate) fn from_directions(dirs_deg: &[[f32; 2]], radii: &[f32]) -> Result<Self> {
         anyhow::ensure!(
             dirs_deg.len() == radii.len(),
@@ -218,20 +222,21 @@ impl LoudspeakerSurface {
             dirs_deg.len(),
             radii.len()
         );
-        let tri = prepare_triangulation(dirs_deg, true, true, OutOfHullMode::VirtualPoles)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "the loudspeaker surface cannot be triangulated for {} loudspeakers",
-                    dirs_deg.len()
-                )
-            })?;
+        let tri = prepare_triangulation(
+            dirs_deg,
+            true,
+            true,
+            OutOfHullMode::VirtualPoles,
+            &ListenerLayer::default(),
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "the loudspeaker surface cannot be triangulated for {} loudspeakers",
+                dirs_deg.len()
+            )
+        })?;
         let inverse = invert_ls_mtx_3d(&tri.u_spkr, &tri.ls_groups);
-        let is_virtual: Vec<bool> = tri
-            .is_dummy
-            .iter()
-            .zip(&tri.is_centre)
-            .map(|(pole, centre)| *pole || *centre)
-            .collect();
+        let is_virtual = tri.is_virtual();
         Self::new(
             &TriangulationView {
                 unit_dirs: &tri.u_spkr,

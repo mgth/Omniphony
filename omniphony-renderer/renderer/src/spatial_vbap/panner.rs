@@ -126,6 +126,10 @@ pub struct VbapPanner {
     /// (`vbap_native::Triangulation`); 0 under `saf_vbap`.
     n_virtual_centres: usize,
 
+    /// Number of the listener layer's virtual loudspeakers
+    /// (`vbap_native::ListenerLayerMode::Shadow`); 0 under `saf_vbap`.
+    n_listener_virtuals: usize,
+
     /// Number of speakers in the layout.
     n_speakers: usize,
 
@@ -181,3 +185,7 @@ mod tests;
 // Measures `NativeVbapLayout` directly, so it only exists where that backend does.
 #[cfg(all(test, not(feature = "saf_vbap")))]
 mod native_validation;
+
+// The listener-layer modes are the native backend's alone.
+#[cfg(all(test, not(feature = "saf_vbap")))]
+mod listener_layer_tests;

@@ -242,47 +242,9 @@ fn angles_to_normalized(azimuth_deg: f32, elevation_deg: f32, warp: OutputWarp) 
     (x, y, z)
 }
 
-/// The nominal direction of a label on the listener's sphere, `(azimuth,
-/// elevation)` in degrees, for sphere mode when the format declares none.
-/// ITU-R BS.2051 where it names the position (`M±030`, `M±110`, `U±045`,
-/// `T+000`…), the tier's convention otherwise: the top tier at 45° of
-/// elevation, the height tier at 30°, the wide pair at ±60°, the front
-/// centre pair halfway to the centre. A 7.x source's side pair is `M±090`;
-/// a 4.x/5.x source's surround pair is `M±110`. `None` for the labels that
-/// are not a direction (`Object`, `Unknown`).
-pub(crate) fn nominal_angle(label: RChannelLabel, use_7_1: bool) -> Option<(f32, f32)> {
-    use RChannelLabel::*;
-    Some(match label {
-        L => (-30.0, 0.0),
-        R => (30.0, 0.0),
-        C | LFE | LFE2 => (0.0, 0.0),
-        Ls => (if use_7_1 { -90.0 } else { -110.0 }, 0.0),
-        Rs => (if use_7_1 { 90.0 } else { 110.0 }, 0.0),
-        Lb => (-135.0, 0.0),
-        Rb => (135.0, 0.0),
-        Cb => (180.0, 0.0),
-        Lsc => (-15.0, 0.0),
-        Rsc => (15.0, 0.0),
-        Lw => (-60.0, 0.0),
-        Rw => (60.0, 0.0),
-        Lsd => (-120.0, 0.0),
-        Rsd => (120.0, 0.0),
-        Tfl => (-45.0, 45.0),
-        Tfr => (45.0, 45.0),
-        Tsl => (-90.0, 45.0),
-        Tsr => (90.0, 45.0),
-        Tbl => (-135.0, 45.0),
-        Tbr => (135.0, 45.0),
-        Tfc => (0.0, 45.0),
-        Tc => (0.0, 90.0),
-        Lh => (-30.0, 30.0),
-        Rh => (30.0, 30.0),
-        Ch => (0.0, 30.0),
-        Lhs => (-110.0, 30.0),
-        Rhs => (110.0, 30.0),
-        Object | Unknown => return None,
-    })
-}
+/// The nominal direction of a label on the listener's sphere: the
+/// renderer's table, which the VBAP panner's listener layer reads too.
+pub(crate) use renderer::speaker_layout::nominal_angle;
 
 /// Whether the source carries back channels (`Lb`/`Rb`/`Cb`), i.e. is a
 /// 7.x bed. Without them the surround pair of a 4.x/5.x source has no

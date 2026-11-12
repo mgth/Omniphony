@@ -85,9 +85,13 @@ position would be an audible step of the central distribution.
 ### The VBAP underneath
 
 The VBAP the backend pans with is tuned under the backend's own id: its
-spread policy and out-of-hull mode are the `volumetric` entry of the param
-bag, not the `vbap` one, so a volumetric render is set up independently of a
-plain VBAP one. The Studio shows both sets on the backend's parameter form.
+spread policy, out-of-hull mode and listener-layer mode are the `volumetric`
+entry of the param bag, not the `vbap` one, so a volumetric render is set up
+independently of a plain VBAP one. The Studio shows both sets on the
+backend's parameter form. The listener-layer mode (flattened, or shadows
+below; `docs/dsp-validation-report.md`, "The listener layer") changes where
+the panner believes the ear-height loudspeakers are, never the surface: depth
+is measured against the loudspeakers as placed.
 
 ## What it costs
 

@@ -268,6 +268,10 @@ pub struct VbapTopologyBuildPlan {
     /// the triangulation in `VirtualPoles`). Sourced from the live options;
     /// a change rebuilds the topology (`OptionFlags::REBUILD`).
     pub out_of_hull_mode: crate::spatial_vbap::OutOfHullMode,
+    /// How the panner triangulates the listener layer, and which of
+    /// `positions` are on it; baked into the panner at build, from the
+    /// `listener_layer_mode` backend param.
+    pub listener_layer: crate::spatial_vbap::ListenerLayer,
 }
 
 impl VbapTopologyBuildPlan {
@@ -278,12 +282,13 @@ impl VbapTopologyBuildPlan {
     /// built. Any precomputation happens in the evaluation layer that samples
     /// it.
     pub fn build_panner(&self) -> Result<crate::spatial_vbap::VbapPanner, String> {
-        crate::spatial_vbap::VbapPanner::new(
+        crate::spatial_vbap::VbapPanner::new_with_listener_layer(
             &self.positions,
             self.azimuth_resolution,
             self.elevation_resolution,
             0.0,
             self.out_of_hull_mode,
+            &self.listener_layer,
         )
         .map(|panner| panner.with_negative_z(self.allow_negative_z))
     }
@@ -513,12 +518,13 @@ impl TopologyBuildPlan {
     pub fn log_summary(&self) -> String {
         match &self.backend_build {
             BackendBuildPlan::Vbap(plan) => format!(
-                "gain_model=vbap evaluation_mode={} azimuth_resolution={} elevation_resolution={} distance_res={} distance_max={}",
+                "gain_model=vbap evaluation_mode={} azimuth_resolution={} elevation_resolution={} distance_res={} distance_max={} listener_layer={}",
                 self.evaluation_mode().as_str(),
                 plan.azimuth_resolution,
                 plan.elevation_resolution,
                 plan.distance_res,
                 plan.distance_max,
+                plan.listener_layer.mode.as_str(),
             ),
             BackendBuildPlan::Degenerate(plan) => format!(
                 "gain_model=vbap(degenerate) evaluation_mode={} speakers={}",
@@ -526,12 +532,13 @@ impl TopologyBuildPlan {
                 plan.positions.len()
             ),
             BackendBuildPlan::Volumetric(plan) => format!(
-                "gain_model=volumetric evaluation_mode={} central={} depth_curve={} azimuth_resolution={} elevation_resolution={}",
+                "gain_model=volumetric evaluation_mode={} central={} depth_curve={} azimuth_resolution={} elevation_resolution={} listener_layer={}",
                 self.evaluation_mode().as_str(),
                 plan.params.central.as_str(),
                 plan.params.depth_curve,
                 plan.vbap.azimuth_resolution,
                 plan.vbap.elevation_resolution,
+                plan.vbap.listener_layer.mode.as_str(),
             ),
             BackendBuildPlan::ExperimentalDistance(plan) => format!(
                 "gain_model=experimental_distance evaluation_mode={} speakers={}",
@@ -623,11 +630,19 @@ fn build_vbap_build_plan(
     rebuild_params: BackendRebuildParams,
     spread: crate::render_backend::VbapSpreadParams,
     out_of_hull_mode: crate::spatial_vbap::OutOfHullMode,
+    listener_layer_mode: crate::spatial_vbap::ListenerLayerMode,
 ) -> Option<BackendBuildPlan> {
     let rebuild = rebuild_params.vbap?;
     let positions = layout
         .spatializable_positions_for_room(room.ratio, room.rear, room.lower, room.center_blend)
         .0;
+    let listener_layer = crate::spatial_vbap::ListenerLayer {
+        mode: listener_layer_mode,
+        members: match listener_layer_mode {
+            crate::spatial_vbap::ListenerLayerMode::AsPlaced => Vec::new(),
+            _ => layout.spatializable_listener_layer(&positions),
+        },
+    };
     let azimuth_resolution = if live.evaluation.polar.azimuth_values > 0 {
         ((360.0f32 / (live.evaluation.polar.azimuth_values as f32)).round() as i32).clamp(1, 360)
     } else {
@@ -693,6 +708,7 @@ fn build_vbap_build_plan(
         diffuse_thr: live.distance_diffuse_threshold,
         diffuse_curve: live.distance_diffuse_curve,
         out_of_hull_mode,
+        listener_layer,
     }))
 }
 
@@ -736,6 +752,20 @@ fn parse_out_of_hull_mode(
         "fade" | "original" | "legacy" => OutOfHullMode::Fade,
         _ => OutOfHullMode::VirtualPoles,
     }
+}
+
+/// Listener-layer mode, read from the param bag under `backend_id` like the
+/// out-of-hull mode. A missing or unknown value is the schema default: the
+/// layout as placed.
+fn vbap_listener_layer_mode(
+    ctx: &BackendBuildCtx<'_>,
+    backend_id: &str,
+) -> crate::spatial_vbap::ListenerLayerMode {
+    use crate::backend_params::ParamValue;
+    ctx.backend_param(backend_id, "listener_layer_mode")
+        .and_then(ParamValue::as_str)
+        .and_then(crate::spatial_vbap::ListenerLayerMode::parse)
+        .unwrap_or_default()
 }
 
 /// VBAP spread tuning, read from the param bag under `backend_id`, with each
@@ -885,6 +915,7 @@ fn build_inner_backend_plan(
             ctx.backend_rebuild_params?,
             vbap_spread_params(ctx, backend_id),
             vbap_out_of_hull_mode(ctx, backend_id),
+            vbap_listener_layer_mode(ctx, backend_id),
         ),
         // The VBAP it pans with is tuned under its own id (spread, out of
         // hull), so a volumetric render is set up independently of a plain
@@ -897,6 +928,7 @@ fn build_inner_backend_plan(
                 ctx.backend_rebuild_params?,
                 vbap_spread_params(ctx, backend_id),
                 vbap_out_of_hull_mode(ctx, backend_id),
+                vbap_listener_layer_mode(ctx, backend_id),
             )?;
             Some(match vbap {
                 BackendBuildPlan::Vbap(vbap) => BackendBuildPlan::Volumetric(VolumetricBuildPlan {
@@ -1152,6 +1184,41 @@ fn vbap_param_specs() -> Vec<crate::backend_params::ParamSpec> {
                  closest boundary face for a tighter image; lower values blend more speakers \
                  near the poles. Only used in Face blend mode.",
         ),
+        {
+            use crate::spatial_vbap::ListenerLayerMode;
+            ParamSpec {
+                key: "listener_layer_mode",
+                label: "Listener layer",
+                i18n_key: None,
+                unit: None,
+                kind: ParamKind::Enum {
+                    options: vec![
+                        enum_option(ListenerLayerMode::AsPlaced.as_str(), "As placed"),
+                        enum_option(
+                            ListenerLayerMode::Flatten.as_str(),
+                            "Flattened to ear level",
+                        ),
+                        enum_option(ListenerLayerMode::Shadow.as_str(), "Shadows below"),
+                    ],
+                },
+                default: ParamValue::Text(ListenerLayerMode::default().as_str().to_string()),
+                requires: None,
+                help: Some(
+                    "How the ear-height speakers (L, C, R, surrounds, backs, wides) are \
+                     panned when the room puts them off the horizon, L and R beside or \
+                     above the screen for instance. As placed pans every speaker where it \
+                     stands; with L higher than C, a film's L channel then plays largely \
+                     from C and the surround. Flattened pans the ear-height speakers as if \
+                     at 0° elevation: each channel plays on its speaker, but content a \
+                     little above L already reaches the tops. Shadows below keeps the real \
+                     elevations, hangs a virtual speaker under each raised ear-height one \
+                     and closes the ear-height ring where the room leaves it open, all \
+                     folded back onto the real speakers: each channel plays on its speaker \
+                     and the heights blend from where the speakers really are. A change \
+                     rebuilds the topology.",
+                ),
+            }
+        },
     ]
 }
 
@@ -1877,6 +1944,55 @@ mod tests {
             panic!("expected a volumetric plan");
         };
         assert_eq!(plan.params.depth_curve, VolumetricParams::DEPTH_CURVE_MAX);
+    }
+
+    /// The listener-layer mode is read from the bag like the out-of-hull
+    /// mode, is the layout as placed unless set, and the plan names the
+    /// listener layer from the speakers' names: the heights are not on it.
+    #[test]
+    fn the_listener_layer_mode_comes_from_the_bag() {
+        use crate::backend_params::ParamValue;
+        use crate::spatial_vbap::{ListenerLayer, ListenerLayerMode};
+        let layout = SpeakerLayout::preset_7_1_4().unwrap();
+        let plan_with = |bag: &[(&str, ParamValue)]| -> VolumetricBuildPlan {
+            match volumetric_plan(&layout, bag) {
+                Some(BackendBuildPlan::Volumetric(plan)) => plan,
+                _ => panic!("expected a volumetric plan"),
+            }
+        };
+        let mode = |value: &str| [("listener_layer_mode", ParamValue::Text(value.to_string()))];
+        assert_eq!(plan_with(&[]).vbap.listener_layer, ListenerLayer::default());
+        assert_eq!(
+            plan_with(&mode("nonsense")).vbap.listener_layer.mode,
+            ListenerLayerMode::AsPlaced
+        );
+        assert_eq!(
+            plan_with(&mode("flatten")).vbap.listener_layer.mode,
+            ListenerLayerMode::Flatten
+        );
+
+        let plan = plan_with(&mode("shadow"));
+        assert_eq!(plan.vbap.listener_layer.mode, ListenerLayerMode::Shadow);
+        let on: Vec<&str> = layout
+            .speakers
+            .iter()
+            .filter(|s| s.spatialize)
+            .zip(&plan.vbap.listener_layer.members)
+            .filter(|(_, on)| **on)
+            .map(|(s, _)| s.name.as_str())
+            .collect();
+        assert_eq!(on, ["FL", "FR", "C", "BL", "BR", "SL", "SR"]);
+        let model = plan.build_gain_model().expect("the model builds");
+        assert_eq!(model.speaker_count(), 11);
+
+        let spec = vbap_param_specs()
+            .into_iter()
+            .find(|spec| spec.key == "listener_layer_mode")
+            .expect("declared with the VBAP tunables");
+        assert_eq!(
+            spec.default,
+            ParamValue::Text(ListenerLayerMode::AsPlaced.as_str().to_string())
+        );
     }
 
     #[test]

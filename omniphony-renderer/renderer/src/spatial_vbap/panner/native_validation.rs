@@ -25,7 +25,7 @@ use super::native_backend::NativeVbapLayout;
 
 /// Directions in the PR-gate sweep. 512 points is dense enough to land inside
 /// every triplet of a 7.1.4 layout several times over.
-const LATTICE_POINTS: usize = 512;
+pub(super) const LATTICE_POINTS: usize = 512;
 
 /// Build the VBAP panner for a shipped preset, using only speakers that
 /// participate in spatialization (LFE has `spatialize: false` and must not
@@ -84,7 +84,7 @@ const ENERGY_TOLERANCE_DB: f32 = 0.25;
 /// toward whatever produced the change. A continuous function's difference
 /// collapses as the interval shrinks; a jump keeps its full magnitude however
 /// small the interval gets. That distinction needs no Lipschitz constant.
-const MAX_SEAM_JUMP: f32 = 0.02;
+pub(super) const MAX_SEAM_JUMP: f32 = 0.02;
 
 /// Known blind spot: this sweeps **azimuth at fixed elevation**, so it never
 /// crosses a pole, where azimuth is degenerate. A discontinuity exactly at the
@@ -114,7 +114,7 @@ fn gain_diff(panner: &NativeVbapLayout, az_a: f32, az_b: f32, el: f32) -> f32 {
 /// Localise the largest gain change within `[az, az + SEAM_SPAN_DEG]` by
 /// repeatedly keeping the half that carries more of it, and report the change
 /// that survives at the finest interval together with where it sits.
-fn residual_jump(panner: &NativeVbapLayout, az: f32, el: f32) -> (f32, f32) {
+pub(super) fn residual_jump(panner: &NativeVbapLayout, az: f32, el: f32) -> (f32, f32) {
     let (mut lo, mut hi) = (az, az + SEAM_SPAN_DEG);
     for _ in 0..SEAM_BISECT_STEPS {
         let mid = 0.5 * (lo + hi);

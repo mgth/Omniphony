@@ -4,7 +4,8 @@
 
 use super::normalized_spread_to_degrees;
 use crate::spatial_vbap::vbap_native::{
-    DummyRing, OutOfHullMode, Vbap3dScratch, invert_ls_mtx_3d, prepare_triangulation, vbap3d_into,
+    DummyRing, ListenerLayer, OutOfHullMode, Vbap3dScratch, invert_ls_mtx_3d,
+    prepare_triangulation, vbap3d_into,
 };
 
 /// Pure-Rust equivalent of `SpartaVbapLayout`.
@@ -19,8 +20,11 @@ pub(crate) struct NativeVbapLayout {
     /// Number of virtual loudspeakers at the centre of coplanar hull faces
     /// (`vbap_native::Triangulation`).
     pub(crate) n_centres: usize,
-    /// Total speaker count used for triangulation (real + virtual poles +
-    /// virtual centres).
+    /// Number of listener-layer virtual loudspeakers: shadows and ring
+    /// closers (`vbap_native::ListenerLayerMode::Shadow`).
+    pub(crate) n_listener_virtuals: usize,
+    /// Total speaker count used for triangulation (real + listener-layer
+    /// virtual + virtual poles + virtual centres).
     n_eff: usize,
     #[allow(dead_code)]
     u_spkr: Vec<[f32; 3]>,
@@ -33,8 +37,9 @@ pub(crate) struct NativeVbapLayout {
     /// Out-of-hull rendering mode, baked at construction (it shapes the
     /// triangulation itself in `VirtualPoles`).
     mode: OutOfHullMode,
-    /// Downmix rings of the virtual loudspeakers: the centres of coplanar
-    /// faces in every mode, the poles in `VirtualPoles`.
+    /// Downmix rings of the virtual loudspeakers: the listener layer's and
+    /// the centres of coplanar faces in every mode, the poles in
+    /// `VirtualPoles`.
     dummy_rings: Vec<DummyRing>,
 }
 
@@ -46,13 +51,30 @@ impl NativeVbapLayout {
     /// built (in [`OutOfHullMode::VirtualPoles`], also at any pole the real
     /// hull leaves uncovered). Every coplanar hull face is closed around a
     /// virtual centre (`vbap_native::Triangulation`). Virtual gains are
-    /// stripped before returning.
+    /// stripped before returning. Every loudspeaker pans where it is placed:
+    /// see [`Self::from_speaker_dirs_with_listener_layer`].
+    #[cfg(test)]
     pub fn from_speaker_dirs(
         speaker_dirs_deg: &[[f32; 2]],
         mode: OutOfHullMode,
     ) -> Result<Self, String> {
+        Self::from_speaker_dirs_with_listener_layer(
+            speaker_dirs_deg,
+            mode,
+            &ListenerLayer::default(),
+        )
+    }
+
+    /// [`Self::from_speaker_dirs`], the listener layer triangulated as
+    /// `listener` says (`vbap_native::ListenerLayerMode`): flattened, or
+    /// kept a band with virtual loudspeakers folded onto it.
+    pub fn from_speaker_dirs_with_listener_layer(
+        speaker_dirs_deg: &[[f32; 2]],
+        mode: OutOfHullMode,
+        listener: &ListenerLayer,
+    ) -> Result<Self, String> {
         let n_real = speaker_dirs_deg.len();
-        let tri = prepare_triangulation(speaker_dirs_deg, true, true, mode)
+        let tri = prepare_triangulation(speaker_dirs_deg, true, true, mode, listener)
             .ok_or_else(|| "find_ls_triplets failed".to_string())?;
 
         let n_eff = tri.dirs.len();
@@ -65,12 +87,14 @@ impl NativeVbapLayout {
         let layout_inv_mtx = invert_ls_mtx_3d(&tri.u_spkr, &tri.ls_groups);
         let n_faces = tri.ls_groups.len();
         let n_centres = tri.centres();
+        let n_listener_virtuals = tri.listener_virtuals();
         let dummy_rings = tri.downmix_rings(mode);
 
         Ok(Self {
             n_speakers: n_real,
             n_faces,
             n_centres,
+            n_listener_virtuals,
             n_eff,
             u_spkr: tri.u_spkr,
             ls_groups: tri.ls_groups,
