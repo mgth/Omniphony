@@ -572,6 +572,9 @@ impl SpatialRenderer {
             // stream carries more channels than this.
             channel_states: Vec::with_capacity(64),
             reset_requested: std::sync::atomic::AtomicBool::new(false),
+            rendered_samples: 0,
+            schedule_active: false,
+            far_event_warned: false,
             sample_rate,
             distance_model,
             log_object_positions,

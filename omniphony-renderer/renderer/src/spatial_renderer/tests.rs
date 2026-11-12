@@ -4676,3 +4676,228 @@ fn a_bass_managed_sweep_plays_through_the_subwoofer_like_programme_audio() {
         }
     }
 }
+
+// ── Events dated on their own sample (`schedule.rs`) ────────────────────────
+
+/// One object event on channel 0, dated `offset` samples past the first sample
+/// of the block it comes with.
+fn dated_move(position: [f64; 3], ramp_length: u32, offset: u64) -> SpatialChannelEvent {
+    SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0.0),
+        ramp_length: Some(ramp_length),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some(position),
+        sample_pos: Some(offset),
+    }
+}
+
+/// A 7.1.4 renderer in `ramp_mode`, on headphones when `binaural`.
+fn dated_events_renderer(ramp_mode: RampMode, binaural: bool) -> SpatialRenderer {
+    let r =
+        SpatialRenderer::new(test_support::spec(SpeakerLayout::preset("7.1.4").unwrap())).unwrap();
+    {
+        let mut live = r.control.live.write();
+        live.options.ramp_mode = ramp_mode;
+        if binaural {
+            live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        }
+    }
+    r
+}
+
+const DATED_A: [f64; 3] = [-0.8, 0.6, 0.0];
+const DATED_B: [f64; 3] = [0.8, -0.6, 0.4];
+const DATED_C: [f64; 3] = [0.1, 0.9, 0.7];
+
+/// An object event dated inside its block starts the object's ramp on its own
+/// sample, not on the block's first: by the end of the block the ramp has run
+/// the samples from there on. And a move that interrupts a ramp starts from
+/// where that ramp had got to on the sample before. The same in the
+/// per-sample ramp, the per-block one and the headphone path.
+#[test]
+fn a_mid_block_event_starts_its_ramp_on_its_own_sample() {
+    const BLOCK: usize = 64;
+    const OFFSET: usize = 23;
+    const RAMP: u32 = 200;
+    let pcm = vec![0.25f32; BLOCK];
+    for (what, mode, binaural) in [
+        ("sample", RampMode::Sample, false),
+        ("frame", RampMode::Frame, false),
+        ("headphones", RampMode::Sample, true),
+    ] {
+        let mut r = dated_events_renderer(mode, binaural);
+        r.render_frame(&pcm, 1, &[dated_move(DATED_A, 0, 0)], Vec::new(), false)
+            .unwrap();
+        r.render_frame(
+            &pcm,
+            1,
+            &[dated_move(DATED_B, RAMP, OFFSET as u64)],
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+        let ramp = &r.channel_states[0].ramp;
+        assert_eq!(ramp.target_position, DATED_B, "{what}: no move");
+        assert_eq!(ramp.start_position, DATED_A, "{what}");
+        assert_eq!(
+            ramp.remaining_ramp_units,
+            Some(u64::from(RAMP) - (BLOCK - OFFSET) as u64),
+            "{what}: the ramp must start on sample {OFFSET} of the block"
+        );
+
+        // The next block: a move on sample 40 cuts that ramp where it is on
+        // sample 39, `BLOCK - OFFSET + 39` samples in.
+        r.render_frame(&pcm, 1, &[dated_move(DATED_C, RAMP, 40)], Vec::new(), false)
+            .unwrap();
+        let ramp = &r.channel_states[0].ramp;
+        let run = (BLOCK - OFFSET + 39) as f64 / f64::from(RAMP);
+        assert_eq!(
+            ramp.start_position,
+            crate::ramp_strategy::interpolate_position(DATED_A, DATED_B, run),
+            "{what}: the second move must start where the first had got to"
+        );
+        assert_eq!(ramp.target_position, DATED_C, "{what}");
+        assert_eq!(
+            ramp.remaining_ramp_units,
+            Some(u64::from(RAMP) - (BLOCK - 40) as u64),
+            "{what}"
+        );
+    }
+}
+
+/// What a dated event renders is what the same event renders when it arrives
+/// with a block that starts on its sample: bit for bit, through a move inside
+/// the block and a jump carried two blocks on. Per-sample lookups, and the
+/// gain slew settled first, so cutting the timeline into other blocks changes
+/// nothing else.
+#[test]
+fn an_event_dated_on_a_sample_renders_as_one_arriving_on_a_block_starting_there() {
+    const SETTLE: usize = 24 * 64; // past the gain slew's fade-in
+    const END: usize = SETTLE + 4 * 64;
+    // Absolute sample → the input there, whatever the blocks.
+    let input = |range: std::ops::Range<usize>| -> Vec<f32> {
+        range
+            .map(|i| {
+                let x = (i as u32).wrapping_mul(2_654_435_761) ^ 0x9E37_79B9;
+                ((x >> 8) & 0xffff) as f32 / 65535.0 * 0.5 - 0.25
+            })
+            .collect()
+    };
+    // The move on sample SETTLE + 17, the jump on SETTLE + 64 + 94.
+    let moved = SETTLE + 17;
+    let jumped = SETTLE + 64 + 94;
+    let render = |cuts: &[usize], events: &dyn Fn(usize) -> Vec<SpatialChannelEvent>| {
+        let mut r = dated_events_renderer(RampMode::Sample, false);
+        r.control.live.write().options.sample_ramp_stride = 1;
+        let mut out = Vec::new();
+        let mut start = 0;
+        for &end in cuts.iter().chain(std::iter::once(&END)) {
+            let frame = r
+                .render_frame(&input(start..end), 1, &events(start), Vec::new(), false)
+                .unwrap();
+            out.extend_from_slice(&frame.samples);
+            start = end;
+        }
+        out
+    };
+    let blocks: Vec<usize> = (1..END / 64).map(|b| b * 64).collect();
+    let dated = render(&blocks, &|start| match start {
+        0 => vec![dated_move(DATED_A, 0, 0)],
+        s if s == SETTLE => vec![
+            dated_move(DATED_B, 50, (moved - s) as u64),
+            dated_move(DATED_C, 0, (jumped - s) as u64),
+        ],
+        _ => Vec::new(),
+    });
+    let mut cuts: Vec<usize> = (1..SETTLE / 64).map(|b| b * 64).collect();
+    cuts.extend([SETTLE, moved, jumped, END - 64]);
+    let on_blocks = render(&cuts, &|start| match start {
+        0 => vec![dated_move(DATED_A, 0, 0)],
+        s if s == moved => vec![dated_move(DATED_B, 50, 0)],
+        s if s == jumped => vec![dated_move(DATED_C, 0, 0)],
+        _ => Vec::new(),
+    });
+    assert_eq!(dated.len(), on_blocks.len());
+    let first_difference = dated
+        .iter()
+        .zip(&on_blocks)
+        .position(|(a, b)| a.to_bits() != b.to_bits());
+    assert_eq!(
+        first_difference.map(|i| i / 12),
+        None,
+        "first sample that differs"
+    );
+    // And the move is heard: the object is not where it started.
+    let at = |out: &[f32], i: usize| out[i * 12..][..12].to_vec();
+    assert_ne!(at(&dated, moved - 1), at(&dated, END - 1));
+}
+
+/// An event dated past its block waits for the block holding its sample, its
+/// gain with it: an object a stream un-mutes and moves at once is not heard
+/// before it moves.
+#[test]
+fn an_event_dated_past_its_block_waits_for_its_block_gain_and_all() {
+    const BLOCK: usize = 64;
+    let pcm = vec![0.25f32; BLOCK];
+    let mut r = dated_events_renderer(RampMode::Sample, false);
+    let muted = SpatialChannelEvent {
+        gain_db: Some(GAIN_DB_NEG_INF),
+        ..dated_move(DATED_A, 0, 0)
+    };
+    r.render_frame(&pcm, 1, &[muted], Vec::new(), false)
+        .unwrap();
+    // Un-muted and moved on sample 36 of the next block.
+    let arrival = r
+        .render_frame(
+            &pcm,
+            1,
+            &[dated_move(DATED_B, 0, (BLOCK + 36) as u64)],
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+    assert!(
+        arrival.samples.iter().all(|&s| s == 0.0),
+        "heard on the block the event arrived with"
+    );
+    let state = &r.channel_states[0];
+    assert_eq!(state.ramp.target_position, DATED_A, "moved a block early");
+    assert_eq!(state.gain_db, GAIN_DB_NEG_INF, "un-muted a block early");
+
+    let due = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    let state = &r.channel_states[0];
+    assert_eq!(state.ramp.target_position, DATED_B);
+    assert_eq!(state.gain_db, 0.0);
+    assert!(due.samples.iter().any(|&s| s != 0.0), "never un-muted");
+    assert!(r.channel_states[0].schedule.is_empty());
+}
+
+/// An offset of a second or more is a broken clock, not a schedule: the event
+/// is applied when it arrives, as every event used to be, rather than holding
+/// the object back for good.
+#[test]
+fn an_event_dated_a_second_past_its_block_is_applied_at_once() {
+    const BLOCK: usize = 64;
+    let pcm = vec![0.25f32; BLOCK];
+    let ramp_after = |offset: u64| {
+        let mut r = dated_events_renderer(RampMode::Sample, false);
+        r.render_frame(&pcm, 1, &[dated_move(DATED_A, 0, 0)], Vec::new(), false)
+            .unwrap();
+        r.render_frame(
+            &pcm,
+            1,
+            &[dated_move(DATED_B, 500, offset)],
+            Vec::new(),
+            false,
+        )
+        .unwrap();
+        assert!(r.channel_states[0].schedule.is_empty());
+        let ramp = &r.channel_states[0].ramp;
+        (ramp.target_position, ramp.remaining_ramp_units)
+    };
+    assert_eq!(ramp_after(48_000), ramp_after(0));
+    assert_eq!(ramp_after(u64::MAX), ramp_after(0));
+    assert_eq!(ramp_after(0), (DATED_B, Some(500 - BLOCK as u64)));
+}
